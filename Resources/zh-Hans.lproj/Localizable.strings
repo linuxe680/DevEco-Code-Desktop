@@ -1,0 +1,344 @@
+/* DevEco Code Desktop — 简体中文 */
+
+/* 通用 */
+"Cancel" = "取消";
+"Save" = "保存";
+"Delete" = "删除";
+"Done" = "完成";
+"Send" = "发送";
+"Stop" = "停止";
+"Retry" = "重试";
+"Restore" = "恢复";
+"Dismiss" = "关闭";
+"Apply" = "应用";
+"None" = "无";
+"Optional" = "可选";
+"reasoning" = "推理";
+
+/* 状态栏 / 顶层 */
+"Project" = "项目";
+"Choose Folder…" = "选择文件夹…";
+"Choose Project Folder…" = "选择项目文件夹…";
+"Start Server" = "启动服务";
+"Stop Server" = "停止服务";
+"Settings (⌘,)" = "设置（⌘,）";
+"Failed" = "启动失败";
+"Stopped" = "已停止";
+"Connected" = "已连接";
+"Starting…" = "连接中…";
+"Not connected yet — wait for the server to start." = "尚未连接 — 请等待服务启动。";
+"Connected · %@" = "已连接 · %@";
+"Starting · %@" = "启动中 · %@";
+
+/* 侧栏分区 / 菜单 */
+"Sessions" = "会话";
+"Models & Providers" = "模型与供应商";
+"New Session" = "新建会话";
+"Quick Switch…" = "快速切换…";
+"Export Session…" = "导出会话…";
+"Server" = "服务";
+
+/* 会话侧栏 */
+"Search sessions" = "搜索会话";
+"New session (⌘N)" = "新建会话（⌘N）";
+"Today" = "今天";
+"Yesterday" = "昨天";
+"Earlier" = "更早";
+"Archived" = "已归档";
+"Results" = "结果";
+"No sessions match “%@”" = "没有匹配“%@”的会话";
+"Rename…" = "重命名…";
+"Fork" = "复制分叉";
+"Archive" = "归档";
+"Unarchive" = "取消归档";
+"Export as Markdown…" = "导出为 Markdown…";
+"Delete…" = "删除…";
+"subagent" = "子代理";
+"Rename Session" = "重命名会话";
+"Session title" = "会话标题";
+"Untitled session" = "未命名会话";
+"Delete “%@”? The conversation will be removed from the server." = "删除“%@”？对话将从服务器移除。";
+
+/* 快速切换 */
+"Switch to session…" = "切换到会话…";
+"No matching sessions" = "没有匹配的会话";
+
+/* 聊天区 */
+"Server default" = "服务端默认";
+"Diff" = "变更";
+"Compact" = "压缩";
+"Compacting…" = "压缩中…";
+"Generating…" = "生成中…";
+"Retrying · %@" = "重试中 · %@";
+"You" = "我";
+"Thinking" = "思考过程";
+"Revert to here…" = "回退到此处…";
+"Session is reverted to an earlier message; new prompts continue from there." = "会话已回退到较早的消息，新对话将从那里继续。";
+"Unrevert" = "撤销回退";
+"Select a session or create a new one" = "选择一个会话，或新建会话";
+"Enter sends · Shift+Enter newline · ⌘⏎ sends · / for commands" = "回车发送 · Shift+回车换行 · ⌘⏎ 发送 · 输入 / 使用命令";
+"⌘⏎ sends · / for commands" = "⌘⏎ 发送 · 输入 / 使用命令";
+
+/* Todo / 权限 / 提问 */
+"Todos" = "任务清单";
+"Permission required" = "需要权限";
+"Allow once" = "允许一次";
+"Always allow" = "始终允许";
+"Reject" = "拒绝";
+"Agent question" = "Agent 提问";
+"Agent questions" = "Agent 提问";
+"Skip" = "跳过";
+"Send Answers" = "发送回答";
+"Custom answer…" = "自定义回答…";
+
+/* Diff 面板 / 代码块 / 附件 */
+"Changes" = "变更";
+"Files: %lld" = "文件数：%lld";
+"Loading diff…" = "正在加载变更…";
+"No file changes in this session." = "本次会话没有文件改动。";
+"Copy code" = "复制代码";
+"code" = "代码";
+"Open attachment" = "打开附件";
+"Reveal Log Folder" = "显示日志文件夹";
+"Reveal Data Folder" = "显示数据文件夹";
+
+/* 设置：通用 */
+"General" = "通用";
+"When app quits:" = "退出应用时：";
+"Stop server" = "停止服务";
+"Keep server running" = "保持服务运行";
+"Keeping the server running lets the next launch skip the boot wait, but the deveco process stays alive in the background." = "保持服务运行可让下次启动跳过等待，但 deveco 进程会驻留后台。";
+"Launch at login" = "登录时启动";
+
+/* 设置：服务 */
+"deveco CLI path" = "deveco 命令行路径";
+"Node.js path (optional)" = "Node.js 路径（可选）";
+"Node.js not found yet — it will be probed when the server starts." = "尚未找到 Node.js — 服务启动时会自动探测。";
+"Browse…" = "浏览…";
+"Auto-detect" = "自动探测";
+"In use: %@" = "使用中：%@";
+"Not found — install deveco or set a path above." = "未找到 — 请安装 deveco 或在上方设置路径。";
+"Leave empty to auto-detect (common install paths, then your login shell's PATH)." = "留空则自动探测（常用安装路径，然后是登录 shell 的 PATH）。";
+"Starting port" = "起始端口";
+"Port" = "端口";
+"The first port tried (default 4096). If it is busy the app picks the next free one." = "首先尝试的端口（默认 4096）。若被占用会自动顺延。";
+"Start server automatically on launch" = "启动时自动开启服务";
+"Backup" = "备份";
+"Archive the deveco data directory (sessions, logs) as a zip. Restoring replaces the current data and restarts the server." = "将 deveco 数据目录（会话、日志）打包为 zip。恢复会替换当前数据并重启服务。";
+"Backup Now…" = "立即备份…";
+"Restore from Backup…" = "从备份恢复…";
+"Restore this backup?" = "恢复此备份？";
+"Current session data will be replaced and the server restarted. This cannot be undone." = "当前会话数据将被替换，服务将重启。此操作不可撤销。";
+"Backed up to %@." = "已备份到 %@。";
+"Restored from %@." = "已从 %@ 恢复。";
+"Backup failed: %@." = "备份失败：%@。";
+"Restore failed: %@." = "恢复失败：%@。";
+
+/* 设置：聊天 */
+"Chat" = "聊天";
+"Enter sends message (Shift+Enter inserts newline)" = "回车发送消息（Shift+回车换行）";
+"Follow streaming output while generating" = "生成时跟随滚动输出";
+"Expand Thinking sections by default" = "默认展开思考过程";
+"Message font size" = "消息字号";
+"%lld pt" = "%lld pt";
+"Default model for new sessions" = "新会话默认模型";
+"Preselected in the chat header. The server-configured default (Models & Providers) is used when left unset." = "在聊天区头部预选。留空则使用服务端配置的默认模型（模型与供应商）。";
+
+/* 引导 */
+"Set up the deveco CLI" = "配置 deveco 命令行";
+"The app manages a local deveco server but couldn't find the CLI on this Mac." = "本应用管理本地 deveco 服务，但这台 Mac 上没有找到 deveco 命令行。";
+"Install it globally, e.g. npm i -g deveco" = "全局安装，例如 npm i -g deveco";
+"Or point the app at an existing binary below" = "或在下方指定已有的二进制文件";
+"Then pick a project folder and start chatting" = "然后选择项目文件夹即可开始对话";
+"Choose Binary…" = "选择二进制文件…";
+"Open Settings…" = "打开设置…";
+
+/* 模型与供应商 */
+"Add Provider" = "添加供应商";
+"Configured providers" = "已配置的供应商";
+"Available providers" = "可用供应商";
+"No custom providers configured." = "尚未配置自定义供应商。";
+"Built-in and plugin providers reported by deveco." = "deveco 上报的内置与插件供应商。";
+"Configure" = "配置";
+"Default model" = "默认模型";
+"Used when a session has no explicit model." = "会话未指定模型时使用。";
+"Base URL" = "接口地址";
+"API key" = "API 密钥";
+"Display name" = "显示名称";
+"Display name (optional)" = "显示名称（可选）";
+"Model ID" = "模型 ID";
+"New model ID" = "新模型 ID";
+"Models" = "模型";
+"%lld models" = "%lld 个模型";
+
+/* @文件引用 / 搜索 */
+"Type to search files…" = "输入以搜索文件…";
+"No matching files" = "没有匹配的文件";
+"Search in conversation" = "在会话中搜索";
+"No messages match “%@”" = "没有匹配“%@”的消息";
+
+/* 附件 / 编辑重发 */
+"Edit & resend…" = "编辑并重发…";
+"Attachment must be inside the project directory: %@" = "附件必须在项目目录内：%@";
+
+/* 权限规则 / 用量 / 关于 */
+"Permissions" = "权限";
+"Usage" = "用量";
+"About" = "关于";
+"Permission needed" = "需要授权";
+"No saved permission rules." = "没有已保存的权限规则。";
+"Revoke" = "撤销";
+"By model" = "按模型";
+"Project usage" = "项目用量";
+"Messages" = "消息";
+"Cost" = "成本";
+"No output for over a minute — press Esc to stop." = "已超过一分钟没有输出 — 按 Esc 可停止。";
+
+/* 审批模式 */
+"Ask every time" = "每次询问";
+"Allow edits" = "放行编辑";
+"Allow everything" = "全部放行";
+
+/* 工具卡片 / 内联错误 */
+"Something went wrong" = "出了点问题";
+"Input" = "输入";
+"Output" = "输出";
+"Copy" = "复制";
+
+/* 产品协议确认 */
+"Product agreement confirmation required" = "需要确认产品协议";
+"Before any model can be called, deveco requires you to accept its product terms and privacy statement." = "在调用任何模型之前，deveco 要求先接受其产品条款与隐私声明。";
+"Read the terms" = "阅读服务条款";
+"Read the privacy statement" = "阅读隐私声明";
+"I have read and accept" = "我已阅读并同意";
+"Equivalent to `deveco auth consent --accept`." = "等同于执行 `deveco auth consent --accept`。";
+"Consent failed — run `deveco auth consent --accept` in a terminal." = "确认失败 — 请在终端手动执行 `deveco auth consent --accept`。";
+
+/* 成熟度打磨（队列 / 通知 / 更新） */
+"Queued" = "已排队";
+"Remove queued prompt" = "移除排队的消息";
+"A new deveco version is available." = "deveco 有新版本可用。";
+"Notify when a generation completes" = "生成完成时通知我";
+"Play a sound when a generation completes" = "生成完成时播放提示音";
+"Generation finished" = "生成完成";
+"“%@” finished generating." = "“%@” 已生成完毕。";
+"Session" = "会话";
+"Needs permission" = "需要授权";
+"Needs an answer" = "需要回答";
+"Session failed" = "会话失败";
+"Retrying" = "重试中";
+"Generating" = "生成中";
+"New activity" = "有新活动";
+"%@ elapsed" = "耗时 %@";
+"Smaller text" = "减小字号";
+"Larger text" = "增大字号";
+"Chat text size" = "聊天字号";
+"Preview" = "预览";
+"Readable replies, clear code blocks, and comfortable tool output." = "清晰易读的回复、代码块与工具输出。";
+"Default effort" = "默认强度";
+"Send message" = "发送消息";
+"Stop generating" = "停止生成";
+"Write a message…" = "输入消息…";
+
+/* 工具状态 */
+"Running" = "运行中";
+"Completed" = "已完成";
+"Error" = "错误";
+"Tool" = "工具";
+"Read" = "读取";
+"Write" = "写入";
+"Edit" = "编辑";
+"Patch" = "修改";
+"Bash" = "运行命令";
+"Grep" = "搜索";
+"Glob" = "查找文件";
+"List" = "浏览目录";
+"Web Fetch" = "读取网页";
+"Web Search" = "网页搜索";
+"Code Search" = "搜索代码";
+"Read Image" = "查看图片";
+"Task" = "任务";
+"Question" = "提问";
+"Todo Read" = "查看待办";
+"Todo Write" = "更新待办";
+"Memory Read" = "读取记忆";
+"Memory Search" = "搜索记忆";
+"Memory Write" = "写入记忆";
+"Skill" = "技能";
+
+/* 新会话引导 */
+"Start a conversation" = "开始新对话";
+"Ask DevEco to explore, change, or test %@." = "让 DevEco 探索、修改或测试“%@”。";
+"Current project" = "当前项目";
+"Explore this project" = "了解这个项目";
+"Explain the architecture, entry points, and how to run it." = "说明项目架构、主要入口以及运行和测试方式。";
+"Explore this project and explain its architecture, main entry points, and how to run and test it." = "请探索这个项目，说明它的架构、主要入口，以及如何运行和测试。";
+"Find and fix a bug" = "查找并修复问题";
+"Review the highest-impact issue, fix the root cause, and verify it." = "找出影响最大的问题，修复根因并验证结果。";
+"Review this project for the highest-impact bug. Explain the root cause, fix it, and run the relevant tests." = "请审查这个项目，找出影响最大的问题，说明根因、完成修复并运行相关测试。";
+"Run and fix tests" = "运行并修复测试";
+"Run the test suite, diagnose failures, and fix them." = "运行测试套件，诊断失败原因并完成修复。";
+"Run this project's test suite, diagnose any failures, fix them, and rerun the tests." = "请运行这个项目的测试套件，诊断并修复所有失败项，然后重新运行测试。";
+"Loading conversation…" = "正在加载会话…";
+
+/* 会话滚动与消息操作 */
+"Back to latest" = "回到最新";
+"Copy message" = "复制消息";
+
+/* 活动条与 Diff 面板 */
+"Working…" = "正在工作…";
+"Expand All" = "全部展开";
+"Collapse All" = "全部收起";
+"Filter files" = "筛选文件";
+"No files match the filter." = "没有匹配筛选条件的文件。";
+
+/* 排队消息与附件 */
+"Edit queued prompt" = "编辑排队消息";
+"Send now — stops the current generation" = "立即发送（停止当前生成）";
+"Couldn't read the pasted image — it will be sent as raw bytes." = "无法读取粘贴的图片，将按原始字节发送。";
+"Couldn't compress the large image; sending the original." = "大图压缩失败，将按原图发送。";
+
+/* P3 可靠性：失败分类与连接状态条 */
+"Authentication problem" = "鉴权问题";
+"Quota or rate limit" = "额度或限流";
+"Model unavailable" = "模型不可用";
+"Network problem" = "网络问题";
+"Server error" = "服务端错误";
+"Something went wrong" = "出了点问题";
+"Check the provider's API key in Settings → Models." = "请在 设置 → Models 中检查供应商的 API Key。";
+"Wait a moment and retry, or check the provider's balance and plan." = "请稍后重试，或检查供应商的余额与套餐。";
+"Pick another model from the model menu — this one is not available." = "请从模型菜单换一个模型，当前模型不可用。";
+"Make sure the deveco server is running and your network is reachable." = "请确认 deveco 服务正在运行且网络可达。";
+"A provider or server hiccup — retrying usually fixes it." = "供应商或服务端抖动，重试通常可以恢复。";
+"If it keeps failing, copy the diagnostics from Settings → Server." = "若持续失败，请在 设置 → Server 中复制诊断信息。";
+"Connection lost — reconnecting…" = "连接中断，正在重连…";
+"Attempt %d" = "第 %d 次尝试";
+"Starting the deveco server…" = "正在启动 deveco 服务…";
+"Server failed" = "服务启动失败";
+"Server stopped" = "服务已停止";
+"Retry" = "重试";
+"Show Log" = "查看日志";
+"deveco CLI not found" = "未找到 deveco CLI";
+"No free local port" = "没有可用的本地端口";
+"Failed to launch deveco serve" = "启动 deveco serve 失败";
+"Server did not become healthy" = "服务未能进入健康状态";
+"Server exited unexpectedly" = "服务意外退出";
+"Copy Diagnostics" = "复制诊断信息";
+"Copied" = "已复制";
+"Chats" = "会话";
+"Took %@" = "用时 %@";
+"Review file changes" = "查看文件变更";
+"Compact conversation" = "压缩会话";
+"Effort: %@" = "强度：%@";
+"Default" = "默认";
+"None" = "无";
+"Low" = "低";
+"Medium" = "中";
+"High" = "高";
+"Extra high" = "极高";
+"Max" = "最高";
+"Reasoning effort for this model" = "该模型的推理强度";
+"<0.01s" = "<0.01 秒";
+"%.0fm %02.0fs" = "%.0f 分 %02.0f 秒";
+"%.1fs" = "%.1f 秒";
+"%.2fs" = "%.2f 秒";

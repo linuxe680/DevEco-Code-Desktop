@@ -1,0 +1,2 @@
+/* English UI strings. Keys are the English text itself, so no entries are
+   needed here; the file exists so the .lproj folder ships in the bundle. */
