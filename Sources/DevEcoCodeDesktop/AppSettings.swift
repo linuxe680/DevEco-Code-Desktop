@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 
 enum QuitBehavior: String, CaseIterable, Identifiable {
     case stopServer, keepRunning
@@ -9,6 +10,20 @@ enum QuitBehavior: String, CaseIterable, Identifiable {
         switch self {
         case .stopServer: return "Stop server"
         case .keepRunning: return "Keep running"
+        }
+    }
+}
+
+enum AppAppearance: String, CaseIterable, Identifiable {
+    case system, light, dark
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .system: return NSLocalizedString("Follow system", comment: "")
+        case .light: return NSLocalizedString("Light", comment: "")
+        case .dark: return NSLocalizedString("Dark", comment: "")
         }
     }
 }
@@ -35,6 +50,7 @@ enum AppSettings {
         static let pinnedSessionIDs = "pinnedSessionIDs"
         static let recentModels = "recentModelChoices"
         static let appLanguage = "appLanguage"
+        static let appAppearance = "appAppearance"
         static let savedPermissionRules = "savedPermissionRules"
     }
 
@@ -52,6 +68,7 @@ enum AppSettings {
             Keys.devecoPath: "",
             Keys.notifyOnComplete: false,
             Keys.playSoundOnComplete: false,
+            Keys.appAppearance: AppAppearance.dark.rawValue,
         ])
         // One-shot migrations, gated by a single version marker so new rules
         // append instead of stacking one-off flag keys. v1: older defaults
@@ -137,6 +154,21 @@ enum AppSettings {
             UserDefaults.standard.removeObject(forKey: "AppleLanguages")
         } else {
             UserDefaults.standard.set([language], forKey: "AppleLanguages")
+        }
+    }
+
+    /// Codex-like dark canvas by default; users can still follow the system.
+    static var appAppearance: AppAppearance {
+        get { AppAppearance(rawValue: UserDefaults.standard.string(forKey: Keys.appAppearance) ?? "") ?? .dark }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: Keys.appAppearance) }
+    }
+
+    static func applyAppearanceOverride() {
+        guard NSApp != nil else { return }
+        switch appAppearance {
+        case .system: NSApp.appearance = nil
+        case .light: NSApp.appearance = NSAppearance(named: .aqua)
+        case .dark: NSApp.appearance = NSAppearance(named: .darkAqua)
         }
     }
 

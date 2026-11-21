@@ -47,22 +47,18 @@ struct ContentView: View {
                                 section = item
                             }
                         } label: {
-                            HStack(spacing: 5) {
-                                Image(systemName: item.icon)
-                                    .font(.system(size: 12, weight: .medium))
-                                Text(item.navigationLabel)
-                                    .font(.system(size: 14, weight: .medium))
-                            }
+                            Image(systemName: item.icon)
+                                .font(.system(size: 13, weight: .medium))
                             .foregroundStyle(section == item ? .primary : .secondary)
-                            .padding(.horizontal, 9)
-                            .padding(.vertical, 5)
+                            .frame(width: 28, height: 24)
                             .background(
                                 section == item ? Theme.chipFill : Color.clear,
-                                in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                in: RoundedRectangle(cornerRadius: 7, style: .continuous)
                             )
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .help(item.navigationLabel)
                     }
                 }
                 .padding(2)

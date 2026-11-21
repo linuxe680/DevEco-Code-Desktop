@@ -31,12 +31,25 @@ private struct GeneralSettingsPane: View {
     private var quitBehaviorRaw = QuitBehavior.stopServer.rawValue
     @AppStorage(AppSettings.Keys.appLanguage)
     private var appLanguageRaw = "zh-Hans"
+    @AppStorage(AppSettings.Keys.appAppearance)
+    private var appAppearanceRaw = AppAppearance.dark.rawValue
 
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var launchError: String?
 
     var body: some View {
         Form {
+            Picker("外观", selection: $appAppearanceRaw) {
+                ForEach(AppAppearance.allCases) { appearance in
+                    Text(appearance.label).tag(appearance.rawValue)
+                }
+            }
+            .onChange(of: appAppearanceRaw) { _ in
+                AppSettings.applyAppearanceOverride()
+            }
+
+            Divider()
+
             Picker("Language", selection: $appLanguageRaw) {
                 Text("跟随系统 / System").tag("system")
                 Text("简体中文").tag("zh-Hans")

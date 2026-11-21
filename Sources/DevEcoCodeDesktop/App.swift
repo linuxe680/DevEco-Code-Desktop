@@ -8,6 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var store: SessionStore?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        AppSettings.applyAppearanceOverride()
         // Re-assert the bundle icon at runtime. The Dock otherwise keeps the
         // previous icon for this bundle id until a full logout/restart.
         if let url = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
@@ -130,6 +131,7 @@ struct DevEcoCodeDesktopApp: App {
     init() {
         AppSettings.registerDefaults()
         AppSettings.applyLanguageOverride()
+        AppSettings.applyAppearanceOverride()
         let store = SessionStore()
         let providers = ProviderStore()
         _store = StateObject(wrappedValue: store)

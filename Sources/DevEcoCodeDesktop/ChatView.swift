@@ -14,7 +14,7 @@ struct ChatView: View {
     @EnvironmentObject var server: ServerManager
 
     /// Keep the conversation readable on wide displays; Codex-style centered column.
-    private let contentMaxWidth: CGFloat = 760
+    private let contentMaxWidth: CGFloat = 940
 
     @AppStorage(AppSettings.Keys.autoScroll)
     private var autoScroll = true
@@ -886,9 +886,9 @@ struct ChatView: View {
                     }
                     .disabled(store.isCompacting || store.isSending)
                 }
-                .padding(.horizontal, 18)
+                .padding(.horizontal, 22)
                 .padding(.vertical, 4)
-                .frame(height: 34)
+                .frame(height: 38)
                 .frame(maxWidth: contentMaxWidth)
                 .frame(maxWidth: .infinity)
                 .overlay(alignment: .bottom) {
@@ -907,6 +907,19 @@ struct ChatView: View {
                     }
                 )
                 Divider()
+            }
+
+            if !store.pendingPermissions.isEmpty || !store.pendingQuestions.isEmpty {
+                VStack(spacing: 8) {
+                    if let request = store.pendingPermissions.first(where: { $0.sessionID == store.selectedSessionID }) {
+                        PermissionBanner(request: request, pendingCount: store.pendingPermissions.count)
+                    }
+                    if let request = store.pendingQuestions.first(where: { $0.sessionID == store.selectedSessionID }) {
+                        QuestionBanner(request: request)
+                    }
+                }
+                .padding(.horizontal, 22)
+                .padding(.top, 8)
             }
 
             if !store.todos.isEmpty {
@@ -1035,7 +1048,7 @@ struct ChatView: View {
                         }
                     }
                     .padding(.horizontal, 24)
-                    .padding(.top, 22)
+                    .padding(.top, 18)
                     .padding(.bottom, 26)
                     .frame(maxWidth: contentMaxWidth, alignment: .leading)
                     .frame(maxWidth: .infinity)
@@ -1154,12 +1167,6 @@ struct ChatView: View {
                         applyCompletion(command)
                     }
                 }
-                if let request = store.pendingPermissions.first(where: { $0.sessionID == store.selectedSessionID }) {
-                    PermissionBanner(request: request, pendingCount: store.pendingPermissions.count)
-                }
-                if let request = store.pendingQuestions.first(where: { $0.sessionID == store.selectedSessionID }) {
-                    QuestionBanner(request: request)
-                }
                 VStack(spacing: 0) {
                     if !store.attachments.isEmpty {
                         ScrollView(.horizontal, showsIndicators: false) {
@@ -1225,15 +1232,19 @@ struct ChatView: View {
                             ContextMeter(used: usage.used, limit: usage.limit)
                         }
                         Spacer(minLength: 8)
-                        composerModelMenu
-                        if !effortVariants.isEmpty {
-                            composerEffortMenu
-                        }
-                        composerSendButton
                     }
                     .padding(.horizontal, 12)
                     .padding(.top, 2)
-                    .padding(.bottom, 9)
+                    .padding(.bottom, 4)
+                    .overlay(alignment: .trailing) {
+                        HStack(spacing: 8) {
+                            composerModelMenu
+                            if !effortVariants.isEmpty {
+                                composerEffortMenu
+                            }
+                            composerSendButton
+                        }
+                    }
                 }
                 .background(Theme.composerFill)
                 .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
@@ -2038,9 +2049,13 @@ private struct MessageBubble: View {
             }
             .font(.system(size: ChatTypography.body(chatFontSize)))
             .lineSpacing(ChatTypography.lineSpacing(chatFontSize))
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(Theme.canvas)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(Theme.userBubble, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Theme.userBubbleStroke)
+            )
             .overlay(alignment: .topTrailing) {
                 if hovered && !isStreamingThis {
                     hoverActionBar

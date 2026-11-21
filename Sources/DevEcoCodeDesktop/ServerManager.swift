@@ -37,7 +37,6 @@ final class ServerManager: ObservableObject {
     private var monitorTask: Task<Void, Never>?
     private var outputPipe: Pipe?
     private var logHandle: FileHandle?
-    private var readTask: Task<Void, Never>?
     private var healthTask: Task<Void, Never>?
     private var startupActivity: NSObjectProtocol?
 
@@ -190,16 +189,20 @@ final class ServerManager: ObservableObject {
             return // 不再启动健康检查
         }
 
-        // 后台读取 pipe（关闭写端后 availableData 返回空，循环自然退出）。
-        readTask = Task { [weak self] in
-            let reader = output.fileHandleForReading
-            while !Task.isCancelled {
-                let data = reader.availableData
-                if data.isEmpty { break }
-                let text = String(data: data, encoding: .utf8)
-                    ?? String(decoding: data, as: UTF8.self)
-                await MainActor.run { self?.appendLog(text) }
+        // NEVER call `availableData` here: it blocks until the child writes,
+        // and this Task inherits @MainActor from ServerManager — that is the
+        // "enable server → app freezes" bug. A readabilityHandler is invoked
+        // by Foundation on a background queue only when bytes are available.
+        let reader = output.fileHandleForReading
+        reader.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                return
             }
+            let text = String(data: data, encoding: .utf8)
+                ?? String(decoding: data, as: UTF8.self)
+            Task { @MainActor in self?.appendLog(text) }
         }
 
         // 监控子进程退出
@@ -235,8 +238,6 @@ final class ServerManager: ObservableObject {
         // 终止整个进程组（deveco 启动器 + Node 服务），避免孤儿进程占端口。
         serverProcess.terminate()
         self.serverProcess = nil
-        readTask?.cancel()
-        readTask = nil
         cleanUpIO()
     }
 
@@ -327,8 +328,6 @@ final class ServerManager: ObservableObject {
         serverProcess = nil
         monitorTask?.cancel()
         monitorTask = nil
-        readTask?.cancel()
-        readTask = nil
         cleanUpIO()
         endStartupActivity()
         state = .failed
@@ -374,8 +373,7 @@ final class ServerManager: ObservableObject {
     }
 
     private func cleanUpIO() {
-        readTask?.cancel()
-        readTask = nil
+        outputPipe?.fileHandleForReading.readabilityHandler = nil
         outputPipe?.fileHandleForWriting.closeFile()
         outputPipe?.fileHandleForReading.closeFile()
         outputPipe = nil
