@@ -3,7 +3,11 @@ import Combine
 
 @MainActor
 final class ProviderStore: ObservableObject {
-    @Published var providers: [ProviderEntry] = []
+    @Published var providers: [ProviderEntry] = [] {
+        didSet {
+            if providers.map(\.id) != oldValue.map(\.id) { rebuildModelLookup() }
+        }
+    }
     @Published var catalog: [CatalogProvider] = []
     @Published var defaultModel = ""
     @Published var errorMessage: String?
