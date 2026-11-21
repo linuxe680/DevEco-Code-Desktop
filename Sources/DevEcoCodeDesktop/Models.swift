@@ -39,6 +39,11 @@ enum JSONValue: Codable, Equatable {
         }
     }
 
+    var isEmptyObject: Bool {
+        if case .object(let values) = self { return values.isEmpty }
+        return false
+    }
+
     var displayText: String {
         switch self {
         case .string(let value): return value

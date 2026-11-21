@@ -3027,8 +3027,13 @@ private struct ToolCardView: View {
             .buttonStyle(.plain)
 
             if isExpanded {
-                if let input = state?.input, let pretty = prettyJSON(input), !pretty.isEmpty {
-                    detailSection(label: NSLocalizedString("Input", comment: ""), content: pretty, lineLimit: 12, copyable: true)
+                if let input = state?.input, !input.isEmptyObject {
+                    detailSection(
+                        label: NSLocalizedString("Input", comment: ""),
+                        content: inputSummary(input),
+                        lineLimit: 6,
+                        copyable: true
+                    )
                 }
                 if let output = state?.output, !output.isEmpty {
                     detailSection(label: NSLocalizedString("Output", comment: ""), content: output, lineLimit: nil, copyable: true)
@@ -3086,6 +3091,48 @@ private struct ToolCardView: View {
               let pretty = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]),
               let string = String(data: pretty, encoding: .utf8) else { return nil }
         return string
+    }
+
+    /// Compact, human-readable tool input: strings shown raw, nested
+    /// structures inlined as "key: value" pairs (no pretty-printed JSON).
+    private func inputSummary(_ value: JSONValue) -> String {
+        if let questions = toolQuestions(value) {
+            return questions.map { question in
+                let options = question.options.map(\.label).joined(separator: " / ")
+                let detail = question.details ?? ""
+                return "\(question.header)：\(question.question)\n选项：\(options)\(detail.isEmpty ? "" : "\n\(detail)")"
+            }
+            .joined(separator: "\n\n")
+        }
+        guard case .object(let object) = value else { return value.displayText }
+        return object
+            .sorted { $0.key < $1.key }
+            .map { key, item in
+                if case .string(let text) = item { return "\(key): \(text)" }
+                if case .array(let items) = item, items.count <= 6 {
+                    return "\(key): \(items.map(\.displayText).joined(separator: ", "))"
+                }
+                return "\(key): \(item.displayText)"
+            }
+            .joined(separator: "\n")
+    }
+
+    private func toolQuestions(_ value: JSONValue) -> [UserQuestionInfo]? {
+        guard case .object(let object) = value,
+              case .array(let raw) = object["questions"] ?? .null else { return nil }
+        let decoder = JSONDecoder()
+        return raw.compactMap { item in
+            guard let data = try? JSONEncoder().encode(item) else { return nil }
+            return try? decoder.decode(UserQuestionInfo.self, from: data)
+        }
+    }
+
+    private func toolInputRows(_ value: JSONValue) -> [(key: String, value: String)] {
+        guard case .object(let object) = value else { return [] }
+        return object
+            .sorted { $0.key < $1.key }
+            .map { (key: $0.key, value: $0.value.displayText) }
+            .filter { !$0.value.isEmpty }
     }
 }
 
@@ -3309,49 +3356,47 @@ private struct QuestionBanner: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
-                Image(systemName: "questionmark.circle")
-                    .font(.title2)
-                    .foregroundStyle(.blue)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Needs an answer")
-                        .font(.title3.weight(.semibold))
-                    Text(request.questions.count > 1
-                         ? String(format: NSLocalizedString("%d agent questions", comment: ""), request.questions.count)
-                         : NSLocalizedString("Agent question", comment: ""))
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button("Skip") {
-                    Task { await store.rejectQuestion(request) }
-                }
-                .controlSize(.regular)
-            }
-
+        VStack(alignment: .leading, spacing: 14) {
             ForEach(Array(request.questions.enumerated()), id: \.offset) { index, question in
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(question.header)
-                        .font(.callout.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(question.header)
+                            .font(.headline)
+                        Spacer()
+                        if index == 0 {
+                            Button("Skip") {
+                                Task { await store.rejectQuestion(request) }
+                            }
+                            .buttonStyle(.link)
+                            .font(.subheadline)
+                        }
+                    }
                     Text(question.question)
-                        .font(.body.weight(.medium))
+                        .font(.title3.weight(.medium))
                     if let details = question.details, !details.isEmpty {
                         Text(details)
                             .font(.callout)
                             .foregroundStyle(.secondary)
                     }
-                    ForEach(question.options) { option in
-                        optionRow(index: index, option: option, question: question)
-                    }
-                    if question.custom == true {
-                        customField(index: index, question: question)
+                    VStack(spacing: 8) {
+                        ForEach(question.options) { option in
+                            optionRow(index: index, option: option, question: question)
+                        }
+                        if question.custom == true {
+                            customField(index: index, question: question)
+                        }
                     }
                 }
             }
 
-            HStack {
+            HStack(spacing: 10) {
+                Image(systemName: isComplete ? "checkmark.circle.fill" : "checkmark.circle")
+                    .foregroundStyle(isComplete ? .green : .secondary)
+                Text(isComplete
+                     ? NSLocalizedString("Ready to send", comment: "")
+                     : NSLocalizedString("Select an option to continue", comment: ""))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
                 Spacer()
                 Button("Send Answers") {
                     let answers = request.questions.indices.map { idx -> [String] in
@@ -3362,20 +3407,20 @@ private struct QuestionBanner: View {
                     }
                     Task { await store.answer(request, answers: answers) }
                 }
+                .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
                 .controlSize(.large)
                 .disabled(!isComplete)
             }
         }
-        .padding(18)
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(Theme.bannerInfo)
-        )
+        .padding(16)
+        .background(Theme.composerFill)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .strokeBorder(.blue.opacity(0.30), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Theme.softStroke, lineWidth: 1)
         )
+        .shadow(color: .black.opacity(0.08), radius: 10, y: 3)
     }
 
     private func isSelected(_ index: Int, _ label: String) -> Bool {
@@ -3398,19 +3443,32 @@ private struct QuestionBanner: View {
                 selections[index] = [option.label]
             }
         } label: {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
+            HStack(alignment: .top, spacing: 10) {
                 Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                    .font(.body.weight(.medium))
                     .foregroundStyle(selected ? Color.accentColor : Color.secondary)
+                    .padding(.top, 1)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(option.label)
-                        .font(.callout.weight(selected ? .semibold : .regular))
+                        .font(.body.weight(selected ? .semibold : .regular))
                     if let description = option.description, !description.isEmpty {
                         Text(description)
-                            .font(.caption)
+                            .font(.callout)
                             .foregroundStyle(.secondary)
                     }
                 }
+                Spacer(minLength: 0)
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(selected ? Color.accentColor.opacity(0.10) : Theme.subtleFill)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(selected ? Color.accentColor.opacity(0.45) : Theme.softStroke, lineWidth: 1)
+            )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

@@ -391,6 +391,7 @@ final class SessionStore: ObservableObject {
             if !preferred.isEmpty { selectedModel = preferred }
         }
         Task { await refresh() }
+        Task { await refreshPendingRequests() }
         Task { await loadBranch() }
         Task { await loadUsage() }
         Task { await loadCommands() }
@@ -450,6 +451,19 @@ final class SessionStore: ObservableObject {
             }
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Re-fetches permission/question requests that fired while the app was
+    /// closed (SSE is only live while connected, so restarts miss them).
+    func refreshPendingRequests() async {
+        guard let api else { return }
+        do {
+            let pending: [UserQuestionRequest] = try await api.get("question")
+            pendingQuestions = pending
+        } catch {
+            // Non-fatal: the stream will deliver new asks, and the transcript
+            // still shows the tool call awaiting an answer.
         }
     }
 
