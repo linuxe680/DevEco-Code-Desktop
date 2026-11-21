@@ -55,7 +55,7 @@ struct SessionListView: View {
                 }
                 .buttonStyle(.plain)
                 .keyboardShortcut("n", modifiers: .command)
-                .help("New session (⌘N)")
+                .help(NSLocalizedString("New session (⌘N)", comment: ""))
             }
             .padding(.horizontal, 14)
             .padding(.top, 11)
@@ -91,10 +91,10 @@ struct SessionListView: View {
                 VStack(spacing: 6) {
                     Image(systemName: "tray")
                         .foregroundStyle(.secondary)
-                    Text("No sessions yet")
+                    Text(NSLocalizedString("No sessions yet", comment: ""))
                         .font(.system(size: 14))
                         .foregroundStyle(.secondary)
-                    Text("Create one with ⌘N")
+                    Text(NSLocalizedString("Create one with ⌘N", comment: ""))
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                 }
@@ -146,10 +146,10 @@ struct SessionListView: View {
             titleVisibility: .visible,
             presenting: deletionCandidate
         ) { session in
-            Button("Delete", role: .destructive) {
+            Button(NSLocalizedString("Delete", comment: ""), role: .destructive) {
                 Task { await store.deleteSession(session) }
             }
-            Button("Cancel", role: .cancel) {}
+            Button(NSLocalizedString("Cancel", comment: ""), role: .cancel) {}
         }
     }
 
@@ -251,7 +251,7 @@ struct SessionListView: View {
                             .foregroundStyle(.primary.opacity(selected ? 1 : 0.88))
                             .lineLimit(1)
                         if session.isSubagent {
-                            Text("subagent")
+                            Text(NSLocalizedString("subagent", comment: ""))
                                 .font(.system(size: 10.5, weight: .medium))
                                 .foregroundStyle(.tertiary)
                                 .padding(.horizontal, 4)
@@ -303,8 +303,8 @@ struct SessionListView: View {
         }
         .id(session.id)
         .contextMenu {
-            Button("Rename…") { renamingSession = session }
-            Button("Fork") {
+            Button(NSLocalizedString("Rename…", comment: "")) { renamingSession = session }
+            Button(NSLocalizedString("Fork", comment: "")) {
                 Task { await store.fork(session) }
             }
             Button(store.pinnedSessionIDs.contains(session.id)
@@ -318,11 +318,11 @@ struct SessionListView: View {
                 Task { await store.setArchived(session, !session.isArchived) }
             }
             Divider()
-            Button("Export as Markdown…") {
+            Button(NSLocalizedString("Export as Markdown…", comment: "")) {
                 exportPanel(for: session)
             }
             Divider()
-            Button("Delete…", role: .destructive) { deletionCandidate = session }
+            Button(NSLocalizedString("Delete…", comment: ""), role: .destructive) { deletionCandidate = session }
         }
     }
 
@@ -336,7 +336,10 @@ struct SessionListView: View {
             do {
                 try await store.export(session, to: url)
             } catch {
-                store.errorMessage = "Export failed: \(error.localizedDescription)"
+                store.errorMessage = String(
+                    format: NSLocalizedString("Export failed: %@", comment: ""),
+                    error.localizedDescription
+                )
             }
         }
     }
@@ -459,14 +462,14 @@ private struct RenameSessionView: View {
         self.initialTitle = initialTitle
         self.onCancel = onCancel
         self.onSave = onSave
-        let isUntitled = initialTitle == "Untitled session"
+        let isUntitled = initialTitle == NSLocalizedString("Untitled session", comment: "")
             || initialTitle == NSLocalizedString("New session", comment: "")
         _title = State(initialValue: isUntitled ? "" : initialTitle)
     }
 
     var body: some View {
         VStack(spacing: 14) {
-            Text("Rename Session")
+            Text(NSLocalizedString("Rename Session", comment: ""))
                 .font(.headline)
             TextField("Session title", text: $title)
                 .textFieldStyle(.roundedBorder)
@@ -474,9 +477,9 @@ private struct RenameSessionView: View {
                 .onSubmit { commit() }
             HStack {
                 Spacer()
-                Button("Cancel", action: onCancel)
+                Button(NSLocalizedString("Cancel", comment: ""), action: onCancel)
                     .keyboardShortcut(.cancelAction)
-                Button("Save", action: commit)
+                Button(NSLocalizedString("Save", comment: ""), action: commit)
                     .keyboardShortcut(.defaultAction)
                     .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }

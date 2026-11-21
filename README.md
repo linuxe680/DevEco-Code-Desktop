@@ -56,6 +56,29 @@ The build script signs with a persistent self-signed certificate (created once i
 - Starts `deveco serve` on a free local port (from `127.0.0.1:4096`, configurable); resolves the binary from common npm/homebrew paths or the login-shell PATH. Quit behavior configurable (stop vs. keep the server).
 - Backup/restore the deveco data directory (zip); live server log viewer; update-available banner; project usage totals and git branch in the UI.
 
+## Harness / account boundary
+
+This desktop app is a native GUI for the locally installed `deveco` CLI. It starts
+`deveco serve`, talks to its documented HTTP API (`GET /doc`), and renders the
+same SSE events and REST resources as the bundled web UI. It does **not**
+embed, reimplement, or depend on a proprietary harness from DevEco Studio.
+
+Signing in to a Huawei/DevEco account is **not required to open the app or chat
+with models configured in Models & Providers**. A Huawei account is only needed
+for the commands/products that your local `deveco` CLI itself gates behind
+authentication (for example device/cloud services). Model calls go to the
+provider endpoint you configure (OpenAI-compatible providers, or the servers
+already configured in your `deveco` CLI). Tool execution, permissions, and
+session storage are performed by the local `deveco serve` process.
+
+In short: the "harness" here is the standard `deveco serve` process and its
+public HTTP protocol, not a hidden SDK in this app. If a command needs a
+Huawei account, the local CLI will say so; ordinary chat/model usage does not.
+
+中文补充：本 App 是本地 `deveco` CLI 的原生 GUI，通过官方 `deveco serve` 的
+HTTP/SSE 接口工作，没有内置或绕过华为的私有 harness。是否登录华为账号取决于
+具体工具/云服务；普通模型对话只需要配置好模型/供应商，不要求华为账号。
+
 ## Release & distribution
 
 ```bash
@@ -142,6 +165,12 @@ open "DevEco Code Desktop.app"
 
 - 在空闲本地端口启动 `deveco serve`（起始 `127.0.0.1:4096`，可配置）；自动解析 deveco 二进制（常见 npm/homebrew 路径、登录 shell PATH），也可在设置中指定。退出行为可配置（停止/保留服务进程）。
 - 备份与恢复 deveco 数据目录（zip）；实时服务器日志查看器；新版本横幅；侧栏显示项目用量统计与 git 分支。
+
+**Harness 与账号边界**
+
+- 本 App 不内置、不实现、也不依赖 DevEco Studio 的私有 harness；它是本地 `deveco` CLI 的原生 GUI，通过官方 `deveco serve` 的 HTTP/SSE 接口工作。
+- 普通模型对话不需要登录华为/DevEco 账号；模型调用发往你在「模型与供应商」中配置的 OpenAI 兼容端点，或 `deveco` CLI 已配置的供应商。
+- 是否要求华为账号取决于具体命令/云服务，由本地 `deveco` CLI 自行判定；工具执行、权限审批与会话存储均由本地 `deveco serve` 完成。
 
 ## 发布与分发
 

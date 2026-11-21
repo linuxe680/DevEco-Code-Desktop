@@ -8,17 +8,17 @@ struct SettingsView: View {
     var body: some View {
         TabView {
             GeneralSettingsPane()
-                .tabItem { Label("General", systemImage: "gearshape") }
+                .tabItem { Label(NSLocalizedString("General", comment: ""), systemImage: "gearshape") }
             ServerSettingsPane()
-                .tabItem { Label("Server", systemImage: "server.rack") }
+                .tabItem { Label(NSLocalizedString("Server", comment: ""), systemImage: "server.rack") }
             ChatSettingsPane()
-                .tabItem { Label("Chat", systemImage: "bubble.left.and.bubble.right") }
+                .tabItem { Label(NSLocalizedString("Chat", comment: ""), systemImage: "bubble.left.and.bubble.right") }
             PermissionsSettingsPane()
-                .tabItem { Label("Permissions", systemImage: "lock.shield") }
+                .tabItem { Label(NSLocalizedString("Permissions", comment: ""), systemImage: "lock.shield") }
             UsageSettingsPane()
-                .tabItem { Label("Usage", systemImage: "chart.bar") }
+                .tabItem { Label(NSLocalizedString("Usage", comment: ""), systemImage: "chart.bar") }
             AboutSettingsPane()
-                .tabItem { Label("About", systemImage: "info.circle") }
+                .tabItem { Label(NSLocalizedString("About", comment: ""), systemImage: "info.circle") }
         }
         .frame(width: 520)
     }
@@ -50,31 +50,31 @@ private struct GeneralSettingsPane: View {
 
             Divider()
 
-            Picker("Language", selection: $appLanguageRaw) {
-                Text("跟随系统 / System").tag("system")
+            Picker(NSLocalizedString("Language", comment: ""), selection: $appLanguageRaw) {
+                Text(NSLocalizedString("Follow system", comment: "")).tag("system")
                 Text("简体中文").tag("zh-Hans")
                 Text("English").tag("en")
             }
-            Text("Takes effect after relaunch.")
+            Text(NSLocalizedString("Takes effect after relaunch.", comment: ""))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .padding(.leading, 4)
 
             Divider()
 
-            Picker("When app quits:", selection: $quitBehaviorRaw) {
-                Text("Stop server").tag(QuitBehavior.stopServer.rawValue)
-                Text("Keep server running").tag(QuitBehavior.keepRunning.rawValue)
+            Picker(NSLocalizedString("When app quits:", comment: ""), selection: $quitBehaviorRaw) {
+                Text(NSLocalizedString("Stop server", comment: "")).tag(QuitBehavior.stopServer.rawValue)
+                Text(NSLocalizedString("Keep server running", comment: "")).tag(QuitBehavior.keepRunning.rawValue)
             }
             .pickerStyle(.radioGroup)
-            Text("Keeping the server running lets the next launch skip the boot wait, but the deveco process stays alive in the background.")
+            Text(NSLocalizedString("Keeping the server running lets the next launch skip the boot wait, but the deveco process stays alive in the background.", comment: ""))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .padding(.leading, 4)
 
             Divider()
 
-            Toggle("Launch at login", isOn: $launchAtLogin)
+            Toggle(NSLocalizedString("Launch at login", comment: ""), isOn: $launchAtLogin)
                 .onChange(of: launchAtLogin) { enabled in
                     do {
                         if enabled {
@@ -121,13 +121,13 @@ private struct ServerSettingsPane: View {
     var body: some View {
         Form {
             VStack(alignment: .leading, spacing: 6) {
-                Text("deveco CLI path")
+                Text(NSLocalizedString("deveco CLI path", comment: ""))
                 HStack {
                     TextField("/path/to/deveco", text: $devecoPath)
                         .textFieldStyle(.roundedBorder)
                         .onSubmit { refreshResolved() }
-                    Button("Browse…") { browse() }
-                    Button("Auto-detect") {
+                    Button(NSLocalizedString("Browse…", comment: "")) { browse() }
+                    Button(NSLocalizedString("Auto-detect", comment: "")) {
                         devecoPath = ""
                         refreshResolved()
                     }
@@ -138,19 +138,19 @@ private struct ServerSettingsPane: View {
                     .lineLimit(2)
                     .truncationMode(.middle)
                     .textSelection(.enabled)
-                Text("Leave empty to auto-detect (common install paths, then your login shell's PATH).")
+                Text(NSLocalizedString("Leave empty to auto-detect (common install paths, then your login shell's PATH).", comment: ""))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             .padding(.bottom, 8)
 
             VStack(alignment: .leading, spacing: 6) {
-                Text("Node.js path (optional)")
+                Text(NSLocalizedString("Node.js path (optional)", comment: ""))
                 HStack {
                     TextField("/path/to/node", text: $nodePath)
                         .textFieldStyle(.roundedBorder)
                         .onSubmit { refreshResolved() }
-                    Button("Auto-detect") {
+                    Button(NSLocalizedString("Auto-detect", comment: "")) {
                         UserDefaults.standard.removeObject(forKey: "nodeExecutablePath")
                         refreshResolved()
                     }
@@ -161,7 +161,7 @@ private struct ServerSettingsPane: View {
                     .lineLimit(2)
                     .truncationMode(.middle)
                     .textSelection(.enabled)
-                Text("deveco runs on Node.js. Leave empty to auto-detect; the detected folder is added to the server's PATH.")
+                Text(NSLocalizedString("deveco runs on Node.js. Leave empty to auto-detect; the detected folder is added to the server's PATH.", comment: ""))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -174,25 +174,25 @@ private struct ServerSettingsPane: View {
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 90)
             } label: {
-                Text("Starting port")
+                Text(NSLocalizedString("Starting port", comment: ""))
             }
-            Text("The first port tried (default 4096). If it is busy the app picks the next free one.")
+            Text(NSLocalizedString("The first port tried (default 4096). If it is busy the app picks the next free one.", comment: ""))
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            Toggle("Start server automatically on launch", isOn: $autoStartServer)
+            Toggle(NSLocalizedString("Start server automatically on launch", comment: ""), isOn: $autoStartServer)
 
             Divider()
 
             HStack {
-                Button("Reveal Log Folder") { reveal(ServerManager.logFileURL) }
-                Button("Reveal Data Folder") { reveal(ServerManager.dataDirectory) }
-                Button("View Log…") { showLogViewer = true }
+                Button(NSLocalizedString("Reveal Log Folder", comment: "")) { reveal(ServerManager.logFileURL) }
+                Button(NSLocalizedString("Reveal Data Folder", comment: "")) { reveal(ServerManager.dataDirectory) }
+                Button(NSLocalizedString("View Log…", comment: "")) { showLogViewer = true }
                 Spacer()
             }
 
             HStack {
-                Button("Copy Diagnostics") {
+                Button(NSLocalizedString("Copy Diagnostics", comment: "")) {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(server.diagnosticsReport(), forType: .string)
                     diagnosticsCopied = true
@@ -201,7 +201,7 @@ private struct ServerSettingsPane: View {
                     }
                 }
                 if diagnosticsCopied {
-                    Label("Copied", systemImage: "checkmark")
+                    Label(NSLocalizedString("Copied", comment: ""), systemImage: "checkmark")
                         .font(.caption)
                         .foregroundStyle(.green)
                 }
@@ -211,14 +211,14 @@ private struct ServerSettingsPane: View {
             Divider()
 
             VStack(alignment: .leading, spacing: 8) {
-                Text("Backup")
+                Text(NSLocalizedString("Backup", comment: ""))
                     .font(.headline)
-                Text("Archive the deveco data directory (sessions, logs) as a zip. Restoring replaces the current data and restarts the server.")
+                Text(NSLocalizedString("Archive the deveco data directory (sessions, logs) as a zip. Restoring replaces the current data and restarts the server.", comment: ""))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 HStack {
-                    Button("Backup Now…") { backupPanel() }
-                    Button("Restore from Backup…") { restorePanel() }
+                    Button(NSLocalizedString("Backup Now…", comment: "")) { backupPanel() }
+                    Button(NSLocalizedString("Restore from Backup…", comment: "")) { restorePanel() }
                     Spacer()
                 }
                 if let status = backupStatus {
@@ -262,7 +262,7 @@ private struct ServerSettingsPane: View {
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         panel.directoryURL = URL(fileURLWithPath: "/usr/local/bin")
-        panel.prompt = "Use This Binary"
+        panel.prompt = NSLocalizedString("Use This Binary", comment: "")
         guard panel.runModal() == .OK, let url = panel.url else { return }
         devecoPath = url.path
         refreshResolved()
@@ -279,18 +279,24 @@ private struct ServerSettingsPane: View {
         panel.allowedContentTypes = [.zip]
         panel.canCreateDirectories = true
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        backupStatus = "Backing up…"
+        backupStatus = NSLocalizedString("Backing up…", comment: "")
         Task.detached(priority: .userInitiated) {
             do {
                 try ServerManager.backupData(to: url)
                 await MainActor.run {
                     backupFailed = false
-                    backupStatus = "Backed up to \(url.lastPathComponent)."
+                    backupStatus = String(
+                        format: NSLocalizedString("Backed up to %@.", comment: ""),
+                        url.lastPathComponent
+                    )
                 }
             } catch {
                 await MainActor.run {
                     backupFailed = true
-                    backupStatus = "Backup failed: \(error.localizedDescription)"
+                    backupStatus = String(
+                        format: NSLocalizedString("Backup failed: %@", comment: ""),
+                        error.localizedDescription
+                    )
                 }
             }
         }
@@ -302,7 +308,7 @@ private struct ServerSettingsPane: View {
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         panel.allowedContentTypes = [.zip]
-        panel.message = "Choose a deveco backup archive"
+        panel.message = NSLocalizedString("Choose a deveco backup archive", comment: "")
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
         let alert = NSAlert()
@@ -313,7 +319,7 @@ private struct ServerSettingsPane: View {
         alert.alertStyle = .warning
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
-        backupStatus = "Restoring…"
+        backupStatus = NSLocalizedString("Restoring…", comment: "")
         let server = server
         Task.detached(priority: .userInitiated) {
             do {
@@ -321,13 +327,19 @@ private struct ServerSettingsPane: View {
                 try server.restoreData(from: url)
                 await MainActor.run {
                     backupFailed = false
-                    backupStatus = "Restored from \(url.lastPathComponent)."
+                    backupStatus = String(
+                        format: NSLocalizedString("Restored from %@.", comment: ""),
+                        url.lastPathComponent
+                    )
                     server.start()
                 }
             } catch {
                 await MainActor.run {
                     backupFailed = true
-                    backupStatus = "Restore failed: \(error.localizedDescription)"
+                    backupStatus = String(
+                        format: NSLocalizedString("Restore failed: %@", comment: ""),
+                        error.localizedDescription
+                    )
                 }
             }
         }
@@ -364,17 +376,17 @@ private struct ChatSettingsPane: View {
 
     var body: some View {
         Form {
-            Toggle("Enter sends message (Shift+Enter inserts newline)", isOn: $sendOnEnter)
-            Toggle("Follow streaming output while generating", isOn: $autoScroll)
-            Toggle("Expand Thinking sections by default", isOn: $expandThinking)
-            Toggle("Notify when a generation completes", isOn: $notifyOnComplete)
+            Toggle(NSLocalizedString("Enter sends message (Shift+Enter inserts newline)", comment: ""), isOn: $sendOnEnter)
+            Toggle(NSLocalizedString("Follow streaming output while generating", comment: ""), isOn: $autoScroll)
+            Toggle(NSLocalizedString("Expand Thinking sections by default", comment: ""), isOn: $expandThinking)
+            Toggle(NSLocalizedString("Notify when a generation completes", comment: ""), isOn: $notifyOnComplete)
                 .onChange(of: notifyOnComplete) { enabled in
                     if enabled {
                         UNUserNotificationCenter.current()
                             .requestAuthorization(options: [.alert, .sound]) { _, _ in }
                     }
                 }
-            Toggle("Play a sound when a generation completes", isOn: $playSoundOnComplete)
+            Toggle(NSLocalizedString("Play a sound when a generation completes", comment: ""), isOn: $playSoundOnComplete)
 
             LabeledContent {
                 Stepper(
@@ -385,16 +397,16 @@ private struct ChatSettingsPane: View {
                 )
                 .fixedSize()
             } label: {
-                Text("Chat text size")
+                Text(NSLocalizedString("Chat text size", comment: ""))
             }
             VStack(alignment: .leading, spacing: 5) {
-                Text("Preview")
+                Text(NSLocalizedString("Preview", comment: ""))
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
-                Text("Readable replies, clear code blocks, and comfortable tool output.")
+                Text(NSLocalizedString("Readable replies, clear code blocks, and comfortable tool output.", comment: ""))
                     .font(.system(size: ChatTypography.body(chatFontSize)))
                     .lineSpacing(ChatTypography.lineSpacing(chatFontSize))
-                Text("let answer = 42")
+                Text(NSLocalizedString("let answer = 42", comment: ""))
                     .font(.system(size: ChatTypography.code(chatFontSize), design: .monospaced))
                     .foregroundStyle(.secondary)
             }
@@ -406,7 +418,7 @@ private struct ChatSettingsPane: View {
 
             LabeledContent {
                 Picker("", selection: $defaultSessionModel) {
-                    Text("Server default").tag("")
+                    Text(NSLocalizedString("Server default", comment: "")).tag("")
                     ForEach(providers.allModelChoices) { choice in
                         Text("\(choice.provider) · \(choice.name)").tag(choice.id)
                     }
@@ -414,9 +426,9 @@ private struct ChatSettingsPane: View {
                 .labelsHidden()
                 .frame(maxWidth: 240)
             } label: {
-                Text("Default model for new sessions")
+                Text(NSLocalizedString("Default model for new sessions", comment: ""))
             }
-            Text("Preselected in the chat header. The server-configured default (Models & Providers) is used when left unset.")
+            Text(NSLocalizedString("Preselected in the chat header. The server-configured default (Models & Providers) is used when left unset.", comment: ""))
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -432,14 +444,14 @@ private struct PermissionsSettingsPane: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Saved permission rules")
+            Text(NSLocalizedString("Saved permission rules", comment: ""))
                 .font(.headline)
-            Text("These were granted with “Always allow” on permission cards. Tools matching them run without asking — revoke any you no longer trust.")
+            Text(NSLocalizedString("These were granted with “Always allow” on permission cards. Tools matching them run without asking — revoke any you no longer trust.", comment: ""))
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
             if providers.savedPermissions.isEmpty {
-                Text("No saved permission rules.")
+                Text(NSLocalizedString("No saved permission rules.", comment: ""))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .center)
@@ -458,7 +470,7 @@ private struct PermissionsSettingsPane: View {
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
-                            Button("Revoke") {
+                            Button(NSLocalizedString("Revoke", comment: "")) {
                                 Task { await providers.deleteSavedPermission(saved) }
                             }
                             .controlSize(.small)
@@ -483,7 +495,7 @@ private struct UsageSettingsPane: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Project usage")
+            Text(NSLocalizedString("Project usage", comment: ""))
                 .font(.headline)
 
             if let total = store.usage?.total {
@@ -499,7 +511,7 @@ private struct UsageSettingsPane: View {
             }
 
             if let models = store.usage?.models, !models.isEmpty {
-                Text("By model")
+                Text(NSLocalizedString("By model", comment: ""))
                     .font(.subheadline.weight(.semibold))
                 List {
                     ForEach(models) { model in
@@ -549,7 +561,7 @@ private struct AboutSettingsPane: View {
                     .resizable()
                     .frame(width: 64, height: 64)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("DevEco Code Desktop")
+                    Text(NSLocalizedString("DevEco Code Desktop", comment: ""))
                         .font(.title3.weight(.semibold))
                     Text("Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?") (\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"))")
                         .font(.caption)
@@ -559,9 +571,9 @@ private struct AboutSettingsPane: View {
 
             Divider()
 
-            Text("A native macOS client for the local deveco CLI — sessions, streaming, approvals, diffs, and model management.")
+            Text(NSLocalizedString("A native macOS client for the local deveco CLI — sessions, streaming, approvals, diffs, and model management.", comment: ""))
                 .font(.callout)
-            Text("Protocol and UX reference: opencode (MIT) and OpenAI Codex (Apache-2.0). Design learned from their public sources; all code here is original Swift.")
+            Text(NSLocalizedString("Protocol and UX reference: opencode (MIT) and OpenAI Codex (Apache-2.0). Design learned from their public sources; all code here is original Swift.", comment: ""))
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -587,18 +599,18 @@ private struct LogViewerSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Server log")
+                Text(NSLocalizedString("Server log", comment: ""))
                     .font(.headline)
                 Text("\(server.logTail.count) chars")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button("Copy All") {
+                Button(NSLocalizedString("Copy All", comment: "")) {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(server.logTail, forType: .string)
                 }
                 .controlSize(.small)
-                Button("Done") { dismiss() }
+                Button(NSLocalizedString("Done", comment: "")) { dismiss() }
                     .keyboardShortcut(.defaultAction)
             }
             .padding(14)
@@ -607,7 +619,7 @@ private struct LogViewerSheet: View {
 
             ScrollViewReader { proxy in
                 ScrollView {
-                    Text(server.logTail.isEmpty ? "(no output yet)" : server.logTail)
+                    Text(server.logTail.isEmpty ? NSLocalizedString("(no output yet)", comment: "") : server.logTail)
                         .font(.system(size: 11, design: .monospaced))
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)

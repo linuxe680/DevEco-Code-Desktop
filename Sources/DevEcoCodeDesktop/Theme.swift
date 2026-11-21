@@ -103,35 +103,35 @@ enum Theme {
         case "grep": key = "Grep"
         case "glob": key = "Glob"
         case "list": key = "List"
-        case "webfetch", "web-fetch": key = "Web Fetch"
-        case "websearch", "web-search": key = "Web Search"
-        case "codesearch", "code-search": key = "Code Search"
-        case "read-image", "image": key = "Read Image"
-        case "task": key = "Task"
-        case "question": key = "Question"
-        case "todoread", "todo-read": key = "Todo Read"
-        case "todowrite", "todo-write": key = "Todo Write"
-        case "memory-read": key = "Memory Read"
-        case "memory-search": key = "Memory Search"
-        case "memory-write": key = "Memory Write"
-        case "skill": key = "Skill"
+        case "webfetch", "web-fetch": key = NSLocalizedString("Web Fetch", comment: "")
+        case "websearch", "web-search": key = NSLocalizedString("Web Search", comment: "")
+        case "codesearch", "code-search": key = NSLocalizedString("Code Search", comment: "")
+        case "read-image", "image": key = NSLocalizedString("Read Image", comment: "")
+        case "task": key = NSLocalizedString("Task", comment: "")
+        case "question": key = NSLocalizedString("Question", comment: "")
+        case "todoread", "todo-read": key = NSLocalizedString("Todo Read", comment: "")
+        case "todowrite", "todo-write": key = NSLocalizedString("Todo Write", comment: "")
+        case "memory-read": key = NSLocalizedString("Memory Read", comment: "")
+        case "memory-search": key = NSLocalizedString("Memory Search", comment: "")
+        case "memory-write": key = NSLocalizedString("Memory Write", comment: "")
+        case "skill": key = NSLocalizedString("Skill", comment: "")
         default:
             if raw.contains("memory") && raw.contains("search") {
-                key = "Memory Search"
+                key = NSLocalizedString("Memory Search", comment: "")
             } else if raw.contains("memory") && raw.contains("write") {
-                key = "Memory Write"
+                key = NSLocalizedString("Memory Write", comment: "")
             } else if raw.contains("memory") && raw.contains("read") {
-                key = "Memory Read"
+                key = NSLocalizedString("Memory Read", comment: "")
             } else if raw.contains("web") && raw.contains("search") {
-                key = "Web Search"
+                key = NSLocalizedString("Web Search", comment: "")
             } else if raw.contains("web") && (raw.contains("fetch") || raw.contains("read")) {
-                key = "Web Fetch"
+                key = NSLocalizedString("Web Fetch", comment: "")
             } else if raw.contains("todo") && raw.contains("write") {
-                key = "Todo Write"
+                key = NSLocalizedString("Todo Write", comment: "")
             } else if raw.contains("todo") && raw.contains("read") {
-                key = "Todo Read"
+                key = NSLocalizedString("Todo Read", comment: "")
             } else if raw == "tool" || raw.isEmpty {
-                key = "Tool"
+                key = NSLocalizedString("Tool", comment: "")
             } else {
                 let readable = raw.replacingOccurrences(of: "-", with: " ")
                 return readable.prefix(1).uppercased() + readable.dropFirst()

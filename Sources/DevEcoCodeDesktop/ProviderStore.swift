@@ -58,6 +58,9 @@ final class ProviderStore: ObservableObject {
     /// fuzzy match on the bare model id. Hot path during streaming.
     func modelDisplayName(for identifier: String, fuzzyModel: String) -> String? {
         if let choice = modelChoicesByID[identifier] { return choice.name }
+        if let exact = modelChoicesByID.first(where: { $0.key.hasSuffix("/\(fuzzyModel)") })?.value.name {
+            return exact
+        }
         return modelChoicesByID.values
             .first { $0.name.localizedCaseInsensitiveContains(fuzzyModel) }?.name
     }
@@ -66,6 +69,7 @@ final class ProviderStore: ObservableObject {
 
     private var api: APIClient?
     private var rawConfig: [String: JSONValue] = [:]
+    private var loadTask: Task<Void, Never>?
 
     /// Variant ids (e.g. reasoning effort) available for the given model.
     func variants(for modelID: String?) -> [String] {
@@ -120,16 +124,25 @@ final class ProviderStore: ObservableObject {
     }
 
     func connect(baseURL: URL) {
+        if let api, api.baseURL == baseURL, loadTask != nil { return }
         api = APIClient(baseURL: baseURL)
-        Task { await load() }
+        loadTask = Task { [weak self] in
+            await self?.load()
+            self?.loadTask = nil
+        }
     }
 
     func disconnect() {
         api = nil
+        loadTask?.cancel()
+        loadTask = nil
         providers = []
         catalog = []
         rawConfig = [:]
         errorMessage = nil
+        serverModels = []
+        defaultModel = ""
+        rebuildModelLookup()
     }
 
     func load() async {

@@ -28,6 +28,18 @@ final class ModelTests: XCTestCase {
         XCTAssertFalse(session.isArchived)
     }
 
+    func testMessageTokensContextUsedFallsBackToInputAndCache() throws {
+        let json = #"{"input":1200,"output":42,"cache":{"read":3400}}"#
+        let tokens = try JSONDecoder.deveco.decode(MessageTokens.self, from: Data(json.utf8))
+        XCTAssertEqual(tokens.contextUsed, 4600)
+    }
+
+    func testMessageTokensPrefersExplicitTotal() throws {
+        let json = #"{"total":5000,"input":120,"cache":{"read":3400}}"#
+        let tokens = try JSONDecoder.deveco.decode(MessageTokens.self, from: Data(json.utf8))
+        XCTAssertEqual(tokens.contextUsed, 5000)
+    }
+
     func testSessionArchivedFlag() throws {
         let json = #"{"id":"s1","title":"t","directory":"/tmp/p","time":{"created":1700000000000,"updated":1700000001000,"archived":1730000000000}}"#
         let session = try JSONDecoder.deveco.decode(Session.self, from: Data(json.utf8))
@@ -123,6 +135,16 @@ final class ModelTests: XCTestCase {
         XCTAssertEqual(ChatTypography.body(34), 30)
         XCTAssertTrue(ChatTypography.code(18) < ChatTypography.body(18))
         XCTAssertTrue(ChatTypography.heading(14, level: 1) > ChatTypography.heading(14, level: 3))
+    }
+
+    func testPrettyModelNameUsesChineseLabelForKnownModels() {
+        XCTAssertEqual(prettyModelName("Hy4 flash (hy4flash)"), "混元 Flash")
+    }
+
+    func testPlaceholderSessionTitleDisplaysInChinese() throws {
+        let json = #"{"id":"s1","title":"New session"}"#
+        let session = try JSONDecoder.deveco.decode(Session.self, from: Data(json.utf8))
+        XCTAssertEqual(session.displayTitle, NSLocalizedString("New session", comment: ""))
     }
 
     func testTodoItemDecode() throws {

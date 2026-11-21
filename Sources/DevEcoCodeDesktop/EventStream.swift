@@ -28,6 +28,11 @@ final class EventStream: NSObject, URLSessionDataDelegate {
     /// socket instead of appearing frozen with no explanation.
     private(set) var isReceivingHeartbeats = false
 
+    /// Whether a live SSE task exists. Used by SessionStore.connect to avoid
+    /// tearing down and rebuilding the stream when SwiftUI re-emits the same
+    /// baseURL after an unrelated ServerManager state change.
+    var isConnected: Bool { task != nil }
+
     fileprivate static func makeStalledCheckTimer() -> DispatchSourceTimer {
         let timer = DispatchSource.makeTimerSource(queue: .main)
         timer.schedule(deadline: .now() + 5, repeating: 5)

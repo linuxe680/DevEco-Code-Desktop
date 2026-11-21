@@ -63,7 +63,9 @@ struct ChatView: View {
     @State private var suppressFocusOnce = false
 
     private func applyCompletion(_ command: DevCommand) {
+        let oldDraft = store.draft
         store.draft = "/" + command.name + " "
+        if store.draft != oldDraft { store.bumpDraftToken() }
         focusTrigger += 1
     }
 
@@ -107,6 +109,7 @@ struct ChatView: View {
     private func attachMention(_ entry: FsEntry) {
         if let token = mentionToken, let range = store.draft.range(of: "@" + token, options: .backwards) {
             store.draft.removeSubrange(range)
+            store.bumpDraftToken()
         }
         mentionResults = []
         let fileURL = server.projectDirectory.appendingPathComponent(entry.path)
@@ -170,6 +173,7 @@ struct ChatView: View {
             if let token = mentionToken,
                let range = store.draft.range(of: "@" + token, options: .backwards) {
                 store.draft.removeSubrange(range)
+                store.bumpDraftToken()
             }
             mentionResults = []
             return
@@ -196,25 +200,31 @@ struct ChatView: View {
     private func historyUp() {
         let history = AppSettings.promptHistory
         guard !history.isEmpty else { return }
+        let oldDraft = store.draft
         if historyIndex == nil {
             draftBeforeHistory = store.draft
             historyIndex = 0
         } else if historyIndex! + 1 < history.count {
             historyIndex! += 1
         }
-        store.draft = history[history.count - 1 - historyIndex!]
+        let index = historyIndex ?? 0
+        store.draft = history[history.count - 1 - index]
+        if store.draft != oldDraft { store.bumpDraftToken() }
     }
 
     private func historyDown() {
-        guard let index = historyIndex else { return }
         let history = AppSettings.promptHistory
-        if index == 0 {
+        guard historyIndex != nil else { return }
+        let oldDraft = store.draft
+        if historyIndex == 0 {
             historyIndex = nil
             store.draft = draftBeforeHistory
         } else {
             historyIndex! -= 1
-            store.draft = history[history.count - 1 - historyIndex!]
+            let index = min(historyIndex ?? 0, max(history.count - 1, 0))
+            store.draft = history[history.count - 1 - index]
         }
+        if store.draft != oldDraft { store.bumpDraftToken() }
     }
     private var commandMatches: [DevCommand] {
         guard store.draft.hasPrefix("/"), !store.commands.isEmpty else { return [] }
@@ -253,13 +263,13 @@ struct ChatView: View {
                 Image(systemName: "bubble.left.and.bubble.right")
                     .font(.system(size: 40))
                     .foregroundStyle(.secondary)
-                Text("Select a session or create a new one")
+                Text(NSLocalizedString("Select a session or create a new one", comment: ""))
                     .foregroundStyle(.secondary)
                 if server.state == .running {
                     Button {
                         store.createSession()
                     } label: {
-                        Label("New Session", systemImage: "plus.circle.fill")
+                        Label(NSLocalizedString("New Session", comment: ""), systemImage: "plus.circle.fill")
                     }
                     .keyboardShortcut(.defaultAction)
                 } else {
@@ -273,7 +283,7 @@ struct ChatView: View {
                             .foregroundStyle(.secondary)
                     }
                     if server.state == .stopped || server.state == .failed {
-                        Button("Start Server") { server.start() }
+                        Button(NSLocalizedString("Start Server", comment: "")) { server.start() }
                             .controlSize(.small)
                     }
                 }
@@ -298,7 +308,9 @@ struct ChatView: View {
     }
 
     private func useStarterPrompt(_ prompt: String) {
+        let oldDraft = store.draft
         store.draft = prompt
+        if store.draft != oldDraft { store.bumpDraftToken() }
         focusTrigger += 1
     }
 
@@ -314,7 +326,7 @@ struct ChatView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 11))
 
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("Start a conversation")
+                    Text(NSLocalizedString("Start a conversation", comment: ""))
                         .font(.title3.weight(.semibold))
                     Text(String(
                         format: NSLocalizedString("Ask DevEco to explore, change, or test %@.", comment: ""),
@@ -391,14 +403,14 @@ struct ChatView: View {
         let limit = providers.contextLimit(for: effectiveModel)
         let lastAssistant = store.messages.last(where: { $0.info.role == "assistant" })
         let used: Double
-        if let total = lastAssistant?.info.tokens?.total, total > 0 {
-            used = total
+        if let context = lastAssistant?.info.tokens?.contextUsed, context > 0 {
+            used = context
         } else if let previous = store.messages.reversed().dropFirst(
             lastAssistant == nil ? 0 : 1
-        ).first(where: { $0.info.role == "assistant" && ($0.info.tokens?.total ?? 0) > 0 }) {
-            used = previous.info.tokens?.total ?? 0
+        ).first(where: { $0.info.role == "assistant" && ($0.info.tokens?.contextUsed ?? 0) > 0 }) {
+            used = previous.info.tokens?.contextUsed ?? 0
         } else {
-            used = lastAssistant?.info.tokens?.input ?? 0
+            used = lastAssistant?.info.tokens?.contextUsed ?? 0
         }
         guard limit != nil || used > 0 else { return nil }
         return (used, limit)
@@ -609,7 +621,8 @@ struct ChatView: View {
             .padding(.vertical, 3)
         }
         .buttonStyle(.plain)
-        .fixedSize()
+        .fixedSize(horizontal: true, vertical: false)
+        .layoutPriority(-1)
         .popover(isPresented: $showModelPicker, arrowEdge: .bottom) {
             modelPickerContent
         }
@@ -673,9 +686,10 @@ struct ChatView: View {
     }
 
     private var recentModelChoices: [ModelChoice] {
-        AppSettings.recentModels.compactMap { id in
-            providers.allModelChoices.first { $0.id == id }
-        }
+        let choicesById = Dictionary(
+            uniqueKeysWithValues: providers.allModelChoices.map { ($0.id, $0) }
+        )
+        return AppSettings.recentModels.compactMap { choicesById[$0] }
     }
 
     private var filteredModelGroups: [ModelGroup] {
@@ -793,7 +807,6 @@ struct ChatView: View {
             } else {
                 store.send()
             }
-            focusTrigger += 1
         } label: {
             Image(systemName: store.isSending ? "stop.fill" : "arrow.up")
                 .font(.system(size: 12, weight: .bold))
@@ -919,6 +932,12 @@ struct ChatView: View {
                     }
                 }
                 .padding(.horizontal, 22)
+                .padding(.top, 6)
+            } else if let error = store.inlineError, error.sessionID == store.selectedSessionID {
+                InlineErrorBubble(error: error) {
+                    store.retryLastPrompt()
+                }
+                .padding(.horizontal, 22)
                 .padding(.top, 8)
             }
 
@@ -931,10 +950,10 @@ struct ChatView: View {
                 HStack(spacing: 8) {
                     Image(systemName: "clock.arrow.circlepath")
                         .foregroundStyle(.orange)
-                    Text("Session is reverted to an earlier message; new prompts continue from there.")
+                    Text(NSLocalizedString("Session is reverted to an earlier message; new prompts continue from there.", comment: ""))
                         .font(.caption)
                     Spacer()
-                    Button("Unrevert") {
+                    Button(NSLocalizedString("Unrevert", comment: "")) {
                         Task { await store.unrevert() }
                     }
                     .controlSize(.small)
@@ -1003,7 +1022,6 @@ struct ChatView: View {
                         store.abort()
                     }
                 }
-                Divider()
             }
 
             ScrollViewReader { proxy in
@@ -1013,7 +1031,7 @@ struct ChatView: View {
                             VStack(spacing: 8) {
                                 ProgressView()
                                     .controlSize(.small)
-                                Text("Loading conversation…")
+                                Text(NSLocalizedString("Loading conversation…", comment: ""))
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -1031,12 +1049,6 @@ struct ChatView: View {
                                     )
                                     .id(message.id)
                                     .transition(.opacity.combined(with: .move(edge: .bottom)))
-                                }
-                                if searchQuery.isEmpty, let error = store.inlineError, error.sessionID == store.selectedSessionID {
-                                    InlineErrorBubble(error: error) {
-                                        store.retryLastPrompt()
-                                    }
-                                    .id("inline-error")
                                 }
                                 if !searchQuery.isEmpty && visibleMessages.isEmpty {
                                     Text("No messages match “\(searchQuery)”")
@@ -1184,7 +1196,9 @@ struct ChatView: View {
                                                 .font(.caption)
                                                 .foregroundStyle(Color.accentColor)
                                         }
-                                        Text(attachment.filename ?? (attachment.mime.hasPrefix("image/") ? "image" : "file"))
+                                Text(attachment.filename ?? (attachment.mime.hasPrefix("image/")
+                                     ? NSLocalizedString("image", comment: "attachment fallback")
+                                     : NSLocalizedString("file", comment: "attachment fallback")))
                                             .font(.system(size: 12))
                                             .lineLimit(1)
                                         Button {
@@ -1210,6 +1224,7 @@ struct ChatView: View {
                     ChatInput(text: $store.draft, enterSends: sendOnEnter,
                               fontSize: chatFontSize,
                               focusTrigger: focusTrigger,
+                              draftToken: store.draftToken,
                               placeholder: NSLocalizedString("Write a message…", comment: ""),
                               onHistoryUp: historyUp, onHistoryDown: historyDown,
                               onArrowUp: handlePaletteUp, onArrowDown: handlePaletteDown,
@@ -1219,10 +1234,11 @@ struct ChatView: View {
                               onPasteFileURLs: { urls in addPastedFiles(urls) },
                               onDragHover: { dragHover = $0 },
                               onEscape: handleEscape,
-                onContentHeight: { inputHeight = $0 }) {
-                    suppressFocusOnce = true
-                    store.send()
-                }
+                              onContentHeight: { inputHeight = $0 },
+                              onSend: {
+                                  suppressFocusOnce = true
+                                  store.send()
+                              })
                         .frame(height: inputHeight)
                         .padding(.horizontal, 12)
                         .padding(.top, 9)
@@ -1232,19 +1248,15 @@ struct ChatView: View {
                             ContextMeter(used: usage.used, limit: usage.limit)
                         }
                         Spacer(minLength: 8)
+                        composerModelMenu
+                        if !effortVariants.isEmpty {
+                            composerEffortMenu
+                        }
+                        composerSendButton
                     }
                     .padding(.horizontal, 12)
                     .padding(.top, 2)
                     .padding(.bottom, 4)
-                    .overlay(alignment: .trailing) {
-                        HStack(spacing: 8) {
-                            composerModelMenu
-                            if !effortVariants.isEmpty {
-                                composerEffortMenu
-                            }
-                            composerSendButton
-                        }
-                    }
                 }
                 .background(Theme.composerFill)
                 .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
@@ -1372,7 +1384,7 @@ private struct ActivityBar: View {
                         .truncationMode(.tail)
                 }
             } else {
-                Text("Working…")
+                Text(NSLocalizedString("Working…", comment: ""))
                     .font(.system(size: 14, weight: .semibold))
             }
             if let todoProgress {
@@ -1475,9 +1487,9 @@ struct DiffSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
-                Text("Changes")
+                Text(NSLocalizedString("Changes", comment: ""))
                     .font(.headline)
-                Text("Files: \(store.diffs.count)")
+                Text(String(format: NSLocalizedString("Files: %lld", comment: ""), store.diffs.count))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Text("+\(totalAdditions)")
@@ -1500,7 +1512,7 @@ struct DiffSheet: View {
                 }
                 .controlSize(.small)
                 .disabled(store.diffs.isEmpty)
-                Button("Done") { dismiss() }
+                Button(NSLocalizedString("Done", comment: "")) { dismiss() }
                     .keyboardShortcut(.defaultAction)
             }
             .padding(14)
@@ -1510,7 +1522,7 @@ struct DiffSheet: View {
             if store.isLoadingDiff {
                 VStack {
                     ProgressView().controlSize(.regular)
-                    Text("Loading diff…").font(.caption).foregroundStyle(.secondary)
+                    Text(NSLocalizedString("Loading diff…", comment: "")).font(.caption).foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if store.diffs.isEmpty {
@@ -1518,13 +1530,13 @@ struct DiffSheet: View {
                     Image(systemName: "checkmark.circle")
                         .font(.system(size: 28))
                         .foregroundStyle(.secondary)
-                    Text("No file changes in this session.")
+                    Text(NSLocalizedString("No file changes in this session.", comment: ""))
                         .foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if filteredDiffs.isEmpty {
                 VStack {
-                    Text("No files match the filter.")
+                    Text(NSLocalizedString("No files match the filter.", comment: ""))
                         .foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1649,6 +1661,7 @@ private struct ChatInput: NSViewRepresentable {
     var enterSends: Bool
     var fontSize: Double
     var focusTrigger: Int
+    var draftToken: UUID
     var placeholder: String
     var onHistoryUp: () -> Void
     var onHistoryDown: () -> Void
@@ -1666,14 +1679,13 @@ private struct ChatInput: NSViewRepresentable {
     final class Coordinator: NSObject, NSTextViewDelegate {
         var onTextChange: ((String) -> Void)?
         var onSend: (() -> Void)?
-        /// Last value forwarded to the binding. When `textView.string` equals
-        /// this, a differing binding is an external edit — otherwise it is a
-        /// stale SwiftUI render and must not be written back (it would undo
-        /// fast typing/deletion between renders).
-        var lastSyncedText: String?
+        /// Token of the binding value last installed into the text view.
+        /// A changed token means code replaced the draft (send / switch /
+        /// history / edit), while an unchanged token with a different string
+        /// is only a stale render of the user's own keystrokes.
+        var lastSyncedToken: UUID?
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
-            lastSyncedText = textView.string
             onTextChange?(textView.string)
         }
     }
@@ -1685,6 +1697,8 @@ private struct ChatInput: NSViewRepresentable {
         let textView = ChatTextView.make(
             frame: NSRect(x: 0, y: 0, width: 480, height: 44)
         )
+        textView.string = text
+        coordinator.lastSyncedToken = draftToken
         textView.isRichText = false
         textView.placeholder = placeholder
         textView.allowsUndo = true
@@ -1735,6 +1749,12 @@ private struct ChatInput: NSViewRepresentable {
         coordinator.onTextChange = { text = $0 }
         coordinator.onSend = onSend
         guard let textView = scroll.documentView as? ChatTextView else { return }
+        // Keep the drawing-only placeholder in sync. Never assign to
+        // `textView.string` here: that mutates the text storage, fires
+        // textDidChange, and can feed "Write a message…" back into the draft.
+        if textView.placeholder != placeholder {
+            textView.placeholder = placeholder
+        }
         let width = max(scroll.contentSize.width, 1)
         if abs(textView.frame.width - width) > 0.5 {
             var frame = textView.frame
@@ -1771,11 +1791,20 @@ private struct ChatInput: NSViewRepresentable {
             }
         }
         if textView.string != text {
-            // Never touch marked text (IME composition in flight) and never
-            // echo our own binding updates back into the view.
-            if !textView.hasMarkedText() && textView.string != coordinator.lastSyncedText {
-                textView.string = text
-                coordinator.lastSyncedText = text
+            // Code-driven replacement (send / switch / history / edit) always
+            // wins — including the clear after send. If the token is the same
+            // the difference is just a stale render of user typing, which we
+            // never overwrite mid-keystroke or during IME composition.
+            if !textView.hasMarkedText() {
+                if coordinator.lastSyncedToken != draftToken {
+                    textView.string = text
+                    coordinator.lastSyncedToken = draftToken
+                    textView.isSendInFlight = false
+                } else {
+                    // The binding caught up to the user's own typing. Keep
+                    // the token in sync without touching the text storage.
+                    coordinator.lastSyncedToken = draftToken
+                }
             }
             // Report outside the view update — mutating state here would be
             // discarded by SwiftUI.
@@ -1799,7 +1828,7 @@ private final class ChatTextView: NSTextView {
     var onDragHover: ((Bool) -> Void)?
     var onEscape: (() -> Void)?
     var onContentHeight: ((CGFloat) -> Void)?
-    var placeholder = ""
+        var placeholder = ""
     var enterSends = true
     var lastFocusTrigger = -1
     /// Set while a send is in flight. Enter during this window would
@@ -1844,7 +1873,9 @@ private final class ChatTextView: NSTextView {
             isSendInFlight = false
             return
         }
-        let hasShift = NSApp.currentEvent?.modifierFlags.contains(.shift) ?? false
+        let hasShift = NSApp.currentEvent?.modifierFlags.contains(.shift)
+            ?? NSApplication.shared.currentEvent?.modifierFlags.contains(.shift)
+            ?? false
         if enterSends && !hasShift {
             // A visible candidate list wins: Enter completes, a second Enter
             // (popup now closed) sends.
@@ -1880,12 +1911,12 @@ private final class ChatTextView: NSTextView {
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         guard string.isEmpty, !hasMarkedText(), !placeholder.isEmpty else { return }
-        (placeholder as NSString).draw(
-            at: NSPoint(x: textContainerInset.width + 5, y: textContainerInset.height - 3),
-            withAttributes: [
-                .font: font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize),
-                .foregroundColor: NSColor.tertiaryLabelColor,
-            ]
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize),
+            .foregroundColor: NSColor.tertiaryLabelColor,
+        ]
+        NSAttributedString(string: placeholder, attributes: attributes).draw(
+            at: NSPoint(x: textContainerInset.width + 5, y: textContainerInset.height - 3)
         )
     }
 
@@ -1943,18 +1974,20 @@ private final class ChatTextView: NSTextView {
 
     override func keyDown(with event: NSEvent) {
         let hasOption = event.modifierFlags.contains(.option)
-        let special = event.specialKey
-        if hasOption && special == .upArrow {
+        let isUp = event.specialKey == .upArrow || event.keyCode == 126
+        let isDown = event.specialKey == .downArrow || event.keyCode == 125
+        let isTab = event.specialKey == .tab || event.keyCode == 48
+        if hasOption && isUp {
             onHistoryUp?()
             return
         }
-        if hasOption && special == .downArrow {
+        if hasOption && isDown {
             onHistoryDown?()
             return
         }
-        if special == .upArrow, let up = onArrowUp, up() { return }
-        if special == .downArrow, let down = onArrowDown, down() { return }
-        if special == .tab, let tab = onTab, tab() { return }
+        if isUp, let up = onArrowUp, up() { return }
+        if isDown, let down = onArrowDown, down() { return }
+        if isTab, let tab = onTab, tab() { return }
         if event.keyCode == 53, let onEscape { onEscape(); return } // Escape 不在 SpecialKey 中
         super.keyDown(with: event)
     }
@@ -2018,15 +2051,15 @@ private struct MessageBubble: View {
         .onHover { hovered = $0 }
         .contextMenu {
             if isUser {
-                Button("Edit & resend…") {
+                Button(NSLocalizedString("Edit & resend…", comment: "")) {
                     Task { await store.editMessage(message) }
                 }
-                Button("Revert to here…") {
+                Button(NSLocalizedString("Revert to here…", comment: "")) {
                     Task { await store.revert(to: message) }
                 }
                 .disabled(isStreamingThis)
             } else {
-                Button("Revert to here…") {
+                Button(NSLocalizedString("Revert to here…", comment: "")) {
                     Task { await store.revert(to: message) }
                 }
                 .disabled(isStreamingThis)
@@ -2124,8 +2157,8 @@ private struct MessageBubble: View {
                         .foregroundStyle(.green)
                 } else {
                     Menu {
-                        Button("复制回答") { copyMessage() }
-                        Button("复制 Markdown") { copyMessage(asMarkdown: true) }
+                        Button(NSLocalizedString("Copy answer", comment: "")) { copyMessage() }
+                        Button(NSLocalizedString("Copy Markdown", comment: "")) { copyMessage(asMarkdown: true) }
                     } label: {
                         HStack(spacing: 3) {
                             Image(systemName: "doc.on.doc")
@@ -2140,7 +2173,7 @@ private struct MessageBubble: View {
                     }
                     .menuStyle(.borderlessButton)
                     .fixedSize()
-                    .help("复制回答")
+                    .help(NSLocalizedString("Copy answer", comment: ""))
                 }
             }
             if message.info.role == "user" {
@@ -2262,7 +2295,7 @@ private struct TodoPanel: View {
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: "checklist")
-                Text("Todos")
+                Text(NSLocalizedString("Todos", comment: ""))
                     .font(.system(size: 14, weight: .semibold))
                 Text("\(doneCount)/\(todos.count)")
                     .font(.system(size: 12))
@@ -2288,10 +2321,10 @@ private struct TodoPanel: View {
     }
 }
 
-/// Progressive reveal for streaming assistant text. Deltas land in ~120ms
-/// batches; this drains the backlog at ~40ms ticks so text appears like
-/// continuous typing instead of whole blocks. The step scales with the backlog
-/// (bigger burst → faster typing) so the view never falls far behind.
+/// Streaming assistant text. SessionStore now flushes deltas every ~30ms, so
+/// rendering the target directly tracks the network output smoothly; an extra
+/// typewriter backlog only made text arrive in visible stairs. Formatting is
+/// applied by PartView once the run finishes.
 private struct StreamingTextView: View {
     let target: String
     let useMarkdown: Bool
@@ -2300,46 +2333,16 @@ private struct StreamingTextView: View {
     @AppStorage(AppSettings.Keys.chatFontSize)
     private var chatFontSize = 15.0
 
-    @State private var revealedCount = 0
-    @State private var lastTarget = ""
-
     private var content: String {
-        let revealed = revealedCount >= target.count
-            ? target
-            : String(target.prefix(revealedCount))
-        // Only show the caret while there is text left to reveal; keeping it
-        // after completion makes finished answers look permanently "generating".
-        return revealedCount >= target.count ? revealed : revealed + " ▍"
+        guard !target.isEmpty else { return "▍" }
+        return target + " ▍"
     }
 
     var body: some View {
-        Group {
-            // Mid-stream: plain text keeps 40ms typewriter updates cheap;
-            // markdown re-parsing per frame is wasted work, so formatting
-            // lands once the run finishes.
-            if useMarkdown && revealedCount >= target.count {
-                MarkdownContentView(content: content, searchQuery: searchQuery)
-            } else {
-                Text(content)
-                    .font(.system(size: ChatTypography.body(chatFontSize)))
-                    .lineSpacing(ChatTypography.lineSpacing(chatFontSize))
-                    .textSelection(.enabled)
-            }
-        }
-        .onReceive(Timer.publish(every: 0.04, on: .main, in: .common).autoconnect()) { _ in
-            let backlog = target.count - revealedCount
-            guard backlog > 0 else { return }
-            revealedCount += min(max(2, backlog / 10), 160)
-        }
-        .onChange(of: target) { newValue in
-            // Appends keep the reveal position; a replaced body (snapshot
-            // refresh) snaps to the new content.
-            if !newValue.hasPrefix(String(lastTarget.prefix(revealedCount))) {
-                revealedCount = newValue.count
-            }
-            lastTarget = newValue
-        }
-        .onAppear { lastTarget = target }
+        Text(content)
+            .font(.system(size: ChatTypography.body(chatFontSize)))
+            .lineSpacing(ChatTypography.lineSpacing(chatFontSize))
+            .textSelection(.enabled)
     }
 }
 
@@ -2400,13 +2403,15 @@ private struct PartView: View {
                 HStack(spacing: 6) {
                     Image(systemName: "sparkles")
                         .font(.system(size: ChatTypography.meta(chatFontSize) - 1))
-                    Text("Thinking")
+                    Text(NSLocalizedString("Thinking", comment: ""))
                         .font(.system(size: ChatTypography.meta(chatFontSize), weight: .medium))
                 }
                 .foregroundStyle(.secondary)
             }
         case "tool":
             ToolCardView(part: part)
+        case "step", "subtask", "task":
+            TaskTraceCard(part: part)
         case "file":
             if let filename = part.filename {
                 AttachmentChip(filename: filename, mime: part.mime, urlString: part.url)
@@ -2768,6 +2773,12 @@ private struct MarkdownProseView: View {
                 chunk.font = .system(size: bodySize - 1.5, weight: .medium, design: .monospaced)
                 chunk.foregroundColor = .accentColor
                 chunk.backgroundColor = Color.accentColor.opacity(0.10)
+            } else if run.inlinePresentationIntent?.contains(.stronglyEmphasized) == true {
+                chunk.font = .system(size: bodySize, weight: .bold)
+                chunk.foregroundColor = .primary
+            } else if run.inlinePresentationIntent?.contains(.emphasized) == true {
+                chunk.font = .system(size: bodySize, weight: .regular, design: .serif)
+                chunk.foregroundColor = .secondary
             }
             styled.append(chunk)
         }
@@ -2947,7 +2958,7 @@ struct AttachmentChip: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
             .onTapGesture { open() }
-            .help("Open attachment")
+            .help(NSLocalizedString("Open attachment", comment: ""))
         } else {
             chip
         }
@@ -2973,7 +2984,7 @@ struct AttachmentChip: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help("Open attachment")
+        .help(NSLocalizedString("Open attachment", comment: ""))
     }
 
     private func loadImage() -> NSImage? {
@@ -3024,10 +3035,10 @@ struct ConsentCard: View {
             HStack(spacing: 8) {
                 Image(systemName: "doc.text.checkmark")
                     .foregroundStyle(.orange)
-                Text("Product agreement confirmation required")
+                Text(NSLocalizedString("Product agreement confirmation required", comment: ""))
                     .font(.headline)
             }
-            Text("Before any model can be called, deveco requires you to accept its product terms and privacy statement.")
+            Text(NSLocalizedString("Before any model can be called, deveco requires you to accept its product terms and privacy statement.", comment: ""))
                 .font(.callout)
             if let terms = agreement?.termsUrl, let url = URL(string: terms) {
                 Link("Read the terms", destination: url)
@@ -3045,12 +3056,12 @@ struct ConsentCard: View {
                         ProgressView()
                             .controlSize(.small)
                     } else {
-                        Text("I have read and accept")
+                        Text(NSLocalizedString("I have read and accept", comment: ""))
                     }
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(isAccepting)
-                Text("Equivalent to `deveco auth consent --accept`.")
+                Text(NSLocalizedString("Equivalent to `deveco auth consent --accept`.", comment: ""))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -3063,6 +3074,98 @@ struct ConsentCard: View {
 /// Expandable tool call card: header with status/duration, details reveal
 /// input args, full output, and errors. The output text is already decoded
 /// from ToolState and just was never surfaced before.
+private struct TaskTraceCard: View {
+    let part: Part
+    /// Embedded inside a tool card: the outer card already draws the single
+    /// container, so this variant must not add another border/background.
+    var embedded = false
+    @AppStorage(AppSettings.Keys.chatFontSize)
+    private var chatFontSize = 15.0
+    @State private var expanded = false
+
+    private var trace: ToolTrace { ToolTrace.parse(part.text ?? "") }
+
+    private var headerTitle: String {
+        if !trace.description.isEmpty { return trace.description }
+        if !trace.prompt.isEmpty { return String(trace.prompt.prefix(60)) }
+        return NSLocalizedString("Task", comment: "")
+    }
+
+    private var hasDetail: Bool {
+        !trace.prompt.isEmpty || !trace.result.isEmpty
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: hasDetail && expanded ? 8 : 0) {
+            Button {
+                guard hasDetail else { return }
+                withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "arrow.triangle.branch")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Color.accentColor)
+                        .frame(width: 20, height: 20)
+                    Text(headerTitle)
+                        .font(.system(size: ChatTypography.meta(chatFontSize), weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .textSelection(.enabled)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if let type = trace.subagentType {
+                        Text(type)
+                            .font(.system(size: ChatTypography.micro(chatFontSize), weight: .semibold, design: .monospaced))
+                            .foregroundStyle(Color.accentColor)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.accentColor.opacity(0.10), in: Capsule())
+                    }
+                    Spacer(minLength: 8)
+                    if hasDetail {
+                        Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                            .frame(width: 12)
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!hasDetail)
+
+            if hasDetail && expanded {
+                VStack(alignment: .leading, spacing: 8) {
+                    if !trace.prompt.isEmpty {
+                        traceSection(label: NSLocalizedString("Prompt", comment: ""), content: trace.prompt, tint: .accentColor)
+                    }
+                    if !trace.result.isEmpty {
+                        traceSection(label: NSLocalizedString("Result", comment: ""), content: trace.result, tint: .green)
+                    }
+                }
+                .padding(.bottom, 2)
+            }
+        }
+    }
+
+    /// Codex-style detail block: a tinted label and prose on a subtle surface,
+    /// with no second stroke — nested boxes are what made the transcript busy.
+    private func traceSection(label: String, content: String, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 5) {
+                Rectangle().fill(tint).frame(width: 2, height: ChatTypography.micro(chatFontSize))
+                Text(label)
+                    .font(.system(size: ChatTypography.micro(chatFontSize), weight: .semibold))
+                    .foregroundStyle(tint)
+            }
+            MarkdownContentView(content: content)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(tint.opacity(0.06), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+    }
+}
+
 private struct ToolCardView: View {
     let part: Part
     @AppStorage(AppSettings.Keys.chatFontSize)
@@ -3075,18 +3178,22 @@ private struct ToolCardView: View {
     private var state: ToolState? { part.state }
 
     private var isRunning: Bool { state?.status == "running" }
-    private var isError: Bool { state?.status == "error" }
+    private var isStopped: Bool {
+        guard let error = state?.error else { return false }
+        return FailureKind.classify(error) == .aborted
+    }
+    private var isError: Bool { state?.status == "error" && !isStopped }
 
     private var hasDetail: Bool {
-        if let output = state?.output, !output.isEmpty { return true }
+        if let output = state?.output, !output.isEmpty, !ToolTrace.looksLikeRawTrace(output) { return true }
         if part.tool == "question" { return false }
-        if state?.input != nil { return true }
-        if let error = state?.error, !error.isEmpty, isError { return true }
+        if let input = state?.input, !input.isEmptyObject { return true }
+        if let error = state?.error, !error.isEmpty, state?.status == "error", !isStopped { return true }
         return false
     }
 
     private var isExpanded: Bool {
-        userExpanded ?? (isRunning && hasDetail)
+        userExpanded ?? isRunning
     }
 
     private var toolName: String {
@@ -3094,7 +3201,7 @@ private struct ToolCardView: View {
     }
 
     private var toolTint: Color {
-        isError ? .red : Theme.toolTint(part.tool ?? "")
+        isError ? .red : (isStopped ? .secondary : Theme.toolTint(part.tool ?? ""))
     }
 
     private var headline: String {
@@ -3104,6 +3211,14 @@ private struct ToolCardView: View {
         if let title = state?.title, !title.isEmpty { return title }
         if let summary = state?.summary, !summary.isEmpty { return summary }
         return toolName
+    }
+
+    /// Raw task traces currently surface in `state.output`; show the parsed
+    /// task description as the single line instead of a repeated tool chip.
+    private var rawTraceTitle: String? {
+        guard let output = state?.output, ToolTrace.looksLikeRawTrace(output) else { return nil }
+        let trace = ToolTrace.parse(output)
+        return trace.description.isEmpty ? trace.prompt : trace.description
     }
 
     var body: some View {
@@ -3125,12 +3240,20 @@ private struct ToolCardView: View {
                             Text(toolName)
                                 .font(.system(size: ChatTypography.micro(chatFontSize), weight: .semibold))
                                 .foregroundStyle(toolTint)
-                            Text(headline)
+                            Text(rawTraceTitle ?? headline)
                                 .font(.system(size: ChatTypography.meta(chatFontSize), weight: .medium))
                                 .foregroundStyle(.primary)
                                 .textSelection(.enabled)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
+                            if let rawTraceTitle, rawTraceTitle != toolName {
+                                Text(toolName)
+                                    .font(.system(size: ChatTypography.micro(chatFontSize), weight: .semibold))
+                                    .foregroundStyle(toolTint)
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 1)
+                                    .background(toolTint.opacity(0.10), in: Capsule())
+                            }
                         }
                         if let summary = state?.summary, summary != headline, isExpanded {
                             Text(summary)
@@ -3144,6 +3267,11 @@ private struct ToolCardView: View {
                     if isRunning {
                         ProgressView()
                             .controlSize(.mini)
+                    }
+                    if isStopped {
+                        Text(NSLocalizedString("Stopped", comment: ""))
+                            .font(.system(size: ChatTypography.micro(chatFontSize)))
+                            .foregroundStyle(.secondary)
                     }
                     if let duration = state?.duration {
                         Text(duration)
@@ -3163,15 +3291,15 @@ private struct ToolCardView: View {
 
             if isExpanded {
                 if let input = state?.input, !input.isEmptyObject {
-                    detailSection(
-                        label: NSLocalizedString("Input", comment: ""),
-                        content: inputSummary(input),
-                        lineLimit: 6,
-                        copyable: true
-                    )
+                    toolInputView(input)
                 }
                 if let output = state?.output, !output.isEmpty {
-                    detailSection(label: NSLocalizedString("Output", comment: ""), content: output, lineLimit: nil, copyable: true)
+                    if ToolTrace.looksLikeRawTrace(output) {
+                        TaskTraceCard(part: Part(type: "task", text: output), embedded: true)
+                    } else {
+                        MarkdownContentView(content: output)
+                        sectionLabel(NSLocalizedString("Copy", comment: ""), content: output)
+                    }
                 }
             }
 
@@ -3181,7 +3309,7 @@ private struct ToolCardView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
-        .background(Theme.canvas)
+        .background(isStopped ? Theme.subtleFill : Theme.canvas)
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -3189,24 +3317,92 @@ private struct ToolCardView: View {
         )
     }
 
+    @ViewBuilder
+    private func toolInputView(_ value: JSONValue) -> some View {
+        let raw = value.displayText
+        if ToolTrace.looksLikeRawTrace(raw) {
+            TaskTraceCard(part: Part(type: "task", text: raw), embedded: true)
+        } else if let questions = toolQuestions(value) {
+            VStack(alignment: .leading, spacing: 8) {
+                sectionLabel(NSLocalizedString("Input", comment: ""), content: prettyJSON(value) ?? raw)
+                ForEach(questions) { question in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(question.header)
+                            .font(.system(size: ChatTypography.micro(chatFontSize), weight: .semibold))
+                            .foregroundStyle(toolTint)
+                        Text(question.question)
+                            .font(.system(size: ChatTypography.body(chatFontSize)))
+                            .textSelection(.enabled)
+                        if let details = question.details, !details.isEmpty {
+                            Text(details)
+                                .font(.system(size: ChatTypography.meta(chatFontSize)))
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                        }
+                        if !question.options.isEmpty {
+                            Text(question.options.map(\.label).joined(separator: " · "))
+                                .font(.system(size: ChatTypography.meta(chatFontSize)))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(Theme.subtleFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+            }
+        } else if case .object(let object) = value {
+            VStack(alignment: .leading, spacing: 6) {
+                sectionLabel(NSLocalizedString("Input", comment: ""), content: prettyJSON(value) ?? raw)
+                ForEach(object.keys.sorted(), id: \.self) { key in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(key)
+                            .font(.system(size: ChatTypography.code(chatFontSize), weight: .semibold, design: .monospaced))
+                            .foregroundStyle(key == "filePath" || key.hasSuffix("Path") ? Color.accentColor : .secondary)
+                        Text(object[key]?.displayText ?? "")
+                            .font(.system(size: ChatTypography.code(chatFontSize), design: .monospaced))
+                            .foregroundStyle(.primary)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        } else {
+            detailSection(
+                label: NSLocalizedString("Input", comment: ""),
+                content: raw,
+                lineLimit: 6,
+                copyable: true
+            )
+        }
+    }
+
+    private func sectionLabel(_ label: String, content: String) -> some View {
+        HStack {
+            Text(label)
+                .font(.system(size: ChatTypography.micro(chatFontSize), weight: .semibold))
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(content, forType: .string)
+            } label: {
+                Label(NSLocalizedString("Copy", comment: ""), systemImage: "doc.on.doc")
+                    .font(.system(size: ChatTypography.micro(chatFontSize)))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+        }
+    }
+
     private func detailSection(label: String, content: String, lineLimit: Int?, copyable: Bool, tint: Color = .secondary) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack {
+            if copyable {
+                sectionLabel(label, content: content)
+            } else {
                 Text(label)
                     .font(.system(size: ChatTypography.micro(chatFontSize), weight: .semibold))
                     .foregroundStyle(tint)
-                Spacer()
-                if copyable {
-                    Button {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(content, forType: .string)
-                    } label: {
-                        Label(NSLocalizedString("Copy", comment: ""), systemImage: "doc.on.doc")
-                            .font(.system(size: ChatTypography.micro(chatFontSize)))
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                }
             }
             Text(content)
                 .font(.system(
@@ -3284,7 +3480,7 @@ private struct InlineErrorBubble: View {
             Text(error.kind.hint)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Button("Retry") { onRetry() }
+            Button(NSLocalizedString("Retry", comment: "")) { onRetry() }
                 .controlSize(.small)
         }
         .padding(12)
@@ -3321,55 +3517,66 @@ private struct PermissionBanner: View {
     private var chatFontSize = 15.0
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 10) {
-                Image(systemName: "lock.shield")
-                    .font(.title2)
-                    .foregroundStyle(.orange)
-                VStack(alignment: .leading, spacing: 2) {
+        HStack(spacing: 10) {
+            Image(systemName: "lock.shield")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.orange)
+                .frame(width: 22, height: 22)
+                .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
                     Text(NSLocalizedString("Permission required", comment: ""))
-                        .font(.system(size: ChatTypography.body(chatFontSize), weight: .semibold))
+                        .font(.system(size: ChatTypography.meta(chatFontSize), weight: .semibold))
+                        .fixedSize()
+                    Text("·")
+                        .foregroundStyle(.tertiary)
                     Text(request.title)
-                        .font(.system(size: ChatTypography.body(chatFontSize)))
-                        .foregroundStyle(.secondary)
-                }
-                if pendingCount > 1 {
-                    Text("(\(pendingCount) pending)")
                         .font(.system(size: ChatTypography.meta(chatFontSize)))
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if pendingCount > 1 {
+                        Text("(\(pendingCount))")
+                            .font(.system(size: ChatTypography.micro(chatFontSize)))
+                            .foregroundStyle(.tertiary)
+                            .fixedSize()
+                    }
                 }
-                Spacer(minLength: 0)
+                if !request.detail.isEmpty {
+                    Text(request.detail)
+                        .font(.system(size: ChatTypography.micro(chatFontSize), design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
             }
-            if !request.detail.isEmpty {
-                Text(request.detail)
-                    .font(.system(size: ChatTypography.code(chatFontSize), design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(6)
-            }
-            HStack(spacing: 12) {
-                Button("Allow once") {
+
+            Spacer(minLength: 8)
+
+            HStack(spacing: 6) {
+                Button(NSLocalizedString("Allow once", comment: "")) {
                     store.reply(to: request, reply: "once")
                 }
                 .buttonStyle(.borderedProminent)
-                Button("Always allow") {
+                .controlSize(.small)
+                Button(NSLocalizedString("Always allow", comment: "")) {
                     store.reply(to: request, reply: "always")
                 }
                 .buttonStyle(.bordered)
-                Button("Reject", role: .destructive) {
+                .controlSize(.small)
+                Button(NSLocalizedString("Reject", comment: ""), role: .destructive) {
                     store.reply(to: request, reply: "reject")
                 }
                 .buttonStyle(.bordered)
+                .controlSize(.small)
             }
+            .fixedSize()
         }
-        .padding(18)
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(Theme.bannerWarning)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .strokeBorder(.orange.opacity(0.35), lineWidth: 1)
-        )
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(Theme.chromeFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(Theme.softStroke))
     }
 }
 
@@ -3472,6 +3679,9 @@ private struct QuestionBanner: View {
 
     private let contentMaxWidth: CGFloat = 760
 
+    @AppStorage(AppSettings.Keys.chatFontSize)
+    private var chatFontSize = 15.0
+
     /// Selected labels per question index; single-select questions replace,
     /// multi-select questions toggle.
     @State private var selections: [Int: [String]] = [:]
@@ -3490,11 +3700,11 @@ private struct QuestionBanner: View {
             ForEach(Array(request.questions.enumerated()), id: \.offset) { index, question in
                 VStack(alignment: .leading, spacing: 10) {
                     HStack(alignment: .firstTextBaseline) {
-                        Text(question.header)
-                            .font(.headline)
+                        Text(NSLocalizedString("Question", comment: "") + " · " + question.header)
+                            .font(.system(size: ChatTypography.body(chatFontSize), weight: .semibold))
                         Spacer()
                         if index == 0 {
-                            Button("Skip") {
+                            Button(NSLocalizedString("Skip", comment: "")) {
                                 Task { await store.rejectQuestion(request) }
                             }
                             .buttonStyle(.bordered)
@@ -3502,10 +3712,10 @@ private struct QuestionBanner: View {
                         }
                     }
                     Text(question.question)
-                        .font(.title3.weight(.medium))
+                        .font(.system(size: ChatTypography.body(chatFontSize), weight: .medium))
                     if let details = question.details, !details.isEmpty {
                         Text(details)
-                            .font(.callout)
+                            .font(.system(size: ChatTypography.meta(chatFontSize)))
                             .foregroundStyle(.secondary)
                     }
                     VStack(spacing: 8) {
@@ -3521,14 +3731,15 @@ private struct QuestionBanner: View {
 
             HStack(spacing: 10) {
                 Image(systemName: isComplete ? "checkmark.circle.fill" : "checkmark.circle")
+                    .font(.system(size: ChatTypography.meta(chatFontSize)))
                     .foregroundStyle(isComplete ? .green : .secondary)
                 Text(isComplete
                      ? NSLocalizedString("Ready to send", comment: "")
                      : NSLocalizedString("Select an option to continue", comment: ""))
-                    .font(.callout)
+                    .font(.system(size: ChatTypography.meta(chatFontSize)))
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button("Send Answers") {
+                Button(NSLocalizedString("Send Answers", comment: "")) {
                     let answers = request.questions.indices.map { idx -> [String] in
                         var picked = selections[idx] ?? []
                         let custom = customAnswers[idx]?.trimmingCharacters(in: .whitespaces) ?? ""
@@ -3537,9 +3748,9 @@ private struct QuestionBanner: View {
                     }
                     Task { await store.answer(request, answers: answers) }
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.bordered)
                 .keyboardShortcut(.defaultAction)
-                .controlSize(.large)
+                .controlSize(.regular)
                 .disabled(!isComplete)
             }
             .frame(maxWidth: 560)
@@ -3547,8 +3758,8 @@ private struct QuestionBanner: View {
             .padding(.horizontal, 4)
         }
         .padding(.horizontal, 16)
-        .padding(.top, 14)
-        .padding(.bottom, 12)
+        .padding(.top, 10)
+        .padding(.bottom, 8)
         .background(Theme.composerFill)
         .frame(maxWidth: contentMaxWidth)
         .frame(maxWidth: .infinity)
@@ -3581,15 +3792,15 @@ private struct QuestionBanner: View {
         } label: {
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-                    .font(.body.weight(.medium))
+                    .font(.system(size: ChatTypography.meta(chatFontSize), weight: .medium))
                     .foregroundStyle(selected ? Color.accentColor : Color.secondary)
                     .padding(.top, 1)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(option.label)
-                        .font(.body.weight(selected ? .semibold : .regular))
+                        .font(.system(size: ChatTypography.body(chatFontSize), weight: selected ? .semibold : .regular))
                     if let description = option.description, !description.isEmpty {
                         Text(description)
-                            .font(.callout)
+                            .font(.system(size: ChatTypography.meta(chatFontSize)))
                             .foregroundStyle(.secondary)
                     }
                 }

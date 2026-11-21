@@ -40,6 +40,13 @@ final class P3ReliabilityTests: XCTestCase {
         XCTAssertEqual(FailureKind.classify("something odd happened", statusCode: nil), .unknown)
     }
 
+    func testAbortedIsNotTreatedAsAFailure() {
+        XCTAssertEqual(FailureKind.classify("MessageAbortedError: Aborted", statusCode: nil), .aborted)
+        XCTAssertEqual(FailureKind.classify("MessageAbortedError: Aborted", statusCode: 500), .aborted)
+        XCTAssertEqual(FailureKind.classify("User aborted", statusCode: nil), .aborted)
+        XCTAssertEqual(FailureKind.classify("Tool execution aborted", statusCode: nil), .aborted)
+    }
+
     // MARK: Diagnostics report
 
     @MainActor

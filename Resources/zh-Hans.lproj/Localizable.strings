@@ -1,4 +1,9 @@
 /* DevEco Code Desktop — 简体中文 */
+"DevEco Code Desktop" = "DevEco Code Desktop";
+"My Provider" = "我的供应商";
+"my-provider" = "我的供应商";
+"https://api.example.com/v1" = "https://api.example.com/v1";
+"let answer = 42" = "let answer = 42";
 
 /* 通用 */
 "Cancel" = "取消";
@@ -24,6 +29,7 @@
 "Settings (⌘,)" = "设置（⌘,）";
 "Failed" = "启动失败";
 "Stopped" = "已停止";
+"The generation was stopped." = "本次生成已停止。";
 "Connected" = "已连接";
 "Starting…" = "连接中…";
 "Not connected yet — wait for the server to start." = "尚未连接 — 请等待服务启动。";
@@ -261,7 +267,11 @@
 "Code Search" = "搜索代码";
 "Read Image" = "查看图片";
 "Task" = "任务";
+"Prompt" = "任务要求";
+"Result" = "执行结果";
 "Question" = "提问";
+"image" = "图片";
+"file" = "文件";
 "Todo Read" = "查看待办";
 "Todo Write" = "更新待办";
 "Memory Read" = "读取记忆";
@@ -398,3 +408,147 @@
 "Follow system" = "跟随系统";
 "Light" = "浅色";
 "Dark" = "深色";
+
+/* 批量清理 */
+"Context window usage — input tokens of the last response vs the model's context limit" = "上下文窗口用量——上一次响应的输入 token 与模型上下文上限的对比";
+
+/* 批量清理 */
+"Use This Folder" = "使用此文件夹";
+
+/* 批量清理 */
+"Could not find the deveco CLI. Install it globally, or set its full path in Settings → Server." = "找不到 deveco CLI。请全局安装，或在“设置 → 服务”中指定完整路径。";
+
+/* 批量清理 */
+"No free local port available to start deveco serve." = "没有可用的本地端口来启动 deveco serve。";
+
+/* 批量清理 */
+"deveco serve did not become healthy. %@" = "deveco serve 启动后健康检查未通过。%@";
+
+/* 批量清理 */
+"deveco serve could not find Node.js. Set the Node.js path in Settings → Server. Auto-detected: %@." = "deveco serve 找不到 Node.js。请在“设置 → 服务”中指定 Node.js 路径。自动探测结果：%@。";
+
+/* 批量清理 */
+"not found" = "未找到";
+
+/* 批量清理 */
+"deveco serve exited. %@" = "deveco serve 已退出。%@";
+
+/* 批量清理 */
+"ditto timed out after %ds" = "ditto 在 %d 秒后超时";
+
+/* 批量清理 */
+"ditto exited with status %d. %@" = "ditto 以状态 %d 退出。%@";
+
+/* 批量清理 */
+"Nothing to back up yet — the data folder does not exist." = "暂无可备份内容——数据目录不存在。";
+
+/* 批量清理 */
+"Backup archive does not contain a single deveco-data folder." = "备份压缩包中没有单独的 deveco-data 目录。";
+
+/* 批量清理 */
+"Cannot export while the server is not connected." = "服务未连接，无法导出。";
+
+/* 批量清理 */
+"Export failed: %@" = "导出失败：%@";
+
+/* 批量清理 */
+"Use This Binary" = "使用此程序";
+
+/* 批量清理 */
+"Select the deveco CLI executable" = "选择 deveco CLI 可执行文件";
+
+/* 批量清理 */
+"Copy answer" = "复制回答";
+
+/* 批量清理 */
+"Copy Markdown" = "复制 Markdown";
+
+/* 批量清理 */
+"@ai-sdk/openai-compatible" = "@ai-sdk/openai-compatible";
+
+/* 批量清理 */
+"Backing up…" = "正在备份…";
+
+/* 批量清理 */
+"Choose a deveco backup archive" = "选择 deveco 备份压缩包";
+
+/* 批量清理 */
+"(no output yet)" = "（暂无输出）";
+
+/* 批量清理 */
+"Keep running" = "保持运行";
+
+/* 实测补漏 */
+"untitled session" = "未命名会话";
+
+/* 实测补漏 */
+"new session" = "新会话";
+
+/* 实测补漏 */
+"Session not found" = "会话不存在";
+
+/* 实测补漏 */
+"connected but thinking" = "已连接，正在思考";
+
+/* 实测补漏 */
+"the agent asks the user" = "智能体正在等待用户回答";
+
+/* 实测补漏 */
+"here is what\n/// this is and what you should do" = "这是说明\n/// 这是用途和操作方法";
+
+/* 实测补漏 */
+"message aborted" = "消息已中止";
+
+/* 实测补漏 */
+"invalid api key" = "API key 无效";
+
+/* 实测补漏 */
+"api key" = "API key";
+
+/* 实测补漏 */
+"rate limit" = "速率限制";
+
+/* 实测补漏 */
+"out of tokens" = "token 已用尽";
+
+/* 实测补漏 */
+"model not found" = "模型不存在";
+
+/* 实测补漏 */
+"unknown model" = "未知模型";
+
+/* 实测补漏 */
+"no such model" = "无此模型";
+
+/* 实测补漏 */
+"does not exist" = "不存在";
+
+/* 实测补漏 */
+"not a valid model" = "无效模型";
+
+/* 实测补漏 */
+"model unavailable" = "模型不可用";
+
+/* 实测补漏 */
+"timed out" = "超时";
+
+/* 实测补漏 */
+"could not connect" = "无法连接";
+
+/* 实测补漏 */
+"internal server" = "服务内部错误";
+
+/* 实测补漏 */
+"bad gateway" = "网关错误";
+
+/* 实测补漏 */
+"Invalid response from deveco server" = "deveco 服务返回了无效响应";
+
+/* 备份状态 */
+"Backup failed: %@" = "备份失败：%@";
+
+/* 备份状态 */
+"Restoring…" = "正在恢复…";
+
+/* 备份状态 */
+"Restore failed: %@" = "恢复失败：%@";

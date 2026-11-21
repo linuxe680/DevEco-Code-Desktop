@@ -54,4 +54,22 @@ final class ReliabilityFixTests: XCTestCase {
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         XCTAssertEqual(String(data: data, encoding: .utf8), "hello-from-child\n")
     }
+
+    func testServerEnvironmentPWDMatchesProjectDirectory() {
+        let project = URL(fileURLWithPath: "/Users/example/Project")
+        let environment = ServerManager.serverEnvironment(
+            base: ["PWD": "/stale/path", "PATH": "/usr/bin"],
+            dataDirectory: URL(fileURLWithPath: "/tmp/data"),
+            executable: URL(fileURLWithPath: "/tmp/deveco/bin/deveco"),
+            projectDirectory: project
+        )
+        XCTAssertEqual(environment["PWD"], project.path)
+    }
+
+    @MainActor
+    func testFirstFreePortDoesNotWrapAround() {
+        let port = ServerManager.firstFreePort(from: 65_530)
+        XCTAssertNotNil(port)
+        XCTAssertGreaterThanOrEqual(port ?? 0, 65_530)
+    }
 }

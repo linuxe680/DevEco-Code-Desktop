@@ -8,8 +8,8 @@ enum QuitBehavior: String, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .stopServer: return "Stop server"
-        case .keepRunning: return "Keep running"
+        case .stopServer: return NSLocalizedString("Stop server", comment: "")
+        case .keepRunning: return NSLocalizedString("Keep server running", comment: "")
         }
     }
 }
@@ -48,6 +48,8 @@ enum AppSettings {
         static let sessionVariants = "sessionVariants"
         static let settingsVersion = "settingsVersion"
         static let pinnedSessionIDs = "pinnedSessionIDs"
+        static let clientAutoTitles = "clientAutoTitles"
+        static let manuallyRenamedSessionIDs = "manuallyRenamedSessionIDs"
         static let recentModels = "recentModelChoices"
         static let appLanguage = "appLanguage"
         static let appAppearance = "appAppearance"
@@ -195,6 +197,19 @@ enum AppSettings {
     static var pinnedSessionIDs: [String] {
         get { UserDefaults.standard.stringArray(forKey: Keys.pinnedSessionIDs) ?? [] }
         set { UserDefaults.standard.set(newValue, forKey: Keys.pinnedSessionIDs) }
+    }
+
+    /// Titles derived from the first prompt. The server may rename sessions
+    /// from model output; keep these prompt titles authoritative until the
+    /// user explicitly renames the session themselves.
+    static var clientAutoTitles: [String: String] {
+        get { UserDefaults.standard.dictionary(forKey: Keys.clientAutoTitles) as? [String: String] ?? [:] }
+        set { UserDefaults.standard.set(newValue, forKey: Keys.clientAutoTitles) }
+    }
+
+    static var manuallyRenamedSessionIDs: [String] {
+        get { UserDefaults.standard.stringArray(forKey: Keys.manuallyRenamedSessionIDs) ?? [] }
+        set { UserDefaults.standard.set(newValue, forKey: Keys.manuallyRenamedSessionIDs) }
     }
 
     /// Cross-session "always allow" rules. Each rule is "permission|pattern";

@@ -27,8 +27,8 @@ struct ProviderEditorView: View {
             HStack {
                 Text(isNew ? "Add Provider" : "Edit \(provider.name)").font(.title3.weight(.semibold))
                 Spacer()
-                Button("Cancel") { onCancel() }
-                Button("Save") { onSave() }
+                Button(NSLocalizedString("Cancel", comment: "")) { onCancel() }
+                Button(NSLocalizedString("Save", comment: "")) { onSave() }
                     .keyboardShortcut(.defaultAction)
                     .disabled(!isValid)
             }
@@ -38,14 +38,14 @@ struct ProviderEditorView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    labeledField("Provider ID", text: $provider.id, placeholder: "my-provider")
+                    labeledField("Provider ID", text: $provider.id, placeholder: NSLocalizedString("my-provider", comment: ""))
                         .disabled(!isNew)
-                    labeledField("Display name", text: $provider.name, placeholder: "My Provider")
-                    labeledField("npm package", text: $provider.npm, placeholder: "@ai-sdk/openai-compatible")
+                    labeledField("Display name", text: $provider.name, placeholder: NSLocalizedString("My Provider", comment: ""))
+                    labeledField("npm package", text: $provider.npm, placeholder: NSLocalizedString("@ai-sdk/openai-compatible", comment: ""))
                     labeledField("Base URL", text: Binding(
                         get: { provider.baseURL },
                         set: { provider.baseURL = $0 }
-                    ), placeholder: "https://api.example.com/v1")
+                    ), placeholder: NSLocalizedString("https://api.example.com/v1", comment: ""))
                     secureField("API key", text: Binding(
                         get: { provider.apiKey },
                         set: { provider.apiKey = $0 }
@@ -54,7 +54,7 @@ struct ProviderEditorView: View {
                     Divider()
 
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Models").font(.headline)
+                        Text(NSLocalizedString("Models", comment: "")).font(.headline)
                         ForEach($provider.models) { $model in
                             VStack(alignment: .leading, spacing: 6) {
                                 HStack {
@@ -68,12 +68,12 @@ struct ProviderEditorView: View {
                                     .buttonStyle(.plain)
                                 }
                                 HStack {
-                                    Toggle("Reasoning", isOn: $model.reasoning)
+                                    Toggle(NSLocalizedString("Reasoning", comment: ""), isOn: $model.reasoning)
                                     Spacer()
-                                    Text("Context")
+                                    Text(NSLocalizedString("Context", comment: ""))
                                     TextField("Context", value: $model.context, format: .number)
                                         .frame(width: 90)
-                                    Text("Output")
+                                    Text(NSLocalizedString("Output", comment: ""))
                                     TextField("Output", value: $model.output, format: .number)
                                         .frame(width: 90)
                                 }

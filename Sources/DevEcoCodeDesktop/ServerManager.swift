@@ -69,7 +69,7 @@ final class ServerManager: ObservableObject {
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
-        panel.prompt = "Use This Folder"
+        panel.prompt = NSLocalizedString("Use This Folder", comment: "")
         guard panel.runModal() == .OK, let url = panel.url else { return }
         openProject(url)
     }
@@ -125,9 +125,10 @@ final class ServerManager: ObservableObject {
         guard let executable = Self.resolveDevecoExecutable() else {
             state = .failed
             failureReason = .devecoMissing
-            errorMessage = """
-            Could not find the deveco CLI. Install it globally, or set its full path in Settings → Server.
-            """
+            errorMessage = NSLocalizedString(
+                "Could not find the deveco CLI. Install it globally, or set its full path in Settings → Server.",
+                comment: ""
+            )
             endStartupActivity()
             return
         }
@@ -138,7 +139,7 @@ final class ServerManager: ObservableObject {
         guard let port = Self.firstFreePort(from: basePort) else {
             state = .failed
             failureReason = .noFreePort
-            errorMessage = "No free local port available to start deveco serve."
+            errorMessage = NSLocalizedString("No free local port available to start deveco serve.", comment: "")
             endStartupActivity()
             return
         }
@@ -152,14 +153,11 @@ final class ServerManager: ObservableObject {
 
         // deveco's launcher is a `#!/usr/bin/env node` script, so the child
         // needs Node.js on PATH even though GUI apps get a minimal PATH.
-        var environment = ProcessInfo.processInfo.environment
-        environment["XDG_DATA_HOME"] = dataDirectory.path
-        var pathPrefix: [String] = [executable.deletingLastPathComponent().path]
-        if let nodeDir = Self.resolveNodeDirectory() {
-            pathPrefix.append(nodeDir)
-        }
-        environment["PATH"] = pathPrefix.joined(separator: ":")
-            + ":" + (environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin")
+        let environment = Self.serverEnvironment(
+            dataDirectory: dataDirectory,
+            executable: executable,
+            projectDirectory: projectDirectory
+        )
 
         // stdout/stderr 汇入同一个 Pipe，由本进程读取后写入日志文件并更新 logTail。
         let output = Pipe()
@@ -229,12 +227,13 @@ final class ServerManager: ObservableObject {
         monitorTask?.cancel()
         monitorTask = nil
         endStartupActivity()
+        state = .stopped
+        errorMessage = nil
+        failureReason = nil
         guard let serverProcess else {
             cleanUpIO()
             return
         }
-        // 先标记为已停止，避免终止处理器闪现"服务器意外退出"。
-        state = .stopped
         // 终止整个进程组（deveco 启动器 + Node 服务），避免孤儿进程占端口。
         serverProcess.terminate()
         self.serverProcess = nil
@@ -265,7 +264,10 @@ final class ServerManager: ObservableObject {
         guard state == .starting else { return }
         state = .failed
         failureReason = .unhealthy
-        errorMessage = "deveco serve did not become healthy. \(logTail.suffix(400))"
+        errorMessage = String(
+            format: NSLocalizedString("deveco serve did not become healthy. %@", comment: ""),
+            Self.redact(String(logTail.suffix(400)))
+        )
         endStartupActivity()
     }
 
@@ -292,7 +294,8 @@ final class ServerManager: ObservableObject {
         guard let launched = serverProcess, isServerAlive(launched) else { return }
         Task { [weak self] in
             guard let self else { return }
-            guard await self.probeHealth(), self.state == .starting || self.state == .failed else { return }
+            let healthy = await self.probeHealth()
+            guard healthy, self.state == .starting || self.state == .failed else { return }
             self.markRunning()
         }
     }
@@ -334,12 +337,18 @@ final class ServerManager: ObservableObject {
         failureReason = .exited
         Log.server.error("deveco serve exited unexpectedly")
         if logTail.contains("node: No such file or directory") {
-            errorMessage = """
-            deveco serve could not find Node.js. Set the Node.js path in Settings → Server. \
-            Auto-detected: \(Self.resolveNodeDirectory() ?? "not found").
-            """
+            errorMessage = String(
+                format: NSLocalizedString(
+                    "deveco serve could not find Node.js. Set the Node.js path in Settings → Server. Auto-detected: %@.",
+                    comment: ""
+                ),
+                Self.resolveNodeDirectory() ?? NSLocalizedString("not found", comment: "")
+            )
         } else {
-            errorMessage = "deveco serve exited. \(Self.redact(String(logTail.suffix(400))))"
+            errorMessage = String(
+                format: NSLocalizedString("deveco serve exited. %@", comment: ""),
+                Self.redact(String(logTail.suffix(400)))
+            )
         }
     }
 
@@ -355,20 +364,27 @@ final class ServerManager: ObservableObject {
 
         let deadline = Date().addingTimeInterval(timeout)
         while task.isRunning && Date() < deadline {
-            usleep(50_000)
+            Thread.sleep(forTimeInterval: 0.05)
         }
         if task.isRunning {
             task.terminate()
-            usleep(200_000)
+            Thread.sleep(forTimeInterval: 0.2)
             if task.isRunning { kill(task.processIdentifier, SIGKILL) }
             throw NSError(domain: domain, code: 124,
-                          userInfo: [NSLocalizedDescriptionKey: "ditto timed out after \(Int(timeout))s"])
+                          userInfo: [NSLocalizedDescriptionKey: String(
+                            format: NSLocalizedString("ditto timed out after %ds", comment: ""),
+                            Int(timeout)
+                          )])
         }
         guard task.terminationStatus == 0 else {
             let detail = String(data: errorPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             throw NSError(domain: domain, code: Int(task.terminationStatus),
-                          userInfo: [NSLocalizedDescriptionKey: "ditto exited with status \(task.terminationStatus). \(detail)"])
+                          userInfo: [NSLocalizedDescriptionKey: String(
+                            format: NSLocalizedString("ditto exited with status %d. %@", comment: ""),
+                            task.terminationStatus,
+                            detail
+                          )])
         }
     }
 
@@ -402,6 +418,28 @@ final class ServerManager: ObservableObject {
             options: .regularExpression
         )
         return result
+    }
+
+    nonisolated static func serverEnvironment(
+        base: [String: String] = ProcessInfo.processInfo.environment,
+        dataDirectory: URL,
+        executable: URL,
+        projectDirectory: URL
+    ) -> [String: String] {
+        var environment = base
+        environment["XDG_DATA_HOME"] = dataDirectory.path
+        // deveco CLI reads PWD for its working tree in addition to the real
+        // cwd. The GUI app inherits PWD from whatever shell launched it, so
+        // leaving it untouched can make tools run in a stale directory even
+        // though posix_spawn already chdir'd correctly.
+        environment["PWD"] = projectDirectory.path
+        var pathPrefix: [String] = [executable.deletingLastPathComponent().path]
+        if let nodeDir = Self.resolveNodeDirectory() {
+            pathPrefix.append(nodeDir)
+        }
+        environment["PATH"] = pathPrefix.joined(separator: ":")
+            + ":" + (environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin")
+        return environment
     }
 
     private func appendLog(_ text: String) {
@@ -459,7 +497,10 @@ final class ServerManager: ObservableObject {
         let dataDir = dataDirectory
         guard FileManager.default.fileExists(atPath: dataDir.path) else {
             throw NSError(domain: "backup", code: 1,
-                          userInfo: [NSLocalizedDescriptionKey: "Nothing to back up yet — the data folder does not exist."])
+                          userInfo: [NSLocalizedDescriptionKey: NSLocalizedString(
+                            "Nothing to back up yet — the data folder does not exist.",
+                            comment: ""
+                          )])
         }
         try Self.runDitto(
             ["-c", "-k", "--sequesterRsrc", "--keepParent", dataDir.path, destination.path],
@@ -491,7 +532,10 @@ final class ServerManager: ObservableObject {
               restored.lastPathComponent == "deveco-data" else {
             try? FileManager.default.removeItem(at: staging)
             throw NSError(domain: "restore", code: 1,
-                          userInfo: [NSLocalizedDescriptionKey: "Backup archive does not contain a single deveco-data folder."])
+                          userInfo: [NSLocalizedDescriptionKey: NSLocalizedString(
+                            "Backup archive does not contain a single deveco-data folder.",
+                            comment: ""
+                          )])
         }
 
         // 原子替换：先把旧目录改名保留，新数据就位并验证后才删除备份。
@@ -665,9 +709,8 @@ final class ServerManager: ObservableObject {
 
     // MARK: - Port selection
 
-    private static func firstFreePort(from start: UInt16) -> UInt16? {
-        for offset in 0..<100 {
-            let candidate = start + UInt16(offset)
+    static func firstFreePort(from start: UInt16) -> UInt16? {
+        for candidate in start...65_535 {
             if isPortFree(candidate) { return candidate }
         }
         return nil

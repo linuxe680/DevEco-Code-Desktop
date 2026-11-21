@@ -165,15 +165,15 @@ struct DevEcoCodeDesktopApp: App {
         }
         .commands {
             CommandGroup(after: .newItem) {
-                Button("New Session") { store.createSession() }
+                Button(NSLocalizedString("New Session", comment: "")) { store.createSession() }
                     .keyboardShortcut("n", modifiers: .command)
-                Button("Quick Switch…") {
+                Button(NSLocalizedString("Quick Switch…", comment: "")) {
                     NotificationCenter.default.post(name: .openQuickSwitch, object: nil)
                 }
                 .keyboardShortcut("k", modifiers: .command)
-                Button("Choose Project Folder…") { appDelegate.server.chooseFolder() }
+                Button(NSLocalizedString("Choose Project Folder…", comment: "")) { appDelegate.server.chooseFolder() }
                 Divider()
-                Button("Export Session…") {
+                Button(NSLocalizedString("Export Session…", comment: "")) {
                     NotificationCenter.default.post(name: .exportSelectedSession, object: nil)
                 }
             }

@@ -101,7 +101,7 @@ struct ContentView: View {
                 }
                 Spacer()
                 Menu {
-                    Button("Choose Folder…") { server.chooseFolder() }
+                    Button(NSLocalizedString("Choose Folder…", comment: "")) { server.chooseFolder() }
                     if !server.recentProjects.isEmpty {
                         Divider()
                         ForEach(server.recentProjects, id: \.path) { url in
@@ -111,7 +111,7 @@ struct ContentView: View {
                         }
                     }
                 } label: {
-                    Label("Project", systemImage: "folder")
+                    Label(NSLocalizedString("Project", comment: ""), systemImage: "folder")
                         .font(.system(size: 14, weight: .medium))
                 }
                 .fixedSize()
@@ -129,7 +129,9 @@ struct ContentView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help(server.state == .running ? "Stop Server" : "Start Server")
+                .help(server.state == .running
+                      ? NSLocalizedString("Stop Server", comment: "")
+                      : NSLocalizedString("Start Server", comment: ""))
                 Button {
                     Self.openSettings()
                 } label: {
@@ -140,7 +142,7 @@ struct ContentView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help("Settings (⌘,)")
+                .help(NSLocalizedString("Settings (⌘,)", comment: ""))
             }
             .padding(.horizontal, 14)
             .frame(height: 42)
@@ -175,10 +177,10 @@ struct ContentView: View {
                 HStack {
                     Image(systemName: "arrow.up.circle")
                         .foregroundStyle(.blue)
-                    Text("A new deveco version is available.")
+                    Text(NSLocalizedString("A new deveco version is available.", comment: ""))
                         .font(.caption)
                     Spacer()
-                    Button("Dismiss") {
+                    Button(NSLocalizedString("Dismiss", comment: "")) {
                         store.updateAvailable = false
                     }
                     .controlSize(.small)
@@ -195,7 +197,7 @@ struct ContentView: View {
                         .font(.caption)
                         .lineLimit(2)
                     Spacer()
-                    Button("Dismiss") {
+                    Button(NSLocalizedString("Dismiss", comment: "")) {
                         store.errorMessage = nil
                         providers.errorMessage = nil
                         server.errorMessage = nil
@@ -218,6 +220,10 @@ struct ContentView: View {
             store.serverDefaultModel = providers.defaultModel
             applyServerDefaultModelIfNeeded()
         }
+        .onChange(of: initialSessionID) { newValue in
+            guard let newValue, !newValue.isEmpty else { return }
+            store.select(newValue)
+        }
         .onChange(of: providers.defaultModel) { _ in
             store.serverDefaultModel = providers.defaultModel
             applyServerDefaultModelIfNeeded()
@@ -235,6 +241,10 @@ struct ContentView: View {
             updateDockBadge()
         }
         .onChange(of: store.pendingQuestions.count) { _ in
+            updateDockBadge()
+        }
+        .onAppear { updateDockBadge() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             updateDockBadge()
         }
         .overlay {
@@ -278,7 +288,10 @@ struct ContentView: View {
             do {
                 try await store.export(session, to: url)
             } catch {
-                store.errorMessage = "Export failed: \(error.localizedDescription)"
+                store.errorMessage = String(
+                    format: NSLocalizedString("Export failed: %@", comment: ""),
+                    error.localizedDescription
+                )
             }
         }
     }
@@ -303,8 +316,8 @@ struct ContentView: View {
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
-        panel.prompt = "Use This Binary"
-        panel.message = "Select the deveco CLI executable"
+        panel.prompt = NSLocalizedString("Use This Binary", comment: "")
+        panel.message = NSLocalizedString("Select the deveco CLI executable", comment: "")
         guard panel.runModal() == .OK, let url = panel.url else { return }
         AppSettings.devecoPath = url.path
         server.start()
@@ -376,7 +389,7 @@ private struct ConnectionStatusStrip: View {
                     .controlSize(.small)
                 Image(systemName: "wifi.exclamationmark")
                     .foregroundStyle(.orange)
-                Text("Connection lost — reconnecting…")
+                Text(NSLocalizedString("Connection lost — reconnecting…", comment: ""))
                     .font(.system(size: 14, weight: .medium))
                 Text(String(format: NSLocalizedString("Attempt %d", comment: ""), max(store.reconnectAttemptCount, 1)))
                     .font(.system(size: 12))
@@ -384,7 +397,7 @@ private struct ConnectionStatusStrip: View {
             case (.starting, false):
                 ProgressView()
                     .controlSize(.small)
-                Text("Starting the deveco server…")
+                Text(NSLocalizedString("Starting the deveco server…", comment: ""))
                     .font(.system(size: 14, weight: .medium))
                 Text("127.0.0.1:\(server.port)")
                     .font(.system(size: 12))
@@ -402,18 +415,18 @@ private struct ConnectionStatusStrip: View {
                             .lineLimit(2)
                     }
                 }
-                Button("Retry") { server.start() }
+                Button(NSLocalizedString("Retry", comment: "")) { server.start() }
                     .controlSize(.small)
-                Button("Show Log") {
+                Button(NSLocalizedString("Show Log", comment: "")) {
                     NSWorkspace.shared.activateFileViewerSelecting([ServerManager.logFileURL])
                 }
                 .controlSize(.small)
             case (.stopped, false):
                 Image(systemName: "pause.circle")
                     .foregroundStyle(.secondary)
-                Text("Server stopped")
+                Text(NSLocalizedString("Server stopped", comment: ""))
                     .font(.system(size: 14, weight: .medium))
-                Button("Start Server") { server.start() }
+                Button(NSLocalizedString("Start Server", comment: "")) { server.start() }
                     .controlSize(.small)
             case (.running, false):
                 EmptyView()
@@ -468,7 +481,7 @@ struct QuickSwitchView: View {
 
             if results.isEmpty {
                 VStack {
-                    Text("No matching sessions")
+                    Text(NSLocalizedString("No matching sessions", comment: ""))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -523,10 +536,10 @@ private struct SetupCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Label("Set up the deveco CLI", systemImage: "wrench.and.screwdriver")
+            Label(NSLocalizedString("Set up the deveco CLI", comment: ""), systemImage: "wrench.and.screwdriver")
                 .font(.title3.weight(.semibold))
 
-            Text("The app manages a local deveco server but couldn't find the CLI on this Mac.")
+            Text(NSLocalizedString("The app manages a local deveco server but couldn't find the CLI on this Mac.", comment: ""))
                 .font(.callout)
 
             VStack(alignment: .leading, spacing: 8) {
@@ -536,10 +549,10 @@ private struct SetupCard: View {
             }
 
             HStack {
-                Button("Choose Binary…", action: onChooseBinary)
+                Button(NSLocalizedString("Choose Binary…", comment: ""), action: onChooseBinary)
                     .keyboardShortcut(.defaultAction)
-                Button("Retry", action: onRetry)
-                Button("Open Settings…", action: onOpenSettings)
+                Button(NSLocalizedString("Retry", comment: ""), action: onRetry)
+                Button(NSLocalizedString("Open Settings…", comment: ""), action: onOpenSettings)
             }
         }
         .padding(24)

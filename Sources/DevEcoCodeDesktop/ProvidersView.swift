@@ -9,7 +9,7 @@ struct ProvidersView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Models & Providers").font(.title2.weight(.semibold))
+                Text(NSLocalizedString("Models & Providers", comment: "")).font(.title2.weight(.semibold))
                 Spacer()
                 Button {
                     editingProvider = ProviderEntry(
@@ -22,7 +22,7 @@ struct ProvidersView: View {
                     )
                     showEditor = true
                 } label: {
-                    Label("Add Provider", systemImage: "plus")
+                    Label(NSLocalizedString("Add Provider", comment: ""), systemImage: "plus")
                 }
             }
             .frame(maxWidth: 980)
@@ -66,10 +66,10 @@ struct ProvidersView: View {
 
     private var defaultModelSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Default model").font(.headline)
+            Text(NSLocalizedString("Default model", comment: "")).font(.headline)
             HStack {
                 Picker("", selection: $selectedDefault) {
-                    Text("None").tag("")
+                    Text(NSLocalizedString("None", comment: "")).tag("")
                     ForEach(providerStore.allModelChoices) { choice in
                         Text("\(choice.provider) · \(choice.name)").tag(choice.id)
                     }
@@ -77,12 +77,12 @@ struct ProvidersView: View {
                 .labelsHidden()
                 .frame(maxWidth: .infinity)
 
-                Button("Apply") {
+                Button(NSLocalizedString("Apply", comment: "")) {
                     Task { await providerStore.setDefaultModel(selectedDefault) }
                 }
                 .disabled(selectedDefault == providerStore.defaultModel)
             }
-            Text("Used when a session has no explicit model.")
+            Text(NSLocalizedString("Used when a session has no explicit model.", comment: ""))
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -93,9 +93,9 @@ struct ProvidersView: View {
 
     private var configuredSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Configured providers").font(.headline)
+            Text(NSLocalizedString("Configured providers", comment: "")).font(.headline)
             if providerStore.providers.isEmpty {
-                Text("No custom providers configured.")
+                Text(NSLocalizedString("No custom providers configured.", comment: ""))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -103,14 +103,14 @@ struct ProvidersView: View {
                 DisclosureGroup {
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
-                            Text("Base URL").foregroundStyle(.secondary)
+                            Text(NSLocalizedString("Base URL", comment: "")).foregroundStyle(.secondary)
                             Text(provider.baseURL.isEmpty ? "—" : provider.baseURL)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                             Spacer()
                         }
                         HStack {
-                            Text("API key").foregroundStyle(.secondary)
+                            Text(NSLocalizedString("API key", comment: "")).foregroundStyle(.secondary)
                             Text(provider.apiKey.isEmpty ? "—" : String(repeating: "•", count: min(provider.apiKey.count, 12)))
                             Spacer()
                         }
@@ -125,7 +125,7 @@ struct ProvidersView: View {
                                 }
                                 Spacer()
                                 if model.reasoning {
-                                    Text("reasoning")
+                                    Text(NSLocalizedString("reasoning", comment: ""))
                                         .font(.caption2)
                                         .padding(.horizontal, 6)
                                         .padding(.vertical, 2)
@@ -176,8 +176,8 @@ struct ProvidersView: View {
 
     private var catalogSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Available providers").font(.headline)
-            Text("Built-in and plugin providers reported by deveco.")
+            Text(NSLocalizedString("Available providers", comment: "")).font(.headline)
+            Text(NSLocalizedString("Built-in and plugin providers reported by deveco.", comment: ""))
                 .font(.caption)
                 .foregroundStyle(.secondary)
             ForEach(providerStore.catalog) { item in
@@ -200,7 +200,7 @@ struct ProvidersView: View {
                     }
                     if !providerStore.providers.contains(where: { $0.id == item.id }),
                        let template = providerStore.providerFromCatalog(item) {
-                        Button("Configure") {
+                        Button(NSLocalizedString("Configure", comment: "")) {
                             editingProvider = template
                             showEditor = true
                         }

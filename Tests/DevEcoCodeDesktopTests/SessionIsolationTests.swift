@@ -147,6 +147,107 @@ final class SessionIsolationTests: XCTestCase {
         XCTAssertEqual(store.inlineError?.kind, .modelUnavailable)
     }
 
+    func testAbortErrorDoesNotBecomeAnInlineFailure() throws {
+        let store = SessionStore()
+        store.selectedSessionID = "s1"
+        store.handle(try event(
+            #"{"type":"session.error","properties":{"sessionID":"s1","error":{"name":"MessageAbortedError","data":{"message":"Aborted"}}}}"#
+        ))
+
+        XCTAssertNil(store.inlineError)
+        XCTAssertNil(store.indicator(for: "s1"))
+    }
+
+    func testDeletedSelectedSessionDoesNotSurfaceRaw404() {
+        let error = APIError.status(404, #"{"name":"NotFoundError","data":{"message":"Session not found"}}"#)
+        XCTAssertEqual(error.kind, .modelUnavailable)
+        XCTAssertTrue(error.localizedDescription.contains("404"))
+    }
+
+    func testSessionDeletionEventClearsDeletedSessionState() throws {
+        let store = SessionStore()
+        store.sessions = [
+            Session(id: "ses_delete", title: "to delete", directory: nil, time: nil, revert: nil)
+        ]
+        store.selectedSessionID = "ses_delete"
+        store.handle(try event(
+            #"{"type":"session.deleted","properties":{"sessionID":"ses_delete"}}"#
+        ))
+
+        XCTAssertTrue(store.sessions.isEmpty)
+        XCTAssertNil(store.selectedSessionID)
+    }
+
+    func testApplyingDeletionClearsTodosDiffsAndInlineError() throws {
+        let store = SessionStore()
+        store.sessions = [
+            Session(id: "ses_dirty", title: "dirty", directory: nil, time: nil, revert: nil)
+        ]
+        store.selectedSessionID = "ses_dirty"
+        store.handle(try event(
+            #"{"type":"session.deleted","properties":{"sessionID":"ses_dirty"}}"#
+        ))
+
+        XCTAssertTrue(store.todos.isEmpty)
+        XCTAssertTrue(store.diffs.isEmpty)
+        XCTAssertNil(store.inlineError)
+    }
+
+    func testDisconnectClearsGlobalConsentAndSelection() throws {
+        let store = SessionStore()
+        store.selectedSessionID = "ses_old"
+        store.handle(try event(
+            #"{"type":"session.error","properties":{"error":"product agreement consent required"}}"#
+        ))
+        XCTAssertTrue(store.needsConsent)
+        store.isCompacting = true
+        store.errorMessage = "stale"
+        store.disconnect()
+
+        XCTAssertNil(store.selectedSessionID)
+        XCTAssertFalse(store.needsConsent)
+        XCTAssertFalse(store.isCompacting)
+        XCTAssertNil(store.errorMessage)
+    }
+
+    func testDisconnectClearsDraftQueueAndMentionState() throws {
+        let store = SessionStore()
+        store.selectedSessionID = "ses_old"
+        store.draft = "unsent draft"
+        store.editQueued(SessionStore.QueuedPrompt(text: "queued text", model: nil))
+        store.handle(try event(
+            #"{"type":"permission.asked","properties":{"id":"p1","sessionID":"ses_old","permission":"bash","patterns":["x"]}}"#
+        ))
+
+        store.disconnect()
+
+        XCTAssertEqual(store.draft, "")
+        XCTAssertTrue(store.queuedPrompts.isEmpty)
+        XCTAssertTrue(store.pendingPermissions.isEmpty)
+        XCTAssertTrue(store.attachments.isEmpty)
+        XCTAssertEqual(store.draftToken, store.draftToken)
+    }
+
+    func testPermissionReplyClearsPendingImmediately() throws {
+        let store = SessionStore()
+        store.selectedSessionID = "s1"
+        let request = PermissionRequest(
+            id: "p_opt",
+            sessionID: "s1",
+            permission: "bash",
+            patterns: ["x"],
+            action: nil
+        )
+        store.handle(try event(
+            #"{"type":"permission.asked","properties":{"id":"p_opt","sessionID":"s1","permission":"bash","patterns":["x"]}}"#
+        ))
+        XCTAssertEqual(store.pendingPermissions.count, 1)
+
+        store.reply(to: request, reply: "once")
+
+        XCTAssertTrue(store.pendingPermissions.isEmpty, "banner and Dock badge must clear before the network reply lands")
+    }
+
     func testBackgroundCompletionBecomesUnreadAndClearsOnOpen() throws {
         let store = SessionStore()
         store.selectedSessionID = "s1"

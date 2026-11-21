@@ -98,7 +98,7 @@ struct SessionTime: Codable {
 
 struct Session: Identifiable, Codable {
     let id: String
-    let title: String?
+    var title: String?
     let directory: String?
     let time: SessionTime?
     let revert: SessionRevert?
@@ -112,7 +112,13 @@ struct Session: Identifiable, Codable {
     }
 
     var displayTitle: String {
-        if let title, !title.isEmpty { return title }
+        if let title, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let normalized = title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if normalized == "new session" || normalized == "untitled session" {
+                return NSLocalizedString("New session", comment: "")
+            }
+            return title
+        }
         return NSLocalizedString("Untitled session", comment: "")
     }
 
@@ -268,6 +274,13 @@ struct MessageTokens: Codable {
     let output: Double?
     let reasoning: Double?
     let cache: TokenCache?
+
+    /// Context occupied after this assistant turn. Prefer the server's
+    /// explicit total; older builds only report input + cached read.
+    var contextUsed: Double {
+        if let total, total > 0 { return total }
+        return (input ?? 0) + (cache?.read ?? 0)
+    }
 }
 
 struct TokenCache: Codable {
@@ -303,6 +316,12 @@ func formatChatDuration(milliseconds: Double) -> String {
 /// Provider catalogs often include the raw model id in parentheses, e.g.
 /// "Hy4 flash (hy4flash)". Drop that suffix for UI labels.
 func prettyModelName(_ name: String) -> String {
+    switch name {
+    case "Hy4 flash (hy4flash)": return "混元 Flash"
+    case "Hy4 (hy4)": return "混元"
+    case "DeepSeek-V3", "deepseek-v3": return "DeepSeek V3"
+    default: break
+    }
     guard let open = name.range(of: " ("),
           let close = name.range(of: ")", range: open.upperBound..<name.endIndex) else {
         return name
@@ -407,6 +426,132 @@ struct ToolState: Codable {
     var duration: String? {
         guard let start = time?.start, let end = time?.end, end > start else { return nil }
         return formatChatDuration(milliseconds: end - start)
+    }
+}
+
+/// Parses the raw transcript some harness tools emit as text (description /
+/// prompt / `<task ...>` wrapper) into structured fields for rich rendering.
+struct ToolTrace {
+    let description: String
+    let prompt: String
+    let result: String
+    let subagentType: String?
+
+    private static let taskTagPattern = try? NSRegularExpression(
+        pattern: "<task\\b[^>]*>",
+        options: []
+    )
+    private static let taskEndTagPattern = try? NSRegularExpression(
+        pattern: "</task>",
+        options: []
+    )
+    private static let trailingTypePattern = try? NSRegularExpression(
+        pattern: #"\n\s*subagent_type\s+[^\n]+"#,
+        options: []
+    )
+    private static let trailingDescriptionPattern = try? NSRegularExpression(
+        pattern: #",\s*subagent_type:\s*[^\n,]+,\s*description:\s*[^\n]+"#,
+        options: []
+    )
+
+    static func looksLikeRawTrace(_ text: String) -> Bool {
+        text.localizedStandardContains("description:")
+            || text.localizedStandardContains("prompt:")
+            || text.localizedStandardContains("<task")
+            || text.localizedStandardContains("<task_result>")
+    }
+
+    static func parse(_ text: String) -> ToolTrace {
+        var body = text
+        var type: String?
+        if let regex = taskTagPattern,
+           let match = regex.firstMatch(in: body, range: NSRange(body.startIndex..., in: body)),
+           let range = Range(match.range, in: body) {
+            let tag = String(body[range])
+            if let typeRange = tag.range(of: "subagent_type=\"") {
+                let value = tag[typeRange.upperBound...]
+                type = String(value.prefix(while: { $0 != "\"" }))
+            }
+            body.removeSubrange(range)
+        }
+        if let regex = taskEndTagPattern,
+           let match = regex.firstMatch(in: body, range: NSRange(body.startIndex..., in: body)),
+           let range = Range(match.range, in: body) {
+            body.removeSubrange(range)
+        }
+        if type == nil, let regex = trailingTypePattern,
+           let match = regex.firstMatch(in: body, range: NSRange(body.startIndex..., in: body)),
+           let range = Range(match.range, in: body) {
+            let tag = String(body[range])
+            type = tag
+                .replacingOccurrences(of: "subagent_type", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            body.removeSubrange(range)
+        }
+
+        var description = ""
+        var prompt = ""
+        var result = ""
+        var current = ""
+        for line in body.split(separator: "\n", omittingEmptySubsequences: false) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("description:") {
+                description = String(trimmed.dropFirst("description:".count)).trimmingCharacters(in: .whitespaces)
+                current = ""
+            } else if trimmed.hasPrefix("prompt:") {
+                prompt = String(trimmed.dropFirst("prompt:".count)).trimmingCharacters(in: .whitespaces)
+                current = "prompt"
+            } else if trimmed.hasPrefix("<task_result>") {
+                current = "result"
+                let first = String(trimmed.dropFirst("<task_result>".count))
+                    .replacingOccurrences(of: "</task_result>", with: "")
+                    .trimmingCharacters(in: .whitespaces)
+                if !first.isEmpty { result += first + "\n" }
+            } else if trimmed.hasPrefix("</task_result>") {
+                current = ""
+            } else {
+                switch current {
+                case "prompt": prompt += String(line) + "\n"
+                case "result": result += String(line) + "\n"
+                default: break
+                }
+            }
+        }
+
+        // Some task traces append `, subagent_type: ..., description: ...` at
+        // the very end. Treat that description as the title when no leading
+        // `description:` field was present, then strip it from the prose.
+        if description.isEmpty,
+           let regex = trailingDescriptionPattern,
+           let match = regex.firstMatch(in: body, range: NSRange(body.startIndex..., in: body)),
+           let range = Range(match.range, in: body) {
+            let tag = String(body[range])
+            if type == nil,
+               let typeRange = tag.range(of: "subagent_type:"),
+               let descriptionRange = tag.range(of: ", description:") {
+                type = String(tag[typeRange.upperBound..<descriptionRange.lowerBound])
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            description = tag
+                .replacingOccurrences(of: ",", with: "")
+                .replacingOccurrences(of: "description:", with: "")
+                .replacingOccurrences(of: "subagent_type:", with: "")
+                .replacingOccurrences(of: type ?? "", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            body.removeSubrange(range)
+            if current == "prompt" {
+                prompt = String(body).trimmingCharacters(in: .whitespacesAndNewlines)
+            } else if current == "result" {
+                result = String(body).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+
+        return ToolTrace(
+            description: description,
+            prompt: prompt.trimmingCharacters(in: .whitespacesAndNewlines),
+            result: result.trimmingCharacters(in: .whitespacesAndNewlines),
+            subagentType: type
+        )
     }
 }
 
@@ -679,12 +824,19 @@ enum APIError: LocalizedError {
 /// heuristic (status code first, then message keywords) because deveco
 /// forwards provider errors as free-form text.
 enum FailureKind: String, Equatable {
-    case auth, quota, modelUnavailable, network, server, unknown
+    case auth, quota, modelUnavailable, network, server, aborted, unknown
 
     static func classify(_ message: String, statusCode: Int? = nil) -> FailureKind {
         let text = message.lowercased()
         func contains(_ needles: [String]) -> Bool {
             needles.contains { text.contains($0) }
+        }
+
+        // An abort is the normal outcome of pressing Stop / Esc. The server
+        // reports it as `MessageAbortedError: Aborted`; it must never be
+        // surfaced as a failure or retried automatically.
+        if contains(["messageabortederror", "message aborted", "aborted"]) {
+            return .aborted
         }
 
         if let code = statusCode {
@@ -725,6 +877,7 @@ enum FailureKind: String, Equatable {
         case .modelUnavailable: return NSLocalizedString("Model unavailable", comment: "")
         case .network: return NSLocalizedString("Network problem", comment: "")
         case .server: return NSLocalizedString("Server error", comment: "")
+        case .aborted: return NSLocalizedString("Stopped", comment: "")
         case .unknown: return NSLocalizedString("Something went wrong", comment: "")
         }
     }
@@ -742,6 +895,8 @@ enum FailureKind: String, Equatable {
             return NSLocalizedString("Make sure the deveco server is running and your network is reachable.", comment: "")
         case .server:
             return NSLocalizedString("A provider or server hiccup — retrying usually fixes it.", comment: "")
+        case .aborted:
+            return NSLocalizedString("The generation was stopped.", comment: "")
         case .unknown:
             return NSLocalizedString("If it keeps failing, copy the diagnostics from Settings → Server.", comment: "")
         }
@@ -754,6 +909,7 @@ enum FailureKind: String, Equatable {
         case .modelUnavailable: return "cpu"
         case .network: return "wifi.exclamationmark"
         case .server: return "server.rack"
+        case .aborted: return "stop.circle"
         case .unknown: return "exclamationmark.triangle"
         }
     }

@@ -297,7 +297,14 @@ final class SessionStore: ObservableObject {
     @Published private(set) var isReconnecting = false
     /// How many reconnect attempts have been made since the stream dropped.
     var reconnectAttemptCount: Int { reconnectAttempts }
+    /// Changes whenever code assigns `draft` (send/clear, session switch,
+    /// history recall, edit & resend). NSTextView uses this token to
+    /// distinguish a real external replacement from a stale SwiftUI render
+    /// of user typing. A UUID avoids the wraparound hazard of an Int counter.
+    @Published private(set) var draftToken = UUID()
     @Published var draft = ""
+
+    func bumpDraftToken() { draftToken = UUID() }
     @Published var selectedModel: String? {
         didSet {
             if oldValue != selectedModel {
@@ -337,6 +344,8 @@ final class SessionStore: ObservableObject {
     /// sessions show (and send) the real model instead of "Server default".
     var serverDefaultModel = ""
     private var autoTitleInFlight = Set<String>()
+    private var clientAutoTitlesBySession = AppSettings.clientAutoTitles
+    private var manuallyRenamedSessionIDs = Set(AppSettings.manuallyRenamedSessionIDs)
     /// Last sent prompt per session, for exact-context retry after an error.
     private var lastSentPromptBySession: [String: PromptSnapshot] = [:]
     /// Automatic retry counter for network-class failures, per session; reset
@@ -378,6 +387,13 @@ final class SessionStore: ObservableObject {
                 self.scheduleReconnect()
             }
         }
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.recheckConnectionIfNeeded() }
+        }
         // 设置页撤销权限后，服务端规则是唯一真相，同步刷新本地缓存。
         NotificationCenter.default.addObserver(
             forName: .savedPermissionsDidChange,
@@ -391,6 +407,7 @@ final class SessionStore: ObservableObject {
     }
 
     func connect(baseURL: URL) {
+        if let api, api.baseURL == baseURL, eventStream.isConnected { return }
         api = APIClient(baseURL: baseURL)
         reconnectAttempts = 0
         isReconnecting = false
@@ -430,6 +447,15 @@ final class SessionStore: ObservableObject {
     func disconnect() {
         api = nil
         eventStream.disconnect()
+        selectedSessionID = nil
+        errorMessage = nil
+        isCompacting = false
+        needsConsent = false
+        productAgreement = nil
+        isAcceptingConsent = false
+        autoTitleInFlight.removeAll()
+        clientAutoTitlesBySession = AppSettings.clientAutoTitles
+        manuallyRenamedSessionIDs = Set(AppSettings.manuallyRenamedSessionIDs)
         isReconnecting = false
         retryTask?.cancel()
         retryTask = nil
@@ -437,8 +463,20 @@ final class SessionStore: ObservableObject {
         pollTasksBySession = [:]
         messageLoadTasks.values.forEach { $0.cancel() }
         messageLoadTasks = [:]
+        pendingDeltas = [:]
+        lastDeltaFlush = .distantPast
+        lastStreamActivity = Date()
+        notifiedPermissionIDs.removeAll()
         activeSessionIDs = []
         abortingSessionIDs = []
+        draft = ""
+        queuedPrompts = []
+        draftsBySession = [:]
+        queuesBySession = [:]
+        sessionStatuses = [:]
+        lastSentPromptBySession = [:]
+        autoRetryCountBySession = [:]
+        messagesCacheBySession = [:]
         sessions = []
         messages = []
         isLoadingMessages = false
@@ -452,8 +490,7 @@ final class SessionStore: ObservableObject {
         vcsBranch = nil
         usage = nil
         commands = []
-        attachments = []
-        attachmentsBySession = [:]
+        draftToken = UUID()
     }
 
     var selectedSession: Session? {
@@ -464,6 +501,7 @@ final class SessionStore: ObservableObject {
         guard let api else { return }
         do {
             sessions = try await api.get("session")
+            reconcileClientTitles()
             let ids = Set(sessions.map(\.id))
             sessionStatuses = sessionStatuses.filter { ids.contains($0.key) }
             unreadSessionIDs.formIntersection(ids)
@@ -478,10 +516,15 @@ final class SessionStore: ObservableObject {
             persistCache()
             // Open on the most recent conversation instead of a dead input.
             if selectedSessionID == nil || !ids.contains(selectedSessionID ?? "") {
+                if sessions.isEmpty { selectedSessionID = nil }
                 autoSelectRecentSession()
             }
+            Task { await loadUsage() }
         } catch {
-            errorMessage = error.localizedDescription
+            guard case .status(404, _) = error as? APIError else {
+                errorMessage = error.localizedDescription
+                return
+            }
         }
     }
 
@@ -506,15 +549,36 @@ final class SessionStore: ObservableObject {
         UserDefaults.standard.set(selectedSessionID, forKey: Self.cacheSelectedKey)
     }
 
+    /// Server snapshots (refresh, SSE, PATCH responses) are authoritative for
+    /// every field except a title we generated from the user's first prompt.
+    /// Keep that prompt title visible until the user explicitly renames.
+    private func reconcileClientTitles() {
+        var changed = false
+        for index in sessions.indices {
+            let id = sessions[index].id
+            guard let promptTitle = clientAutoTitlesBySession[id],
+                  !manuallyRenamedSessionIDs.contains(id) else { continue }
+            if sessions[index].title != promptTitle {
+                sessions[index].title = promptTitle
+                changed = true
+            }
+        }
+        if changed { persistCache() }
+    }
+
     func createSession() {
         guard let api else {
             errorMessage = NSLocalizedString("Not connected yet — wait for the server to start.", comment: "")
             return
         }
-        let body = ["title": "New session"]
+        let localizedTitle = NSLocalizedString("New session", comment: "")
+        let body = ["title": localizedTitle]
         Task {
             do {
-                let session: Session = try await api.post("session", body: try body.jsonData())
+                var session: Session = try await api.post("session", body: try body.jsonData())
+                if session.title != localizedTitle {
+                    session.title = localizedTitle
+                }
                 sessions.insert(session, at: 0)
                 select(session.id)
             } catch {
@@ -525,6 +589,7 @@ final class SessionStore: ObservableObject {
 
     func select(_ id: String) {
         guard selectedSessionID != id else { return }
+        let oldDraft = draft
         if let old = selectedSessionID {
             // Background fallback polling only serves the visible transcript;
             // switching away would otherwise leave a 2s idle wakeup running.
@@ -548,6 +613,7 @@ final class SessionStore: ObservableObject {
         diffs = []
         pendingDeltas.removeAll()
         draft = draftsBySession[id] ?? ""
+        if draft != oldDraft { draftToken = UUID() }
         queuedPrompts = queuesBySession[id] ?? []
         attachments = attachmentsBySession[id] ?? []
         // Restore this session's model/variant pick. Capture both BEFORE any
@@ -659,7 +725,10 @@ final class SessionStore: ObservableObject {
             throw NSError(
                 domain: "Export",
                 code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Cannot export while the server is not connected."]
+                userInfo: [NSLocalizedDescriptionKey: NSLocalizedString(
+                    "Cannot export while the server is not connected.",
+                    comment: ""
+                )]
             )
         }
         let messages: [MessageRecord] = try await api.get("session/\(session.id)/message")
@@ -672,11 +741,14 @@ final class SessionStore: ObservableObject {
     /// Replies to a question request; one array of selected labels per question.
     func answer(_ request: UserQuestionRequest, answers: [[String]]) async {
         guard let api else { return }
+        pendingQuestions.removeAll { $0.id == request.id }
         do {
             let body = ["answers": answers]
             try await api.postNoContent("question/\(request.id)/reply", body: body.jsonData())
-            pendingQuestions.removeAll { $0.id == request.id }
         } catch {
+            if !pendingQuestions.contains(where: { $0.id == request.id }) {
+                pendingQuestions.append(request)
+            }
             errorMessage = error.localizedDescription
         }
     }
@@ -684,10 +756,13 @@ final class SessionStore: ObservableObject {
     /// Skips a question request; the agent decides how to proceed.
     func rejectQuestion(_ request: UserQuestionRequest) async {
         guard let api else { return }
+        pendingQuestions.removeAll { $0.id == request.id }
         do {
             try await api.postNoContent("question/\(request.id)/reject")
-            pendingQuestions.removeAll { $0.id == request.id }
         } catch {
+            if !pendingQuestions.contains(where: { $0.id == request.id }) {
+                pendingQuestions.append(request)
+            }
             errorMessage = error.localizedDescription
         }
     }
@@ -804,6 +879,13 @@ final class SessionStore: ObservableObject {
         } catch {
             guard isExplicit else { return }
             guard id == selectedSessionID else { return }
+            if case .status(404, _) = error as? APIError {
+                // The selected session vanished on the server (deleted in
+                // another client). Clear the dead selection instead of
+                // showing a raw "Session not found" banner forever.
+                applyDeletion(of: id)
+                return
+            }
             errorMessage = error.localizedDescription
         }
     }
@@ -880,6 +962,7 @@ final class SessionStore: ObservableObject {
     }
 
     private func applyComposerState(_ state: ComposerState, for sessionID: String) {
+        let oldDraft = draft
         guard sessionID == selectedSessionID else {
             draftsBySession[sessionID] = state.draft
             attachmentsBySession[sessionID] = state.attachments
@@ -890,6 +973,7 @@ final class SessionStore: ObservableObject {
         attachments = state.attachments
         attachmentsBySession[sessionID] = state.attachments
         setQueue(state.queue, for: sessionID)
+        if draft != oldDraft { draftToken = UUID() }
     }
 
     /// Sends one immutable prompt to a specific session. Returns false if it
@@ -907,6 +991,9 @@ final class SessionStore: ObservableObject {
         lastSentPromptBySession[id] = prompt
         autoRetryCountBySession[id] = 0
         autoTitleIfNeeded(sessionID: id, prompt: prompt.text)
+        // draft is a plain @Published value: bump once for every code-driven
+        // replacement so the NSTextView can clear exactly once per send.
+        draftToken = UUID()
 
         // "/name args…" matching a registered command goes to the dedicated
         // command endpoint (same routing the official TUI/client does).
@@ -928,7 +1015,10 @@ final class SessionStore: ObservableObject {
                     await refreshMessagesIfSelected(id)
                     startFallbackPolling(for: id)
                 } catch {
-                    recordSessionFailure(id, message: error.localizedDescription)
+                    let kind = FailureKind.classify(error.localizedDescription)
+                    if kind != .aborted {
+                        recordSessionFailure(id, message: error.localizedDescription, kind: kind)
+                    }
                     finishRun(id)
                     // The command never reached the server; surface it with
                     // Retry instead of silently dropping the text.
@@ -969,7 +1059,10 @@ final class SessionStore: ObservableObject {
                 startFallbackPolling(for: id)
                 // The session stays active until the server reports idle.
             } catch {
-                recordSessionFailure(id, message: error.localizedDescription)
+                let kind = FailureKind.classify(error.localizedDescription)
+                if kind != .aborted {
+                    recordSessionFailure(id, message: error.localizedDescription, kind: kind)
+                }
                 finishRun(id)
                 // The prompt never reached the server; keep it recoverable
                 // via the inline Retry instead of silently losing the text.
@@ -1057,20 +1150,53 @@ final class SessionStore: ObservableObject {
             || value == NSLocalizedString("Untitled session", comment: "").lowercased()
     }
 
-    private func titleSeed(from text: String) -> String? {
+    func titleSeed(from text: String) -> String? {
         let firstLine = text
             .split(whereSeparator: \.isNewline)
             .first
             .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) } ?? ""
         guard !firstLine.isEmpty, !firstLine.hasPrefix("/") else { return nil }
-        return firstLine.count > 48 ? String(firstLine.prefix(48)) + "…" : firstLine
+        // Use a character-aware 48-glyph cap. Countable UTF-16 prefixes can
+        // slice a surrogate pair in half, leaving Chinese prompts with a
+        // replacement character at the end of auto-generated titles.
+        let characters = Array(firstLine)
+        return characters.count > 48 ? String(characters.prefix(48)) + "…" : firstLine
+    }
+
+    /// Test seam for seeding the client-title authority without a live server.
+    func setClientTitle(_ title: String, for sessionID: String) {
+        clientAutoTitlesBySession[sessionID] = title
+        manuallyRenamedSessionIDs.remove(sessionID)
+        AppSettings.clientAutoTitles = clientAutoTitlesBySession
+        AppSettings.manuallyRenamedSessionIDs = Array(manuallyRenamedSessionIDs)
+    }
+
+    /// Test seam for simulating an explicit user rename.
+    func markManuallyRenamed(_ sessionID: String) {
+        manuallyRenamedSessionIDs.insert(sessionID)
+        clientAutoTitlesBySession.removeValue(forKey: sessionID)
+        AppSettings.manuallyRenamedSessionIDs = Array(manuallyRenamedSessionIDs)
+        AppSettings.clientAutoTitles = clientAutoTitlesBySession
+    }
+
+    /// Test seam for reading one session without reaching into published state.
+    func session(for id: String) -> Session? {
+        sessions.first { $0.id == id }
     }
 
     private func applyAutoTitle(_ title: String, to session: Session) {
         guard !autoTitleInFlight.contains(session.id) else { return }
         autoTitleInFlight.insert(session.id)
+        clientAutoTitlesBySession[session.id] = title
+        manuallyRenamedSessionIDs.remove(session.id)
+        AppSettings.clientAutoTitles = clientAutoTitlesBySession
+        AppSettings.manuallyRenamedSessionIDs = Array(manuallyRenamedSessionIDs)
+        var optimistic = session
+        optimistic.title = title
+        upsert(optimistic)
+        persistCache()
         Task {
-            await rename(session, to: title)
+            await rename(session, to: title, isAutomatic: true)
             autoTitleInFlight.remove(session.id)
         }
     }
@@ -1112,7 +1238,9 @@ final class SessionStore: ObservableObject {
             await loadMessages()
             Task { await loadDiff() }
             Task { await loadTodos() }
+            let oldDraft = draft
             draft = text
+            if draft != oldDraft { draftToken = UUID() }
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -1144,13 +1272,30 @@ final class SessionStore: ObservableObject {
     }
 
     func rename(_ session: Session, to title: String) async {
+        await rename(session, to: title, isAutomatic: false)
+    }
+
+    private func rename(_ session: Session, to title: String, isAutomatic: Bool) async {
         guard let api else { return }
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed != session.title else { return }
+        if !isAutomatic {
+            manuallyRenamedSessionIDs.insert(session.id)
+            clientAutoTitlesBySession.removeValue(forKey: session.id)
+            AppSettings.manuallyRenamedSessionIDs = Array(manuallyRenamedSessionIDs)
+            AppSettings.clientAutoTitles = clientAutoTitlesBySession
+        }
         do {
             let body = ["title": trimmed]
             let updated: Session = try await api.patch("session/\(session.id)", body: try body.jsonData())
-            upsert(updated)
+            if autoTitleInFlight.contains(session.id),
+               let local = sessions.first(where: { $0.id == session.id }),
+               local.title == trimmed {
+                persistCache()
+            } else {
+                upsert(updated)
+            }
+            reconcileClientTitles()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -1222,6 +1367,10 @@ final class SessionStore: ObservableObject {
         unreadSessionIDs.remove(id)
         stopPolling(for: id)
         autoRetryCountBySession.removeValue(forKey: id)
+        clientAutoTitlesBySession.removeValue(forKey: id)
+        manuallyRenamedSessionIDs.remove(id)
+        AppSettings.clientAutoTitles = clientAutoTitlesBySession
+        AppSettings.manuallyRenamedSessionIDs = Array(manuallyRenamedSessionIDs)
         if pinnedSessionIDs.contains(id) {
             togglePinned(id, pinned: false)
         }
@@ -1234,6 +1383,8 @@ final class SessionStore: ObservableObject {
             messages = []
             isLoadingMessages = false
             todos = []
+            diffs = []
+            inlineErrorsBySession.removeValue(forKey: id)
             autoSelectRecentSession()
         }
     }
@@ -1260,7 +1411,10 @@ final class SessionStore: ObservableObject {
         do {
             let _: EmptyResponse = try await api.post("session/\(id)/abort", body: nil)
         } catch {
-            recordSessionFailure(id, message: error.localizedDescription)
+            let kind = FailureKind.classify(error.localizedDescription)
+            if kind != .aborted {
+                recordSessionFailure(id, message: error.localizedDescription, kind: kind)
+            }
         }
         finishRun(id)
         // The abort response means the server is idle again (or stopped on
@@ -1271,7 +1425,12 @@ final class SessionStore: ObservableObject {
     }
 
     func reply(to request: PermissionRequest, reply: String) {
-        guard let api else { return }
+        pendingPermissions.removeAll { $0.id == request.id }
+        notifiedPermissionIDs.remove(request.id)
+        guard let api else {
+            errorMessage = NSLocalizedString("Not connected yet — wait for the server to start.", comment: "")
+            return
+        }
         let body = ["response": reply]
         if reply == "always" {
             savePermissionRule(from: request)
@@ -1282,8 +1441,10 @@ final class SessionStore: ObservableObject {
                     "session/\(request.sessionID)/permissions/\(request.id)",
                     body: try body.jsonData()
                 )
-                pendingPermissions.removeAll { $0.id == request.id }
             } catch {
+                if !pendingPermissions.contains(where: { $0.id == request.id }) {
+                    pendingPermissions.append(request)
+                }
                 errorMessage = error.localizedDescription
             }
         }
@@ -1369,6 +1530,7 @@ final class SessionStore: ObservableObject {
     /// the ActivityBar shows progress via retryInfo. Anything else, a second
     /// failure, or a missing snapshot surfaces the inline error as before.
     private func maybeAutoRetry(_ sessionID: String, kind: FailureKind, message: String) {
+        guard kind != .aborted else { return }
         guard kind == .network,
               (autoRetryCountBySession[sessionID] ?? 0) < 1 else {
             recordSessionFailure(sessionID, message: message, kind: kind)
@@ -1405,6 +1567,14 @@ final class SessionStore: ObservableObject {
         }
     }
 
+    /// Foreground re-probe: App Nap can suspend the reconnect Task while the
+    /// app is in the background, leaving `isReconnecting` stuck forever.
+    private func recheckConnectionIfNeeded() {
+        guard api != nil, isReconnecting else { return }
+        guard retryTask == nil || retryTask?.isCancelled == true else { return }
+        scheduleReconnect()
+    }
+
     /// Routes one server event. Internal so tests can drive the pipeline.
     func handle(_ event: DevEvent) {
         switch event.type {
@@ -1419,10 +1589,27 @@ final class SessionStore: ObservableObject {
             Task { await loadAgreement() }
         case "session.created", "session.updated":
             guard let info = event.object("info"), let session: Session = decode(.object(info)) else { return }
-            upsert(session)
+            var incoming = session
+            if let promptTitle = clientAutoTitlesBySession[session.id],
+               !manuallyRenamedSessionIDs.contains(session.id) {
+                incoming.title = promptTitle
+            }
+            guard let local = sessions.first(where: { $0.id == session.id }) else {
+                upsert(incoming)
+                return
+            }
+            // Avoid resetting a newer local title from a stale SSE snapshot:
+            // the PATCH response can arrive after the stream echo.
+            if autoTitleInFlight.contains(session.id),
+               !isPlaceholderTitle(local.title),
+               isPlaceholderTitle(incoming.title) {
+                return
+            }
+            upsert(incoming)
         case "session.deleted":
             if let id = event.property("sessionID") {
                 applyDeletion(of: id)
+                Task { await loadUsage() }
             }
         case "session.idle":
             guard let sessionID = event.property("sessionID") else {
@@ -1536,6 +1723,7 @@ final class SessionStore: ObservableObject {
                 ?? event.property("id")
             if let replyID {
                 pendingPermissions.removeAll { $0.id == replyID }
+                notifiedPermissionIDs.remove(replyID)
             }
         case "question.asked", "question.v2.asked":
             guard let properties = event.properties,
@@ -1580,9 +1768,15 @@ final class SessionStore: ObservableObject {
                 let kind = FailureKind.classify(errorText)
                 if let sessionID = event.property("sessionID") {
                     finishRun(sessionID)
+                    if kind == .aborted {
+                        inlineErrorsBySession.removeValue(forKey: sessionID)
+                        return
+                    }
                     maybeAutoRetry(sessionID, kind: kind, message: errorText)
                 } else {
-                    errorMessage = kind.label + ": " + errorText
+                    if kind != .aborted {
+                        errorMessage = kind.label + ": " + errorText
+                    }
                 }
             }
         case "todo.updated":
@@ -1656,6 +1850,7 @@ final class SessionStore: ObservableObject {
         Task {
             try? await Task.sleep(nanoseconds: 10_000_000_000)
             guard pendingPermissions.contains(where: { $0.id == request.id }),
+                  notifiedPermissionIDs.contains(request.id),
                   !NSApp.isActive else { return }
             let content = UNMutableNotificationContent()
             content.title = NSLocalizedString("Permission needed", comment: "")
@@ -1717,14 +1912,14 @@ final class SessionStore: ObservableObject {
     }
 
     /// Buffers streaming deltas and flushes them to the published transcript
-    /// at most every ~120ms — one published mutation per burst instead of per
-    /// character keeps long streams smooth.
+    /// at most every ~30ms — frequent enough to feel like continuous typing,
+    /// still coalescing the bursts delivered by SSE frames.
     private func append(_ delta: String, to partID: String, in messageID: String, sessionID: String) {
         guard sessionID == selectedSessionID else { return }
         lastStreamActivity = Date()
         pendingDeltas[partID, default: ""] += delta
         let buffered = pendingDeltas[partID]?.count ?? 0
-        if Date().timeIntervalSince(lastDeltaFlush) >= 0.12 || buffered > 8_192 {
+        if Date().timeIntervalSince(lastDeltaFlush) >= 0.03 || buffered > 8_192 {
             flushDeltas()
         }
     }
