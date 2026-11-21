@@ -2675,14 +2675,34 @@ private struct MarkdownProseView: View {
         if let cached = MarkdownCache.inline.object(forKey: key)?.value {
             return cached
         }
-        guard let attributed = try? AttributedString(
+        guard var attributed = try? AttributedString(
             markdown: text,
             options: AttributedString.MarkdownParsingOptions(
                 interpretedSyntax: .inlineOnlyPreservingWhitespace
             )
         ) else { return nil }
+        styleInlineCode(&attributed)
         MarkdownCache.inline.setObject(CachedBox(attributed), forKey: key)
         return attributed
+    }
+
+    /// Codex-like inline richness: backticked tokens render on a subtle chip
+    /// tint with monospaced digits — file names, flags, and code refs pop out
+    /// of prose without switching to a full code block.
+    private func styleInlineCode(_ attributed: inout AttributedString) {
+        var styled = AttributedString()
+        let runs = Array(attributed.runs)
+        for run in runs {
+            let range = run.range
+            var chunk = AttributedString(attributed[range])
+            if run.inlinePresentationIntent?.contains(.code) == true {
+                chunk.font = .system(size: bodySize - 1.5, weight: .medium, design: .monospaced)
+                chunk.foregroundColor = .accentColor
+                chunk.backgroundColor = Color.accentColor.opacity(0.10)
+            }
+            styled.append(chunk)
+        }
+        attributed = styled
     }
 }
 
