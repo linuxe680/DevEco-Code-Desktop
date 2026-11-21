@@ -3356,7 +3356,7 @@ private struct QuestionBanner: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             ForEach(Array(request.questions.enumerated()), id: \.offset) { index, question in
                 VStack(alignment: .leading, spacing: 10) {
                     HStack(alignment: .firstTextBaseline) {
@@ -3367,8 +3367,8 @@ private struct QuestionBanner: View {
                             Button("Skip") {
                                 Task { await store.rejectQuestion(request) }
                             }
-                            .buttonStyle(.link)
-                            .font(.subheadline)
+                            .buttonStyle(.bordered)
+                            .controlSize(.regular)
                         }
                     }
                     Text(question.question)
@@ -3461,14 +3461,16 @@ private struct QuestionBanner: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(selected ? Color.accentColor.opacity(0.10) : Theme.subtleFill)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(selected ? Color.accentColor.opacity(0.45) : Theme.softStroke, lineWidth: 1)
-            )
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(selected ? Color.accentColor.opacity(0.12) : Theme.cardFill)
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(selected ? Color.accentColor.opacity(0.55) : Theme.hairline, lineWidth: selected ? 2 : 1)
+            }
+            .shadow(color: selected ? Color.accentColor.opacity(0.18) : .clear, radius: 6, y: 2)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
