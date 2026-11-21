@@ -2460,6 +2460,16 @@ private enum MarkdownCache {
     }
 }
 
+/// Test hooks: NSCache returns the same box object on a hit, so tests can
+/// verify the cache contract without timing thresholds or private mirrors.
+func markdownSegmentsCacheToken(for content: String) -> AnyObject? {
+    MarkdownCache.segments.object(forKey: content as NSString)
+}
+
+func markdownProseBlocksCacheToken(for text: String) -> AnyObject? {
+    MarkdownCache.proseBlocks.object(forKey: text as NSString)
+}
+
 /// Splits assistant output into prose and fenced code blocks. An unterminated
 /// fence (mid-stream) renders its tail as code, so the block appears styled
 /// immediately instead of flashing as plain text.

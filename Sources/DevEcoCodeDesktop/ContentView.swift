@@ -8,6 +8,9 @@ extension Notification.Name {
 }
 
 struct ContentView: View {
+    /// Set by the extra `session` window scene to open a specific conversation.
+    let initialSessionID: String?
+
     @EnvironmentObject var server: ServerManager
     @EnvironmentObject var store: SessionStore
     @EnvironmentObject var providers: ProviderStore
@@ -212,6 +215,9 @@ struct ContentView: View {
         .onAppear {
             if server.state == .stopped && AppSettings.autoStartServer {
                 server.start()
+            }
+            if let initialSessionID, !initialSessionID.isEmpty {
+                store.select(initialSessionID)
             }
             store.serverDefaultModel = providers.defaultModel
             applyServerDefaultModelIfNeeded()

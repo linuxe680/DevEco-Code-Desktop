@@ -17,6 +17,17 @@ final class PerformanceTests: XCTestCase {
         }
     }
 
+    func testMarkdownCachesReturnStableValues() {
+        let prose = "# Summary\n\nA paragraph with **bold** text.\n"
+        let firstSegments = parseMarkdownSegments(prose)
+        let firstBlocks = parseMarkdownProseBlocks(prose)
+
+        XCTAssertEqual(parseMarkdownSegments(prose), firstSegments)
+        XCTAssertEqual(parseMarkdownProseBlocks(prose), firstBlocks)
+        XCTAssertTrue(markdownSegmentsCacheToken(for: prose) === markdownSegmentsCacheToken(for: prose))
+        XCTAssertTrue(markdownProseBlocksCacheToken(for: prose) === markdownProseBlocksCacheToken(for: prose))
+    }
+
     func testDeltaPipelinePerformance() {
         let store = SessionStore()
         let partID = "prt_bench"

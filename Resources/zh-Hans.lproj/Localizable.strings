@@ -390,3 +390,6 @@
 "Copy code" = "复制代码";
 
 "Exported" = "导出于";
+
+/* 多窗口 */
+"Open Session in New Window" = "在新窗口打开会话";

@@ -3,8 +3,61 @@ import Combine
 import UserNotifications
 import AppKit
 
+struct PendingAttachment: Identifiable {
+    let id = UUID()
+    let mime: String
+    let filename: String?
+    /// `data:` URL for pasted images, `file:` URL for project-local files.
+    let url: String
+    /// Small preview bytes for pasted images (chip thumbnails).
+    let thumbnail: Data?
+}
+
+/// Everything needed to send one prompt, captured at submission time.
+/// Queueing and retrying must never read mutable composer state later.
+struct PromptSnapshot {
+    let text: String
+    let model: String?
+    let variant: String?
+    let attachments: [PendingAttachment]
+}
+
+struct QueuedPrompt: Identifiable {
+    let id: UUID
+    let prompt: PromptSnapshot
+
+    var text: String { prompt.text }
+    var model: String? { prompt.model }
+    var attachments: [PendingAttachment] { prompt.attachments }
+
+    init(id: UUID = UUID(), prompt: PromptSnapshot) {
+        self.id = id
+        self.prompt = prompt
+    }
+
+    init(
+        id: UUID = UUID(),
+        text: String,
+        model: String?,
+        variant: String? = nil,
+        attachments: [PendingAttachment] = []
+    ) {
+        self.id = id
+        self.prompt = PromptSnapshot(
+            text: text,
+            model: model,
+            variant: variant,
+            attachments: attachments
+        )
+    }
+}
+
 @MainActor
 final class SessionStore: ObservableObject {
+    typealias PendingAttachment = DevEcoCodeDesktop.PendingAttachment
+    typealias PromptSnapshot = DevEcoCodeDesktop.PromptSnapshot
+    typealias QueuedPrompt = DevEcoCodeDesktop.QueuedPrompt
+
     @Published var sessions: [Session] = []
     @Published var selectedSessionID: String?
     @Published var messages: [MessageRecord] = []
@@ -74,16 +127,6 @@ final class SessionStore: ObservableObject {
     /// project-local files as file URLs).
     @Published private(set) var attachments: [PendingAttachment] = []
     private var attachmentsBySession: [String: [PendingAttachment]] = [:]
-
-    struct PendingAttachment: Identifiable {
-        let id = UUID()
-        let mime: String
-        let filename: String?
-        /// `data:` URL for pasted images, `file:` URL for project-local files.
-        let url: String
-        /// Small preview bytes for pasted images (chip thumbnails).
-        let thumbnail: Data?
-    }
 
     /// Images above this size get downscaled before sending.
     static let maxImageBytes = 1_500_000
@@ -202,26 +245,6 @@ final class SessionStore: ObservableObject {
         attachmentsBySession[id] = attachments
     }
 
-    private func removeAttachments(ids: Set<UUID>, for sessionID: String) {
-        if sessionID == selectedSessionID {
-            attachments.removeAll { ids.contains($0.id) }
-            attachmentsBySession[sessionID] = attachments
-        } else if var stashed = attachmentsBySession[sessionID] {
-            stashed.removeAll { ids.contains($0.id) }
-            attachmentsBySession[sessionID] = stashed
-        }
-    }
-
-    private func restoreAttachments(_ restored: [PendingAttachment], for sessionID: String) {
-        guard sessionID == selectedSessionID else {
-            attachmentsBySession[sessionID, default: []].append(contentsOf: restored)
-            return
-        }
-        let existing = Set(attachments.map(\.id))
-        attachments.append(contentsOf: restored.filter { !existing.contains($0.id) })
-        attachmentsBySession[sessionID] = attachments
-    }
-
     struct InlineError: Identifiable, Equatable {
         let id = UUID()
         let sessionID: String
@@ -322,45 +345,6 @@ final class SessionStore: ObservableObject {
     /// Streaming deltas buffered between flushes (~120ms batches).
     private var pendingDeltas: [String: String] = [:]
     private var lastDeltaFlush = Date.distantPast
-
-    /// Everything needed to send one prompt, captured at submission time.
-    /// Queueing and retrying must never read mutable composer state later.
-    struct PromptSnapshot {
-        let text: String
-        let model: String?
-        let variant: String?
-        let attachments: [PendingAttachment]
-    }
-
-    struct QueuedPrompt: Identifiable {
-        let id: UUID
-        let prompt: PromptSnapshot
-
-        var text: String { prompt.text }
-        var model: String? { prompt.model }
-        var attachments: [PendingAttachment] { prompt.attachments }
-
-        init(id: UUID = UUID(), prompt: PromptSnapshot) {
-            self.id = id
-            self.prompt = prompt
-        }
-
-        init(
-            id: UUID = UUID(),
-            text: String,
-            model: String?,
-            variant: String? = nil,
-            attachments: [PendingAttachment] = []
-        ) {
-            self.id = id
-            self.prompt = PromptSnapshot(
-                text: text,
-                model: model,
-                variant: variant,
-                attachments: attachments
-            )
-        }
-    }
 
     private static let cacheSessionsKey = "cachedSessions"
     private static let cacheSelectedKey = "cachedSelectedSession"
@@ -794,24 +778,19 @@ final class SessionStore: ObservableObject {
 
     func send() {
         guard api != nil, let sessionID = selectedSessionID else { return }
-        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        let prompt = PromptSnapshot(
-            text: text,
+        var state = composerState(for: sessionID)
+        guard let submission = state.submit(
             model: selectedModel,
             variant: selectedVariant,
-            attachments: attachments
-        )
-        draft = ""
-        recordHistory(text)
-        // The snapshot owns these attachments now. Removing them from the
-        // composer immediately prevents a queued send from picking up the
-        // same files twice.
-        removeAttachments(ids: Set(prompt.attachments.map(\.id)), for: sessionID)
+            isBusy: isSending
+        ) else { return }
+        applyComposerState(state, for: sessionID)
+        let prompt = submission.snapshot
+        recordHistory(prompt.text)
 
         // While the session generates (or an abort is still landing), prompts
         // join a queue that flushes on idle.
-        if isSending {
+        if submission.queued {
             enqueue(QueuedPrompt(prompt: prompt), for: sessionID)
             return
         }
@@ -822,32 +801,18 @@ final class SessionStore: ObservableObject {
 
     func removeQueued(_ prompt: QueuedPrompt) {
         guard let id = selectedSessionID else { return }
-        var queue = queue(for: id)
-        queue.removeAll { $0.id == prompt.id }
-        setQueue(queue, for: id)
+        var state = composerState(for: id)
+        state.removeQueued(id: prompt.id)
+        setQueue(state.queue, for: id)
     }
 
     /// Pulls a queued prompt back into the input for editing. Any draft the
     /// user has already typed is re-queued instead of being overwritten.
     func editQueued(_ prompt: QueuedPrompt) {
         guard let id = selectedSessionID else { return }
-        var queue = queue(for: id)
-        queue.removeAll { $0.id == prompt.id }
-
-        let currentText = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !currentText.isEmpty {
-            let current = PromptSnapshot(
-                text: currentText,
-                model: selectedModel,
-                variant: selectedVariant,
-                attachments: attachments
-            )
-            removeAttachments(ids: Set(current.attachments.map(\.id)), for: id)
-            queue.insert(QueuedPrompt(prompt: current), at: 0)
-        }
-        setQueue(queue, for: id)
-        draft = prompt.text
-        restoreAttachments(prompt.attachments, for: id)
+        var state = composerState(for: id)
+        state.editQueued(prompt, model: selectedModel, variant: selectedVariant)
+        applyComposerState(state, for: id)
     }
 
     /// Aborts the current generation (keeping the rest of the queue) and
@@ -855,9 +820,9 @@ final class SessionStore: ObservableObject {
     /// the server is idle before prompt_async lands.
     func sendQueuedNow(_ prompt: QueuedPrompt) async {
         guard let id = selectedSessionID else { return }
-        var queue = queue(for: id)
-        queue.removeAll { $0.id == prompt.id }
-        setQueue(queue, for: id)
+        var state = composerState(for: id)
+        state.removeQueued(id: prompt.id)
+        setQueue(state.queue, for: id)
         await performAbort(sessionID: id, clearQueue: false, flushAfter: false)
         if !performSend(prompt.prompt, sessionID: id) {
             enqueue(prompt, for: id, atFront: true)
@@ -867,14 +832,32 @@ final class SessionStore: ObservableObject {
     /// Reorders the queue: moves `id` directly before `targetID`.
     func moveQueued(_ id: UUID, before targetID: UUID) {
         guard let sessionID = selectedSessionID else { return }
-        var queue = queue(for: sessionID)
-        guard id != targetID,
-              let from = queue.firstIndex(where: { $0.id == id }),
-              queue.contains(where: { $0.id == targetID }) else { return }
-        let item = queue.remove(at: from)
-        let insertAt = queue.firstIndex(where: { $0.id == targetID }) ?? queue.count
-        queue.insert(item, at: insertAt)
-        setQueue(queue, for: sessionID)
+        var state = composerState(for: sessionID)
+        state.moveQueued(id: id, before: targetID)
+        setQueue(state.queue, for: sessionID)
+    }
+
+    private func composerState(for sessionID: String) -> ComposerState {
+        var state = ComposerState()
+        state.draft = sessionID == selectedSessionID ? draft : (draftsBySession[sessionID] ?? "")
+        state.attachments = sessionID == selectedSessionID
+            ? attachments
+            : (attachmentsBySession[sessionID] ?? [])
+        state.queue = queue(for: sessionID)
+        return state
+    }
+
+    private func applyComposerState(_ state: ComposerState, for sessionID: String) {
+        guard sessionID == selectedSessionID else {
+            draftsBySession[sessionID] = state.draft
+            attachmentsBySession[sessionID] = state.attachments
+            setQueue(state.queue, for: sessionID)
+            return
+        }
+        draft = state.draft
+        attachments = state.attachments
+        attachmentsBySession[sessionID] = state.attachments
+        setQueue(state.queue, for: sessionID)
     }
 
     /// Sends one immutable prompt to a specific session. Returns false if it
