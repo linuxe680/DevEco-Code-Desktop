@@ -70,6 +70,7 @@
 "Compacting…" = "压缩中…";
 "Generating…" = "生成中…";
 "Retrying · %@" = "重试中 · %@";
+"Network error — retrying…" = "网络错误，正在重试…";
 "You" = "我";
 "Thinking" = "思考过程";
 "Revert to here…" = "回退到此处…";
@@ -342,3 +343,44 @@
 "%.0fm %02.0fs" = "%.0f 分 %02.0f 秒";
 "%.1fs" = "%.1f 秒";
 "%.2fs" = "%.2f 秒";
+"Pinned" = "置顶";
+"Pin" = "置顶";
+"Unpin" = "取消置顶";
+"Search models…" = "搜索模型…";
+"Recent" = "最近使用";
+"All models" = "全部模型";
+"Queued attachments" = "排队消息附件";
+
+"New session" = "新建会话";
+"Search in conversation (⌘F)" = "在会话中搜索（⌘F）";
+"%lld sessions · %lld messages" = "%1$lld 个会话 · %2$lld 条消息";
+
+/* 二次审计补齐 */
+"Context" = "上下文";
+"Reasoning" = "推理";
+"Copy All" = "复制全部";
+"Create one with ⌘N" = "按 ⌘N 新建";
+"No sessions yet" = "暂无会话";
+"Saved permission rules" = "已保存的权限规则";
+"Server log" = "服务日志";
+"View Log…" = "查看日志…";
+"(%lld pending)" = "（%lld 条排队）";
+"Files: %lld" = "文件：%lld";
+"%lld messages" = "%lld 条消息";
+"Version %@ (%@)" = "版本 %@ (%@)";
+"No messages match “%@”" = "没有匹配“%@”的消息";
+"No models match “%@”" = "没有匹配“%@”的模型";
+"No sessions match “%@”" = "没有匹配“%@”的会话";
+"deveco runs on Node.js. Leave empty to auto-detect; the detected folder is added to the server's PATH." = "deveco 运行在 Node.js 上。留空将自动探测，探测到的目录会加入服务的 PATH。";
+"These were granted with “Always allow” on permission cards. Tools matching them run without asking — revoke any you no longer trust." = "这些规则来自权限卡片上的“始终允许”。匹配的工具将不再询问直接执行——不再信任的请随时移除。";
+"A native macOS client for the local deveco CLI — sessions, streaming, approvals, diffs, and model management." = "本地 deveco CLI 的原生 macOS 客户端——会话、流式输出、权限审批、差异查看与模型管理。";
+"Protocol and UX reference: opencode (MIT) and OpenAI Codex (Apache-2.0). Design learned from their public sources; all code here is original Swift." = "协议与交互参考：opencode（MIT）与 OpenAI Codex（Apache-2.0）。设计借鉴其公开资料，全部代码为原创 Swift 实现。";
+"%lld models" = "%lld 个模型";
+"%lldk ctx" = "%lldk 上下文";
+"%lld tokens" = "%lld tokens";
+"Language" = "界面语言";
+"Takes effect after relaunch." = "更改将在重启应用后生效。";
+"Output %@" = "输出 %@";
+"Input %@" = "本次输入 %@";
+"Cached %@" = "缓存 %@";
+"Copy code" = "复制代码";

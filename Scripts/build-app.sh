@@ -47,8 +47,8 @@ cp "$BIN" "$APP/Contents/MacOS/DevEcoCodeDesktop"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 # Localized UI strings (SwiftUI literals look these up at runtime).
-cp -R "$ROOT/Resources/en.lproj" "$APP/Contents/Resources/"
 cp -R "$ROOT/Resources/zh-Hans.lproj" "$APP/Contents/Resources/"
+cp -R "$ROOT/Resources/en.lproj" "$APP/Contents/Resources/"
 
 # Signing keeps Launch Services from treating the bundle as damaged.
 if ensure_signing_identity; then

@@ -433,3 +433,76 @@ v0.2 完成情况：M1 全部落地（审批三档实测否决，见上）；M2 
 - **显示**：选择器标签解析服务端默认模型并显示模型名（如 `Hy4 flash · WorkBuddy`），菜单首项显示“服务端默认 · 模型名”，不再只有占位文案。
 - **优先级**：设置里的“新会话默认模型” > 服务端 `model` > 服务端默认。
 - 验证：`swift build` 通过；`swift test` 63/63（新增 2 项默认模型回退测试）。
+
+# v0.5 打磨批（2026-11-21，评审驱动）
+
+外部评审核实后落地 9 项（含评审发现的 3 个新问题）：
+- **生成指示三合一**：删除转写下方重复的 TimelineView 状态条，stalled 提示合并进 ActivityBar（stop 按钮、todo 进度、retry 状态一处集中）
+- **@ 弹窗防抖 + 垃圾过滤**：fs/find 加 180ms 防抖（每键一次请求 → 停顿才发）；新增 `isSearchablePath` 过滤隐藏目录/node_modules/.log/.tmp
+- **@ 支持换行后触发**：mention token 按空白+换行切分（Shift+Enter 换行后打 @ 也能弹）
+- **allModelChoices 查找字典化**：流式期间 meta 行的 O(模型数×排序) 重算 → O(1) 查找
+- **通知点击路由会话**：通知 userInfo 带 sessionID + UNUserNotificationCenterDelegate，点击直达对应会话
+- **图片压缩按像素口径**：修 Retina 下 1568pt 实际输出 3136px 的 bug（改按 cgImage 像素计算）
+- **兜底轮询去 10min 硬上限**：改为活动期间自续、结束即取消
+
+# v0.5.1 上下文占用显示（2026-11-21，对标 Claude 桌面端）
+
+- **ContextMeter**：composer 左下角常驻——细进度条 + `17.4k / 960k · 2%` 读数，颜色分级（<60% 平静 / 60-85% 橙 / >85% 红）
+- 数据口径：最后一条 assistant 消息的 `tokens.input`（≈ 下次调用将送入的上下文）÷ 所选模型的 `limit.context`（/api/model 实测字段）
+- 会话头部文字同步显示 `ctx 17.4k/960k · 2%`
+- 新会话无消息时显示 `0 / 960k` 空条（窗口大小可见）；模型无 limit 数据时退化为纯 tokens 文本
+
+# v0.5.2 细节打磨（2026-11-21 第二批）
+
+- **流式中禁用消息操作**：生成中的最后一条气泡不显示 hover 操作栏，contextMenu 的 Revert 禁用——防止误触截断正在生成的内容（复制仍可用）
+- **权限卡片按钮视觉分级**：Allow once 主推（borderedProminent）/ Always allow 常规 / Reject 红色 destructive
+- **⌘F 高亮扩展**：assistant 气泡的 markdown 文本段也高亮搜索命中（黄色底），代码块保持语法着色不变
+- **日志查看器**：设置 → 服务器 → "View Log…" 弹出实时尾部（等宽、自动滚底、一键复制）
+
+# v0.5.2 收尾（2026-11-21 第三批复核）
+
+复核外部演进与评审遗留项，本轮补齐最后一项：
+- **切走会话停兜底轮询**：`select()` 切走时 `stopPolling(for: old)`，消除后台活跃会话每 2s 的空转唤醒；切回时已有逻辑自动重启，无需额外处理
+- 其余评审项确认已闭环：三合一指示、@ 防抖+过滤+换行、模型字典缓存（`load()` 后重建，save/delete 均触发）、通知路由（userInfo.sessionID）、图片按像素压缩、轮询去 10min 上限
+- 验证：`swift build` 通过；`swift test` 65/65
+
+## 下一步完善方向（按优先级）
+
+1. **打开发布闭环**：当前 GitHub 仓库只有源码；建议 release.sh 同步产出 GitHub Release（附 DMG + SHA-256），或加 GitHub Actions 自动构建
+2. **长会话性能**：转写用 LazyVStack 但每气泡重渲染 Markdown；流式时可对非末尾气泡做 diff 跳过，或把渲染下沉到 NSAttributedString 缓存
+3. **错误恢复**：SSE 断连重连已有时序护栏，但 inline error 只能手动 Retry；可对"网络类失败"自动退避重试一次
+4. **@ 弹窗键盘体验**：上下键/Tab 已接，但 Enter 优先发送——候选选中时 Enter 应先完成补全（与 slash 命令面板行为对齐）
+5. **设置项迁移**：`chatFontSize` 已有多轮迁移标记，建议引入统一 `settingsVersion`，避免继续叠加一次性迁移键
+6. **测试盲区**：UI 层（ChatView 组合逻辑）无快照/行为测试；优先给 composer 状态机（发送中/队列/附件）补 ViewModel 级测试
+
+# v0.5.2 第四批（2026-11-21）：候选补全与网络自愈
+
+- **Enter 补全候选**：@ 弹窗可见时 Enter 先完成附件补全（再按发送）；"/" 命令面板在未输入参数时 Enter 先补全命令名——`/cmd args` 仍直接发送，与 slash 命令路由不冲突
+- **网络类失败自动重试一次**：session.error 分类为 network 时，2s 退避后用原 PromptSnapshot 自动重发；ActivityBar 经 retryInfo 显示"网络错误，正在重试…"。计数器在新发送时清零，第二次失败/手动中止/无快照立即回退到 inline 错误卡，不会死循环
+- 验证：`swift build` 零警告；`swift test` 65/65
+
+# v0.5.2 第五批（2026-11-21）：设置迁移收敛 + 发布标签
+
+- **设置迁移统一 settingsVersion**：`chatFontMigration` + `chatFontSizeCodexMatched` 两个一次性标志合并为单一 `settingsVersion` 整数门（v1 = 旧字号 ≤16pt 一次性落到 15pt）；后续新迁移追加版本号即可，不再叠加一次性键。用户手动选的更大字号不受影响
+- **release.sh 版本标签**：打包完成自动打 `v<version>` tag（repo 内），提示 `git push origin v<tag>`；正式 GitHub Release 仍需 token/gh CLI 上传 DMG
+- **新增 3 项迁移测试**：16pt→15pt 一次性迁移、用户 20pt 保留、二次启动不重迁移
+- 验证：`swift build` 零警告；`swift test` 68/68
+
+# v0.5.2 第六批（2026-11-21）：发布闭环 + 渲染缓存，完善任务收尾
+
+- **GitHub Actions 发布闭环**：新增 `.github/workflows/release.yml`——推送 `v*` tag 自动跑测试、构建 DMG（CI 无签名证书时自动回退 ad-hoc）、创建 GitHub Release 并附 DMG + SHA-256；release.sh 已自动打 tag，本地 `git push origin v0.5.x` 即触发
+- **流式渲染缓存**：NSCache 三层缓存——segments 解析、prose blocks 解析、inline AttributedString（key 含字号/字重）；代码高亮同样按 `lang|code` 缓存。流式期间每帧只重新解析变化中的气泡尾部，历史气泡全部命中缓存
+- **ESC 关闭候选弹窗**：@ 弹窗可见时 ESC 先移除 "@query" token 并收起弹窗，其次才是中止生成
+- **诚实备注**：长会话性能在解析/高亮层已解决（占大头）；SwiftUI 视图级 diff 跳过仍留作将来项。UI 层测试仍偏薄，composer 状态机已有队列/草稿回归测试
+- 验证：`swift build` 零警告；`swift test` 68/68；workflow YAML 结构校验通过
+
+# v0.6 预备批（2026-11-21）：置顶会话 + 模型选择器重构
+
+按评审方向二 + 置顶会话落地四个 S 项：
+- **置顶会话**：服务端无 pin 字段 → 客户端 `pinnedSessionIDs`（UserDefaults，pin 顺序即展示顺序）；侧栏分「置顶 / 今天 / 昨天 / 更早 / 已归档」，行首 pin 图标，右键 置顶/取消置顶；删除会话自动清除 pin（store `@Published` 驱动刷新）
+- **模型选择器重构**：Menu（嵌套子菜单翻 64 个模型）→ Popover（360×380）：顶部搜索框按 名称/供应商/ID 过滤 + 「最近使用」分组（显式选择才记录，去重、最新在前、上限 6）；服务端默认行保留置顶
+- **排队 chip 附件数**：快照带附件时显示 📎 × n 提示
+- **兜底轮询智能化**：SSE 健康且输出正常时完全静默；断连 2s 快轮询、输出停滞 >45s 时 6s 慢轮询兜底
+- **通知路由确认闭环**：完成与权限通知均已带 sessionID 且 AppDelegate 路由（评审项 #4 无需改动）
+- 验证：`swift build` 零警告；`swift test` **71/71**（新增 recents 去重上限、pin 往返、删除清 pin 3 项）
+- 遗留：子任务树（children 端点已验证 `GET /session/{id}/children` → Session[]）与多窗口按计划放 v0.6 大批；composer 状态机下沉先行

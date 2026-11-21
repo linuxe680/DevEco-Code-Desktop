@@ -23,7 +23,6 @@ enum AppSettings {
         static let quitBehavior = "quitBehavior"
         static let sendOnEnter = "sendOnEnter"
         static let chatFontSize = "chatFontSize"
-        static let chatFontSizeCodexMatched = "chatFontSizeCodexMatched"
         static let autoScroll = "autoScroll"
         static let expandThinking = "expandThinking"
         static let defaultSessionModel = "defaultSessionModel"
@@ -32,7 +31,11 @@ enum AppSettings {
         static let promptHistory = "promptHistory"
         static let sessionModels = "sessionModels"
         static let sessionVariants = "sessionVariants"
-        static let chatFontMigration = "chatFontSizeDefaultMigratedTo16"
+        static let settingsVersion = "settingsVersion"
+        static let pinnedSessionIDs = "pinnedSessionIDs"
+        static let recentModels = "recentModelChoices"
+        static let appLanguage = "appLanguage"
+        static let savedPermissionRules = "savedPermissionRules"
     }
 
     static func registerDefaults() {
@@ -50,25 +53,17 @@ enum AppSettings {
             Keys.notifyOnComplete: false,
             Keys.playSoundOnComplete: false,
         ])
-        // The previous defaults were too small on modern displays. Move
-        // existing installs to 15pt once, without overriding later user
-        // choices on every launch.
-        if !defaults.bool(forKey: Keys.chatFontMigration) {
+        // One-shot migrations, gated by a single version marker so new rules
+        // append instead of stacking one-off flag keys. v1: older defaults
+        // were too small on modern displays, and Codex's 16px CSS renders
+        // optically smaller than AppKit 16pt (CJK fallback) — both land on
+        // 15pt once, without overriding later user choices.
+        if defaults.integer(forKey: Keys.settingsVersion) < 1 {
             if let stored = defaults.object(forKey: Keys.chatFontSize) as? Double,
-               stored <= 15.0 {
+               stored <= 16.0 {
                 defaults.set(15.0, forKey: Keys.chatFontSize)
             }
-            defaults.set(true, forKey: Keys.chatFontMigration)
-        }
-        // Codex's CSS says 16px, but its CJK fallback renders optically smaller
-        // than AppKit's 16pt. 15pt matches the on-screen size; users can still
-        // pick 16pt from the Aa menu afterwards.
-        if !defaults.bool(forKey: Keys.chatFontSizeCodexMatched) {
-            if let stored = defaults.object(forKey: Keys.chatFontSize) as? Double,
-               stored == 16.0 {
-                defaults.set(15.0, forKey: Keys.chatFontSize)
-            }
-            defaults.set(true, forKey: Keys.chatFontSizeCodexMatched)
+            defaults.set(1, forKey: Keys.settingsVersion)
         }
     }
 
@@ -129,6 +124,22 @@ enum AppSettings {
         set { UserDefaults.standard.set(newValue, forKey: Keys.playSoundOnComplete) }
     }
 
+    /// UI language: forced Chinese by default, with English and follow-system
+    /// options. Applies through the per-app AppleLanguages override.
+    static var appLanguage: String {
+        get { UserDefaults.standard.string(forKey: Keys.appLanguage) ?? "zh-Hans" }
+        set { UserDefaults.standard.set(newValue, forKey: Keys.appLanguage) }
+    }
+
+    static func applyLanguageOverride() {
+        let language = appLanguage
+        if language == "system" {
+            UserDefaults.standard.removeObject(forKey: "AppleLanguages")
+        } else {
+            UserDefaults.standard.set([language], forKey: "AppleLanguages")
+        }
+    }
+
     /// Recently sent prompts (oldest first, most recent last); capped.
     static var promptHistory: [String] {
         get { UserDefaults.standard.stringArray(forKey: Keys.promptHistory) ?? [] }
@@ -146,5 +157,35 @@ enum AppSettings {
     static var sessionVariants: [String: String] {
         get { UserDefaults.standard.dictionary(forKey: Keys.sessionVariants) as? [String: String] ?? [:] }
         set { UserDefaults.standard.set(newValue, forKey: Keys.sessionVariants) }
+    }
+
+    /// Client-side pinned session ids (no server field), in pin order.
+    static var pinnedSessionIDs: [String] {
+        get { UserDefaults.standard.stringArray(forKey: Keys.pinnedSessionIDs) ?? [] }
+        set { UserDefaults.standard.set(newValue, forKey: Keys.pinnedSessionIDs) }
+    }
+
+    /// Cross-session "always allow" rules. Each rule is "permission|pattern";
+    /// the deveco server only honors saved permissions in-process, so the app
+    /// keeps its own durable copy and auto-approves matching requests.
+    static var savedPermissionRules: [String] {
+        get { UserDefaults.standard.stringArray(forKey: Keys.savedPermissionRules) ?? [] }
+        set { UserDefaults.standard.set(newValue, forKey: Keys.savedPermissionRules) }
+    }
+
+    /// Most recently picked model ids ("providerID/modelID"), newest first.
+    static var recentModels: [String] {
+        get { UserDefaults.standard.stringArray(forKey: Keys.recentModels) ?? [] }
+        set { UserDefaults.standard.set(newValue, forKey: Keys.recentModels) }
+    }
+
+    /// Records a model pick: deduped, newest first, capped at six entries.
+    @discardableResult
+    static func rememberRecentModel(_ id: String) -> [String] {
+        var recents = recentModels.filter { $0 != id }
+        recents.insert(id, at: 0)
+        recents = Array(recents.prefix(6))
+        recentModels = recents
+        return recents
     }
 }

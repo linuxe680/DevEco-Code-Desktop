@@ -52,6 +52,24 @@ final class P3ReliabilityTests: XCTestCase {
         XCTAssertTrue(report.contains("Log file:"), "should include log path")
         XCTAssertTrue(report.contains("macOS:"), "should include OS version")
     }
+
+    // MARK: Model recents & session pins (fixtures live on the class because
+    // extensions cannot hold stored properties)
+
+    var savedRecents: [String] = []
+    var savedPins: [String] = []
+
+    override func setUpWithError() throws {
+        savedRecents = AppSettings.recentModels
+        savedPins = AppSettings.pinnedSessionIDs
+        AppSettings.recentModels = []
+        AppSettings.pinnedSessionIDs = []
+    }
+
+    override func tearDownWithError() throws {
+        AppSettings.recentModels = savedRecents
+        AppSettings.pinnedSessionIDs = savedPins
+    }
 }
 
 // MARK: Queue hardening regressions (2026-11-20 deep audit)
@@ -86,5 +104,101 @@ final class QueueHardeningTests: XCTestCase {
         store.draft = "not lost"
         store.send()
         XCTAssertEqual(store.draft, "not lost", "sending with no session must keep the text in the input")
+    }
+}
+
+@MainActor
+extension P3ReliabilityTests {
+    func testSearchablePathFiltersJunk() {
+        XCTAssertFalse(SessionStore.isSearchablePath("debug/server.log"))
+        XCTAssertFalse(SessionStore.isSearchablePath("build/tmp/cache.tmp"))
+        XCTAssertFalse(SessionStore.isSearchablePath(".git/config"))
+        XCTAssertFalse(SessionStore.isSearchablePath("node_modules/pkg/index.js"))
+        XCTAssertTrue(SessionStore.isSearchablePath("src/app/main.swift"))
+        XCTAssertTrue(SessionStore.isSearchablePath("README.md"))
+    }
+
+    func testMentionTokenSurvivesNewlines() {
+        XCTAssertEqual(ChatView.mentionToken(in: "first line\n@src/ma"), "src/ma")
+        XCTAssertEqual(ChatView.mentionToken(in: "@"), "")
+        XCTAssertEqual(ChatView.mentionToken(in: "hello @world"), "world")
+        XCTAssertNil(ChatView.mentionToken(in: "no mention here"))
+    }
+
+    // MARK: One-shot settings migrations (settingsVersion marker)
+
+    private func withFreshDefaults(_ body: () -> Void) {
+        let defaults = UserDefaults.standard
+        let savedFont = defaults.object(forKey: AppSettings.Keys.chatFontSize)
+        let savedVersion = defaults.object(forKey: AppSettings.Keys.settingsVersion)
+        defer {
+            if let savedFont { defaults.set(savedFont, forKey: AppSettings.Keys.chatFontSize) }
+            else { defaults.removeObject(forKey: AppSettings.Keys.chatFontSize) }
+            if let savedVersion { defaults.set(savedVersion, forKey: AppSettings.Keys.settingsVersion) }
+            else { defaults.removeObject(forKey: AppSettings.Keys.settingsVersion) }
+        }
+        defaults.removeObject(forKey: AppSettings.Keys.chatFontSize)
+        defaults.removeObject(forKey: AppSettings.Keys.settingsVersion)
+        body()
+    }
+
+    func testSettingsMigrationMovesLegacyFontTo15() {
+        withFreshDefaults {
+            UserDefaults.standard.set(16.0, forKey: AppSettings.Keys.chatFontSize)
+            AppSettings.registerDefaults()
+            XCTAssertEqual(UserDefaults.standard.double(forKey: AppSettings.Keys.chatFontSize), 15.0)
+            XCTAssertEqual(UserDefaults.standard.integer(forKey: AppSettings.Keys.settingsVersion), 1)
+        }
+    }
+
+    func testSettingsMigrationKeepsLargerUserChoice() {
+        withFreshDefaults {
+            UserDefaults.standard.set(20.0, forKey: AppSettings.Keys.chatFontSize)
+            AppSettings.registerDefaults()
+            XCTAssertEqual(UserDefaults.standard.double(forKey: AppSettings.Keys.chatFontSize), 20.0)
+        }
+    }
+
+    func testSettingsMigrationRunsOnce() {
+        withFreshDefaults {
+            UserDefaults.standard.set(16.0, forKey: AppSettings.Keys.chatFontSize)
+            AppSettings.registerDefaults()
+            // A later user pick of 16pt must survive relaunch.
+            UserDefaults.standard.set(16.0, forKey: AppSettings.Keys.chatFontSize)
+            AppSettings.registerDefaults()
+            XCTAssertEqual(UserDefaults.standard.double(forKey: AppSettings.Keys.chatFontSize), 16.0)
+        }
+    }
+
+    func testRecentModelsDedupeAndCap() {
+        for id in ["a/x", "b/y", "a/x", "c/z", "d/w", "e/v", "f/u", "g/t"] {
+            AppSettings.rememberRecentModel(id)
+        }
+        let recents = AppSettings.recentModels
+        XCTAssertEqual(recents, ["g/t", "f/u", "e/v", "d/w", "c/z", "a/x"], "newest first, deduped, capped at six")
+    }
+
+    func testPinToggleRoundTrip() {
+        let store = SessionStore()
+        store.togglePinned("s1")
+        XCTAssertEqual(store.pinnedSessionIDs, ["s1"])
+        XCTAssertEqual(AppSettings.pinnedSessionIDs, ["s1"], "pins persist across restarts")
+
+        store.togglePinned("s2")
+        XCTAssertEqual(store.pinnedSessionIDs, ["s2", "s1"], "newest pin first")
+
+        store.togglePinned("s2")
+        XCTAssertEqual(store.pinnedSessionIDs, ["s1"])
+
+        store.togglePinned("s1", pinned: true)
+        XCTAssertEqual(store.pinnedSessionIDs, ["s1"], "explicit pin on an already-pinned session is a no-op")
+    }
+
+    func testDeletionRemovesPin() {
+        let store = SessionStore()
+        store.togglePinned("ses_gone")
+        XCTAssertEqual(store.pinnedSessionIDs, ["ses_gone"])
+        store.togglePinned("ses_gone", pinned: false)
+        XCTAssertTrue(store.pinnedSessionIDs.isEmpty)
     }
 }

@@ -89,3 +89,10 @@ app_version=$(plutil -extract CFBundleShortVersionString raw "$APP/Contents/Info
 
 echo
 echo "RELEASE READY: $DMG"
+
+# --- 6. version tag -----------------------------------------------------------
+# Tag the release so the DMG can be attached to a GitHub Release later
+# (needs a token; `gh release create v$version "$DMG"` when available).
+if git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    git -C "$ROOT" tag -f "v$new_version" >/dev/null && echo "tag:      v$new_version (push with: git push origin v$new_version)"
+fi

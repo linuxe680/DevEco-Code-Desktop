@@ -124,8 +124,14 @@ struct Session: Identifiable, Codable {
 
     var isReverted: Bool { revert?.messageID != nil }
 
-    /// Subagent sessions are spawned by the agent itself.
-    var isSubagent: Bool { parentID != nil }
+    /// Internal sessions the agent spawned for itself: harness task children
+    /// carry parentID, but the memory-extraction flow creates a top-level
+    /// session whose title is the only marker.
+    var isSubagent: Bool {
+        if parentID != nil { return true }
+        guard let title, !title.isEmpty else { return false }
+        return title.hasPrefix("🧠 ")
+    }
 }
 
 /// Present when the session was rolled back to an earlier message

@@ -17,6 +17,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func attach(store: SessionStore) {
         self.store = store
+        // Notification taps route back to the session they came from.
+        UNUserNotificationCenter.current().delegate = self
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -55,6 +57,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+extension AppDelegate: UNUserNotificationCenterDelegate {
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let sessionID = response.notification.request.content.userInfo["sessionID"] as? String
+        Task { @MainActor in
+            if let sessionID, !sessionID.isEmpty {
+                NSApp.activate(ignoringOtherApps: true)
+                store?.select(sessionID)
+            }
+            completionHandler()
+        }
+    }
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        // In-app generation/permission state is already visible; suppress
+        // duplicate banners while the user is looking at the app.
+        completionHandler([])
+    }
+}
+
 /// Owns the server so the menu label stays in sync with its state.
 private struct ServerCommands: Commands {
     @ObservedObject var server: ServerManager
@@ -82,6 +111,7 @@ struct DevEcoCodeDesktopApp: App {
 
     init() {
         AppSettings.registerDefaults()
+        AppSettings.applyLanguageOverride()
         let store = SessionStore()
         let providers = ProviderStore()
         _store = StateObject(wrappedValue: store)

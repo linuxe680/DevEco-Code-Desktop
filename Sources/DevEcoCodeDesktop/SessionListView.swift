@@ -11,11 +11,24 @@ struct SessionListView: View {
     @State private var hoveredSessionID: String?
 
     private var activeSessions: [Session] {
-        store.sessions.filter { !$0.isArchived }
+        // Harness subagent sessions (memory extraction, task children) are
+        // internal work; they never belong in the user's session list.
+        store.sessions.filter { !$0.isArchived && !$0.isSubagent }
     }
 
     private var archivedSessions: [Session] {
-        store.sessions.filter(\.isArchived)
+        store.sessions.filter { $0.isArchived && !$0.isSubagent }
+    }
+
+    private var pinnedSessions: [Session] {
+        // Pin order first (newest pin first), then anything pinned that fell
+        // out of the stored list keeps its recency position.
+        let active = activeSessions.filter(matches)
+        return store.pinnedSessionIDs.compactMap { id in active.first { $0.id == id } }
+    }
+
+    private var unpinnedActiveSessions: [Session] {
+        activeSessions.filter { !store.pinnedSessionIDs.contains($0.id) }
     }
 
     private var matches: (Session) -> Bool {
@@ -95,7 +108,10 @@ struct SessionListView: View {
                     .fill(Theme.hairline)
                     .frame(height: 1)
                 HStack {
-                    Text("\(Int(total.sessions ?? 0)) sessions · \(Int(total.messages ?? 0)) messages")
+                    Text(String(
+                        format: NSLocalizedString("%lld sessions · %lld messages", comment: "sidebar totals"),
+                        store.sessions.filter { !$0.isSubagent && !$0.isArchived }.count,
+                        Int(total.messages ?? 0)))
                         .font(.system(size: 12))
                     Spacer()
                     if let cost = total.cost, cost > 0 {
@@ -143,7 +159,16 @@ struct SessionListView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2, pinnedViews: [.sectionHeaders]) {
                     if query.isEmpty {
-                        ForEach(timeGroups(activeSessions.filter(matches)), id: \.label) { group in
+                        if !pinnedSessions.isEmpty {
+                            Section {
+                                ForEach(pinnedSessions) { session in
+                                    row(for: session)
+                                }
+                            } header: {
+                                sectionHeader(NSLocalizedString("Pinned", comment: "session group"))
+                            }
+                        }
+                        ForEach(timeGroups(unpinnedActiveSessions.filter(matches)), id: \.label) { group in
                             Section {
                                 ForEach(group.items) { session in
                                     row(for: session)
@@ -162,7 +187,10 @@ struct SessionListView: View {
                             }
                         }
                     } else {
-                        let results = store.sessions.filter(matches).sorted(by: byUpdatedDescending)
+                        let results = store.sessions
+                            .filter { !$0.isSubagent }
+                            .filter(matches)
+                            .sorted(by: byUpdatedDescending)
                         Section {
                             ForEach(results) { session in
                                 row(for: session)
@@ -213,6 +241,11 @@ struct SessionListView: View {
             HStack(alignment: .top, spacing: 8) {
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 5) {
+                        if store.pinnedSessionIDs.contains(session.id) {
+                            Image(systemName: "pin.fill")
+                                .font(.system(size: 10))
+                                .foregroundStyle(Color.accentColor)
+                        }
                         Text(session.displayTitle)
                             .font(.system(size: 14, weight: selected ? .semibold : .medium))
                             .foregroundStyle(.primary.opacity(selected ? 1 : 0.88))
@@ -273,6 +306,11 @@ struct SessionListView: View {
             Button("Rename…") { renamingSession = session }
             Button("Fork") {
                 Task { await store.fork(session) }
+            }
+            Button(store.pinnedSessionIDs.contains(session.id)
+                   ? NSLocalizedString("Unpin", comment: "")
+                   : NSLocalizedString("Pin", comment: "")) {
+                store.togglePinned(session.id)
             }
             Button(session.isArchived
                    ? NSLocalizedString("Unarchive", comment: "")

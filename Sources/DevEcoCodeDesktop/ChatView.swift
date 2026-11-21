@@ -50,11 +50,14 @@ struct ChatView: View {
     @State private var focusTrigger = 0
     @State private var mentionResults: [FsEntry] = []
     @State private var mentionIndex = 0
+    @State private var mentionDebounce: Task<Void, Never>?
     @State private var showSearch = false
     @State private var searchQuery = ""
     @State private var searchMatchIndex = 0
     @State private var searchJumpTick = 0
     @State private var dragHover = false
+    @State private var showModelPicker = false
+    @State private var modelQuery = ""
 
     private func applyCompletion(_ command: DevCommand) {
         store.draft = "/" + command.name + " "
@@ -64,7 +67,15 @@ struct ChatView: View {
     /// The trailing "@query" token of the draft, if any — drives the file
     /// mention popup.
     private var mentionToken: String? {
-        let last = store.draft.split(separator: " ", omittingEmptySubsequences: false).last.map(String.init) ?? ""
+        Self.mentionToken(in: store.draft)
+    }
+
+    /// Splits on whitespace AND newlines so @-mentions work after
+    /// Shift+Enter line breaks too.
+    static func mentionToken(in draft: String) -> String? {
+        let last = draft
+            .split(whereSeparator: { $0.isWhitespace || $0.isNewline })
+            .last.map(String.init) ?? ""
         guard last.hasPrefix("@"), last.count >= 1 else { return nil }
         return String(last.dropFirst())
     }
@@ -74,17 +85,19 @@ struct ChatView: View {
     }
 
     private func updateMentionResults() {
+        mentionDebounce?.cancel()
         guard let query = mentionToken else {
             mentionResults = []
             return
         }
-        // Empty query ("@" alone) also fetches: /api/fs/find lists files so
-        // the picker appears immediately; a stale result must not linger.
-        Task {
+        // Debounced: one fs/find per 180ms pause instead of per keystroke.
+        // Empty query ("@" alone) also fetches, so the picker appears at once.
+        mentionDebounce = Task {
+            try? await Task.sleep(nanoseconds: 180_000_000)
+            guard !Task.isCancelled else { return }
             let results = await store.findFiles(query: query)
-            if (mentionToken ?? "") == query {
-                mentionResults = Array(results.prefix(8))
-            }
+            guard (mentionToken ?? "") == query, !Task.isCancelled else { return }
+            mentionResults = Array(results.prefix(8))
         }
     }
 
@@ -128,6 +141,39 @@ struct ChatView: View {
         let index = min(paletteIndex, commandMatches.count - 1)
         applyCompletion(commandMatches[index])
         return true
+    }
+
+    /// Enter with a palette visible completes the highlighted candidate
+    /// instead of sending. "@" always completes; "/" only completes while no
+    /// arguments are typed yet, so "/cmd args" still sends normally.
+    private func handlePaletteReturn() -> Bool {
+        if !mentionMatches.isEmpty {
+            let index = min(mentionIndex, mentionMatches.count - 1)
+            attachMention(mentionMatches[index])
+            return true
+        }
+        if store.draft.hasPrefix("/"), !store.draft.contains(" "), !commandMatches.isEmpty {
+            let index = min(paletteIndex, commandMatches.count - 1)
+            applyCompletion(commandMatches[index])
+            return true
+        }
+        return false
+    }
+
+    /// Escape unwinds overlays first (candidate popup), then aborts a run.
+    private func handleEscape() {
+        if !mentionMatches.isEmpty {
+            // Drop the trailing "@query" token so the popup stays closed.
+            if let token = mentionToken,
+               let range = store.draft.range(of: "@" + token, options: .backwards) {
+                store.draft.removeSubrange(range)
+            }
+            mentionResults = []
+            return
+        }
+        if store.isSending {
+            store.abort()
+        }
     }
 
     private func addPastedFiles(_ urls: [URL]) {
@@ -337,15 +383,29 @@ struct ChatView: View {
 
     /// "ctx 12.3k/200k · $0.50" — context usage (last assistant input tokens,
     /// vs the selected model's limit) plus session cost, in the header.
+    /// Context usage of the selected session: the last assistant response's
+    /// input tokens approximate what the next call will feed the model.
+    private var contextUsage: (used: Double, limit: Double?)? {
+        let effectiveModel = store.selectedModel
+            ?? (store.serverDefaultModel.isEmpty ? nil : store.serverDefaultModel)
+        let limit = providers.contextLimit(for: effectiveModel)
+        let used = store.messages
+            .last(where: { $0.info.role == "assistant" })?
+            .info.tokens?.input ?? 0
+        guard limit != nil || used > 0 else { return nil }
+        return (used, limit)
+    }
+
     private func sessionUsage(_ session: Session) -> String? {
         var pieces: [String] = []
-        if let lastInput = store.messages.last(where: { $0.info.role == "assistant" })?.info.tokens?.input,
-           lastInput > 0 {
-            var context = compactCount(lastInput)
-            if let limit = providers.contextLimit(for: store.selectedModel), limit > 0 {
+        if let usage = contextUsage {
+            var context = compactCount(usage.used)
+            if let limit = usage.limit, limit > 0 {
                 context += "/\(compactCount(limit))"
+                pieces.append("ctx \(context) · \(Int((min(usage.used / limit, 1) * 100).rounded()))%")
+            } else {
+                pieces.append("ctx \(context)")
             }
-            pieces.append("ctx \(context)")
         }
         if let cost = session.cost, cost > 0 {
             pieces.append("$\(String(format: cost < 0.01 ? "%.4f" : "%.2f", cost))")
@@ -417,21 +477,6 @@ struct ChatView: View {
         let palette: [Color] = [.orange, .blue, .purple, .green, .teal, .pink]
         let seed = provider.unicodeScalars.reduce(0) { $0 + Int($1.value) }
         return palette[seed % palette.count]
-    }
-
-    private var modelGroups: [ModelGroup] {
-        Dictionary(grouping: providers.allModelChoices, by: \.provider)
-            .map { provider, choices in
-                ModelGroup(
-                    provider: provider,
-                    choices: choices.sorted {
-                        $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
-                    }
-                )
-            }
-            .sorted {
-                $0.provider.localizedCaseInsensitiveCompare($1.provider) == .orderedAscending
-            }
     }
 
     private var selectedEffortLabel: String {
@@ -537,35 +582,12 @@ struct ChatView: View {
         .help(NSLocalizedString("Chat text size", comment: ""))
     }
 
+    /// Composer model picker: a popover with type-to-filter (64+ models make
+    /// a nested menu painful) and a "recent" section fed by explicit picks.
     private var composerModelMenu: some View {
-        Menu {
-            Button {
-                store.selectedModel = nil
-                focusTrigger += 1
-            } label: {
-                if store.selectedModel == nil {
-                    Label(serverDefaultMenuLabel, systemImage: "checkmark")
-                } else {
-                    Text(serverDefaultMenuLabel)
-                }
-            }
-            Divider()
-            ForEach(modelGroups) { group in
-                Menu(group.provider) {
-                    ForEach(group.choices) { choice in
-                        Button {
-                            store.selectedModel = choice.id
-                            focusTrigger += 1
-                        } label: {
-                            if store.selectedModel == choice.id {
-                                Label(choice.name, systemImage: "checkmark")
-                            } else {
-                                Text(choice.name)
-                            }
-                        }
-                    }
-                }
-            }
+        Button {
+            modelQuery = ""
+            showModelPicker = true
         } label: {
             HStack(spacing: 5) {
                 Circle()
@@ -586,8 +608,139 @@ struct ChatView: View {
             .foregroundStyle(.secondary)
             .padding(.vertical, 3)
         }
-        .menuStyle(.borderlessButton)
+        .buttonStyle(.plain)
         .fixedSize()
+        .popover(isPresented: $showModelPicker, arrowEdge: .bottom) {
+            modelPickerContent
+        }
+    }
+
+    private var modelPickerContent: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.tertiary)
+                TextField("Search models…", text: $modelQuery)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 13))
+                if !modelQuery.isEmpty {
+                    Button { modelQuery = "" } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    modelPickerRow(id: nil, name: serverDefaultMenuLabel, provider: nil) {
+                        pickModel(nil)
+                    }
+                    if modelQuery.isEmpty, !AppSettings.recentModels.isEmpty {
+                        pickerSectionHeader(NSLocalizedString("Recent", comment: "model picker"))
+                        ForEach(recentModelChoices) { choice in
+                            modelPickerRow(id: choice.id, name: choice.name, provider: choice.provider) {
+                                pickModel(choice.id)
+                            }
+                        }
+                        pickerSectionHeader(NSLocalizedString("All models", comment: "model picker"))
+                    }
+                    ForEach(filteredModelGroups) { group in
+                        pickerSectionHeader(group.provider)
+                        ForEach(group.choices) { choice in
+                            modelPickerRow(id: choice.id, name: choice.name, provider: choice.provider) {
+                                pickModel(choice.id)
+                            }
+                        }
+                    }
+                    if filteredModelGroups.isEmpty && recentModelChoices.isEmpty {
+                        Text("No models match “\(modelQuery)”")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.tertiary)
+                            .padding(12)
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+        }
+        .frame(width: 360, height: 380)
+    }
+
+    private var recentModelChoices: [ModelChoice] {
+        AppSettings.recentModels.compactMap { id in
+            providers.allModelChoices.first { $0.id == id }
+        }
+    }
+
+    private var filteredModelGroups: [ModelGroup] {
+        let query = modelQuery.trimmingCharacters(in: .whitespaces)
+        let choices: [ModelChoice]
+        if query.isEmpty {
+            choices = providers.allModelChoices
+        } else {
+            choices = providers.allModelChoices.filter {
+                $0.name.localizedCaseInsensitiveContains(query)
+                    || $0.provider.localizedCaseInsensitiveContains(query)
+                    || $0.id.localizedCaseInsensitiveContains(query)
+            }
+        }
+        return Dictionary(grouping: choices, by: \.provider)
+            .map { ModelGroup(provider: $0.key, choices: $0.value.sorted { $0.name < $1.name }) }
+            .sorted { $0.provider < $1.provider }
+    }
+
+    private func pickerSectionHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.tertiary)
+            .textCase(.uppercase)
+            .padding(.horizontal, 10)
+            .padding(.top, 6)
+            .padding(.bottom, 2)
+    }
+
+    private func modelPickerRow(
+        id: String?,
+        name: String,
+        provider: String?,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 7) {
+                Circle()
+                    .fill(provider.map(providerColor) ?? Color.secondary)
+                    .frame(width: 6, height: 6)
+                Text(name)
+                    .font(.system(size: 13))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 6)
+                if id == store.selectedModel {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.accentColor)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+    }
+
+    private func pickModel(_ id: String?) {
+        store.selectedModel = id
+        if let id {
+            AppSettings.rememberRecentModel(id)
+        }
+        focusTrigger += 1
+        showModelPicker = false
     }
 
     private var composerEffortMenu: some View {
@@ -835,12 +988,17 @@ struct ChatView: View {
             }
 
             if store.isSending || store.retryInfo != nil {
-                ActivityBar(
-                    tool: runningTool,
-                    todoProgress: store.todos.isEmpty ? nil : "\(store.todos.filter(\.isDone).count)/\(store.todos.count)",
-                    retryInfo: store.retryInfo
-                ) {
-                    store.abort()
+                // Periodic tick re-evaluates the stalled hint; the ActivityBar
+                // is the single generation indicator (composer keeps a mini one).
+                TimelineView(.periodic(from: .now, by: 5)) { _ in
+                    ActivityBar(
+                        tool: runningTool,
+                        todoProgress: store.todos.isEmpty ? nil : "\(store.todos.filter(\.isDone).count)/\(store.todos.count)",
+                        retryInfo: store.retryInfo,
+                        stalled: Date().timeIntervalSince(store.lastStreamActivity) > 60
+                    ) {
+                        store.abort()
+                    }
                 }
                 Divider()
             }
@@ -922,34 +1080,6 @@ struct ChatView: View {
                 }
             }
 
-            if store.isSending {
-                TimelineView(.periodic(from: .now, by: 5)) { _ in
-                    let stalled = Date().timeIntervalSince(store.lastStreamActivity) > 60
-                    HStack(spacing: 6) {
-                        ProgressView()
-                            .controlSize(.small)
-                        if let retry = store.retryInfo {
-                            Text(String(format: NSLocalizedString("Retrying · %@", comment: ""), retry))
-                                .font(.system(size: 14))
-                                .foregroundStyle(.orange)
-                        } else if stalled {
-                            Text("No output for over a minute — press Esc to stop.")
-                                .font(.system(size: 14))
-                                .foregroundStyle(.orange)
-                        } else {
-                            Text("Generating…")
-                                .font(.system(size: 14))
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 6)
-                    .frame(maxWidth: contentMaxWidth)
-                    .frame(maxWidth: .infinity)
-                }
-            }
-
             if !store.queuedPrompts.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(store.queuedPrompts) { queued in
@@ -961,6 +1091,12 @@ struct ChatView: View {
                                 .font(.system(size: 14))
                                 .lineLimit(1)
                                 .truncationMode(.middle)
+                            if !queued.attachments.isEmpty {
+                                Label("\(queued.attachments.count)", systemImage: "paperclip")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.secondary)
+                                    .help(NSLocalizedString("Queued attachments", comment: ""))
+                            }
                             Spacer(minLength: 8)
                             Button {
                                 store.editQueued(queued)
@@ -1067,13 +1203,15 @@ struct ChatView: View {
                     ChatInput(text: $store.draft, enterSends: sendOnEnter,
                               fontSize: chatFontSize,
                               focusTrigger: focusTrigger,
+                              placeholder: NSLocalizedString("Write a message…", comment: ""),
                               onHistoryUp: historyUp, onHistoryDown: historyDown,
                               onArrowUp: handlePaletteUp, onArrowDown: handlePaletteDown,
                               onTab: handlePaletteTab,
+                              onReturn: handlePaletteReturn,
                               onPasteImage: { data in store.addImageAttachment(data: data) },
                               onPasteFileURLs: { urls in addPastedFiles(urls) },
                               onDragHover: { dragHover = $0 },
-                              onEscape: { if store.isSending { store.abort() } },
+                              onEscape: handleEscape,
                               onContentHeight: { inputHeight = $0 }) { store.send() }
                         .frame(height: inputHeight)
                         .padding(.horizontal, 12)
@@ -1086,6 +1224,9 @@ struct ChatView: View {
                             Text("Generating…")
                                 .font(.system(size: ChatTypography.meta(chatFontSize), weight: .medium))
                                 .foregroundStyle(.secondary)
+                        }
+                        if let usage = contextUsage {
+                            ContextMeter(used: usage.used, limit: usage.limit)
                         }
                         Spacer(minLength: 8)
                         composerModelMenu
@@ -1104,16 +1245,6 @@ struct ChatView: View {
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
                         .stroke(dragHover ? Color.accentColor : Theme.softStroke, lineWidth: dragHover ? 2 : 1)
                 )
-                .overlay(alignment: .topLeading) {
-                    if store.draft.isEmpty {
-                        Text(NSLocalizedString("Write a message…", comment: ""))
-                            .font(.system(size: ChatTypography.body(chatFontSize)))
-                            .foregroundStyle(.tertiary)
-                            .padding(.leading, 17)
-                            .padding(.top, 15)
-                            .allowsHitTesting(false)
-                    }
-                }
                 .shadow(color: .black.opacity(0.10), radius: 14, y: 5)
                 .frame(maxWidth: contentMaxWidth)
                 .frame(maxWidth: .infinity)
@@ -1204,6 +1335,8 @@ private struct ActivityBar: View {
     let tool: Part?
     let todoProgress: String?
     let retryInfo: String?
+    /// True when a run is active but no delta arrived for over a minute.
+    var stalled: Bool = false
     var onStop: () -> Void
 
     var body: some View {
@@ -1235,6 +1368,11 @@ private struct ActivityBar: View {
             }
             if let retryInfo, !retryInfo.isEmpty {
                 Label(retryInfo, systemImage: "arrow.triangle.2.circlepath")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.orange)
+                    .lineLimit(1)
+            } else if stalled {
+                Text(NSLocalizedString("No output for over a minute — press Esc to stop.", comment: ""))
                     .font(.system(size: 12))
                     .foregroundStyle(.orange)
                     .lineLimit(1)
@@ -1497,11 +1635,13 @@ private struct ChatInput: NSViewRepresentable {
     var enterSends: Bool
     var fontSize: Double
     var focusTrigger: Int
+    var placeholder: String
     var onHistoryUp: () -> Void
     var onHistoryDown: () -> Void
     var onArrowUp: () -> Bool
     var onArrowDown: () -> Bool
     var onTab: () -> Bool
+    var onReturn: () -> Bool
     var onPasteImage: (Data) -> Void
     var onPasteFileURLs: ([URL]) -> Void
     var onDragHover: (Bool) -> Void
@@ -1512,9 +1652,14 @@ private struct ChatInput: NSViewRepresentable {
     final class Coordinator: NSObject, NSTextViewDelegate {
         var onTextChange: ((String) -> Void)?
         var onSend: (() -> Void)?
-
+        /// Last value forwarded to the binding. When `textView.string` equals
+        /// this, a differing binding is an external edit — otherwise it is a
+        /// stale SwiftUI render and must not be written back (it would undo
+        /// fast typing/deletion between renders).
+        var lastSyncedText: String?
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
+            lastSyncedText = textView.string
             onTextChange?(textView.string)
         }
     }
@@ -1527,6 +1672,7 @@ private struct ChatInput: NSViewRepresentable {
             frame: NSRect(x: 0, y: 0, width: 480, height: 44)
         )
         textView.isRichText = false
+        textView.placeholder = placeholder
         textView.allowsUndo = true
         textView.isEditable = true
         textView.isSelectable = true
@@ -1547,7 +1693,10 @@ private struct ChatInput: NSViewRepresentable {
         textView.isHorizontallyResizable = false
         textView.autoresizingMask = [.width]
         textView.delegate = coordinator
-        textView.onSend = { coordinator.onSend?() }
+        textView.onSend = {
+            textView.isSendInFlight = true
+            coordinator.onSend?()
+        }
         textView.onContentHeight = onContentHeight
         textView.onPasteImage = onPasteImage
         textView.onPasteFileURLs = onPasteFileURLs
@@ -1597,6 +1746,7 @@ private struct ChatInput: NSViewRepresentable {
         textView.onArrowUp = onArrowUp
         textView.onArrowDown = onArrowDown
         textView.onTab = onTab
+        textView.onReturn = onReturn
         textView.onEscape = onEscape
         textView.onDragHover = onDragHover
         textView.onContentHeight = onContentHeight
@@ -1607,7 +1757,12 @@ private struct ChatInput: NSViewRepresentable {
             }
         }
         if textView.string != text {
-            textView.string = text
+            // Never touch marked text (IME composition in flight) and never
+            // echo our own binding updates back into the view.
+            if !textView.hasMarkedText() && textView.string != coordinator.lastSyncedText {
+                textView.string = text
+                coordinator.lastSyncedText = text
+            }
             // Report outside the view update — mutating state here would be
             // discarded by SwiftUI.
             DispatchQueue.main.async { [weak textView] in
@@ -1624,13 +1779,19 @@ private final class ChatTextView: NSTextView {
     var onArrowUp: (() -> Bool)?
     var onArrowDown: (() -> Bool)?
     var onTab: (() -> Bool)?
+    var onReturn: (() -> Bool)?
     var onPasteImage: ((Data) -> Void)?
     var onPasteFileURLs: (([URL]) -> Void)?
     var onDragHover: ((Bool) -> Void)?
     var onEscape: (() -> Void)?
     var onContentHeight: ((CGFloat) -> Void)?
+    var placeholder = ""
     var enterSends = true
     var lastFocusTrigger = -1
+    /// Set while a send is in flight. Enter during this window would
+    /// otherwise flush text typed after send() cleared the draft — the race
+    /// that merged two messages into one. Cleared on the next text change.
+    var isSendInFlight = false
 
     /// `init(frame:textContainer:)` does not build a text system when the
     /// container is nil; create storage + layout manager + container here.
@@ -1662,9 +1823,19 @@ private final class ChatTextView: NSTextView {
             super.insertNewline(sender)
             return
         }
+        // A send just cleared the composer; any text on screen now was typed
+        // after that send and must not be flushed by the same Enter press.
+        if isSendInFlight && !string.isEmpty {
+            isSendInFlight = false
+            return
+        }
         let hasShift = NSApp.currentEvent?.modifierFlags.contains(.shift) ?? false
         if enterSends && !hasShift {
-            onSend?()
+            // A visible candidate list wins: Enter completes, a second Enter
+            // (popup now closed) sends.
+            if onReturn?() != true {
+                onSend?()
+            }
         } else {
             super.insertNewline(sender)
         }
@@ -1685,7 +1856,22 @@ private final class ChatTextView: NSTextView {
 
     override func didChangeText() {
         super.didChangeText()
+        isSendInFlight = false
         reportHeight()
+    }
+
+    /// Placeholder drawn inside the view so it hides while IME marked text
+    /// (composition) is on screen — a SwiftUI overlay cannot observe that.
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard string.isEmpty, !hasMarkedText(), !placeholder.isEmpty else { return }
+        (placeholder as NSString).draw(
+            at: NSPoint(x: textContainerInset.width + 5, y: textContainerInset.height - 3),
+            withAttributes: [
+                .font: font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize),
+                .foregroundColor: NSColor.tertiaryLabelColor,
+            ]
+        )
     }
 
     override func paste(_ sender: Any?) {
@@ -1807,10 +1993,12 @@ private struct MessageBubble: View {
                 Button("Revert to here…") {
                     Task { await store.revert(to: message) }
                 }
+                .disabled(isStreamingThis)
             } else {
                 Button("Revert to here…") {
                     Task { await store.revert(to: message) }
                 }
+                .disabled(isStreamingThis)
             }
         }
     }
@@ -1841,7 +2029,7 @@ private struct MessageBubble: View {
                     .stroke(Theme.userBubbleStroke)
             )
             .overlay(alignment: .topTrailing) {
-                if hovered {
+                if hovered && !isStreamingThis {
                     hoverActionBar
                         .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .topTrailing)))
                 }
@@ -1883,7 +2071,7 @@ private struct MessageBubble: View {
         .lineSpacing(ChatTypography.lineSpacing(chatFontSize))
         .padding(.vertical, 3)
         .overlay(alignment: .topTrailing) {
-            if hovered {
+            if hovered && !isStreamingThis {
                 hoverActionBar
                     .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .topTrailing)))
             }
@@ -1948,19 +2136,28 @@ private struct MessageBubble: View {
         var pieces: [String] = []
         if let model = info.modelID {
             let identifier = [info.providerID, info.modelID].compactMap { $0 }.joined(separator: "/")
-            let choice = providers.allModelChoices.first(where: { $0.id == identifier })
-                ?? providers.allModelChoices.first(where: {
-                    $0.name.localizedCaseInsensitiveContains(model)
-                })
-            pieces.append(prettyModelName(choice?.name ?? model))
+            if let name = providers.modelDisplayName(for: identifier, fuzzyModel: model) {
+                pieces.append(prettyModelName(name))
+            }
         }
         if let variant = info.variant {
-            pieces.append("\(variant) effort")
+            pieces.append(String(format: NSLocalizedString("Effort: %@", comment: ""), variant))
         }
         if let tokens = info.tokens {
-            if let input = tokens.input, input > 0 { pieces.append("\(compactCount(input)) in") }
-            if let output = tokens.output, output > 0 { pieces.append("\(compactCount(output)) out") }
-            if let cached = tokens.cache?.read, cached > 0 { pieces.append("\(compactCount(cached)) cached") }
+            // Harness semantics: input = uncached input of this request,
+            // cache.read = context served from cache, output/reasoning =
+            // tokens generated for this reply. "total" spans the whole
+            // processed context and is intentionally not shown here.
+            let generated = (tokens.output ?? 0) + (tokens.reasoning ?? 0)
+            if generated > 0 {
+                pieces.append(String(format: NSLocalizedString("Output %@", comment: "per-message tokens"), compactCount(generated)))
+            }
+            if let input = tokens.input, input > 0 {
+                pieces.append(String(format: NSLocalizedString("Input %@", comment: "per-message uncached tokens"), compactCount(input)))
+            }
+            if let cached = tokens.cache?.read, cached > 0 {
+                pieces.append(String(format: NSLocalizedString("Cached %@", comment: "per-message cache hits"), compactCount(cached)))
+            }
         }
         if let cost = info.cost, cost > 0 {
             pieces.append("$\(String(format: cost < 0.01 ? "%.4f" : "%.2f", cost))")
@@ -2022,6 +2219,59 @@ private struct TodoPanel: View {
     }
 }
 
+/// Progressive reveal for streaming assistant text. Deltas land in ~120ms
+/// batches; this drains the backlog at ~40ms ticks so text appears like
+/// continuous typing instead of whole blocks. The step scales with the backlog
+/// (bigger burst → faster typing) so the view never falls far behind.
+private struct StreamingTextView: View {
+    let target: String
+    let useMarkdown: Bool
+    let searchQuery: String
+
+    @AppStorage(AppSettings.Keys.chatFontSize)
+    private var chatFontSize = 15.0
+
+    @State private var revealedCount = 0
+    @State private var lastTarget = ""
+
+    private var content: String {
+        let revealed = revealedCount >= target.count
+            ? target
+            : String(target.prefix(revealedCount))
+        return revealed + " ▍"
+    }
+
+    var body: some View {
+        Group {
+            // Mid-stream: plain text keeps 40ms typewriter updates cheap;
+            // markdown re-parsing per frame is wasted work, so formatting
+            // lands once the run finishes.
+            if useMarkdown && revealedCount >= target.count {
+                MarkdownContentView(content: content, searchQuery: searchQuery)
+            } else {
+                Text(content)
+                    .font(.system(size: ChatTypography.body(chatFontSize)))
+                    .lineSpacing(ChatTypography.lineSpacing(chatFontSize))
+                    .textSelection(.enabled)
+            }
+        }
+        .onReceive(Timer.publish(every: 0.04, on: .main, in: .common).autoconnect()) { _ in
+            let backlog = target.count - revealedCount
+            guard backlog > 0 else { return }
+            revealedCount += min(max(2, backlog / 10), 160)
+        }
+        .onChange(of: target) { newValue in
+            // Appends keep the reveal position; a replaced body (snapshot
+            // refresh) snaps to the new content.
+            if !newValue.hasPrefix(String(lastTarget.prefix(revealedCount))) {
+                revealedCount = newValue.count
+            }
+            lastTarget = newValue
+        }
+        .onAppear { lastTarget = target }
+    }
+}
+
 private struct PartView: View {
     let part: Part
     let useMarkdown: Bool
@@ -2045,19 +2295,27 @@ private struct PartView: View {
     var body: some View {
         switch part.type {
         case "text":
-            let content = (part.text ?? "") + (isStreaming ? " ▍" : "")
-            if useMarkdown {
-                MarkdownContentView(content: content)
-            } else if !searchQuery.isEmpty, let attributed = highlightedAttributedString(content, query: searchQuery) {
-                Text(attributed)
-                    .font(.system(size: ChatTypography.body(chatFontSize)))
-                    .lineSpacing(ChatTypography.lineSpacing(chatFontSize))
-                    .textSelection(.enabled)
+            if isStreaming {
+                StreamingTextView(
+                    target: part.text ?? "",
+                    useMarkdown: useMarkdown,
+                    searchQuery: searchQuery
+                )
             } else {
-                Text(content)
-                    .font(.system(size: ChatTypography.body(chatFontSize)))
-                    .lineSpacing(ChatTypography.lineSpacing(chatFontSize))
-                    .textSelection(.enabled)
+                let content = part.text ?? ""
+                if useMarkdown {
+                    MarkdownContentView(content: content, searchQuery: searchQuery)
+                } else if !searchQuery.isEmpty, let attributed = highlightedAttributedString(content, query: searchQuery) {
+                    Text(attributed)
+                        .font(.system(size: ChatTypography.body(chatFontSize)))
+                        .lineSpacing(ChatTypography.lineSpacing(chatFontSize))
+                        .textSelection(.enabled)
+                } else {
+                    Text(content)
+                        .font(.system(size: ChatTypography.body(chatFontSize)))
+                        .lineSpacing(ChatTypography.lineSpacing(chatFontSize))
+                        .textSelection(.enabled)
+                }
             }
         case "reasoning":
             DisclosureGroup(isExpanded: $thinkingExpanded) {
@@ -2130,10 +2388,32 @@ enum MarkdownSegment: Equatable {
     case code(lang: String, code: String)
 }
 
+/// Streaming re-renders every visible bubble on each delta flush; these
+/// caches keep per-frame work proportional to the changed message instead of
+/// the whole visible transcript.
+private final class CachedBox<Value> {
+    let value: Value
+    init(_ value: Value) { self.value = value }
+}
+
+private enum MarkdownCache {
+    static let segments = NSCache<NSString, CachedBox<[MarkdownSegment]>>()
+    static let proseBlocks = NSCache<NSString, CachedBox<[MarkdownProseBlock]>>()
+    static let inline = NSCache<NSString, CachedBox<AttributedString>>()
+
+    static func key(_ parts: String...) -> NSString {
+        parts.joined(separator: "|") as NSString
+    }
+}
+
 /// Splits assistant output into prose and fenced code blocks. An unterminated
 /// fence (mid-stream) renders its tail as code, so the block appears styled
 /// immediately instead of flashing as plain text.
 func parseMarkdownSegments(_ content: String) -> [MarkdownSegment] {
+    let cacheKey = content as NSString
+    if let cached = MarkdownCache.segments.object(forKey: cacheKey)?.value {
+        return cached
+    }
     var segments: [MarkdownSegment] = []
     var textLines: [String] = []
     var codeLines: [String] = []
@@ -2166,6 +2446,7 @@ func parseMarkdownSegments(_ content: String) -> [MarkdownSegment] {
     } else if !textLines.isEmpty {
         segments.append(.text(textLines.joined(separator: "\n")))
     }
+    MarkdownCache.segments.setObject(CachedBox(segments), forKey: cacheKey)
     return segments
 }
 
@@ -2181,6 +2462,10 @@ enum MarkdownProseBlock: Equatable {
 /// Splits prose into headings, lists, quotes, and paragraphs. Inline styling
 /// (bold/italic/inline code) is still delegated to AttributedString.
 func parseMarkdownProseBlocks(_ text: String) -> [MarkdownProseBlock] {
+    let cacheKey = text as NSString
+    if let cached = MarkdownCache.proseBlocks.object(forKey: cacheKey)?.value {
+        return cached
+    }
     var blocks: [MarkdownProseBlock] = []
     var paragraphLines: [String] = []
 
@@ -2251,6 +2536,7 @@ func parseMarkdownProseBlocks(_ text: String) -> [MarkdownProseBlock] {
     }
 
     flushParagraph()
+    MarkdownCache.proseBlocks.setObject(CachedBox(blocks), forKey: cacheKey)
     return blocks
 }
 
@@ -2258,6 +2544,8 @@ func parseMarkdownProseBlocks(_ text: String) -> [MarkdownProseBlock] {
 /// as horizontally scrollable code cards.
 struct MarkdownContentView: View {
     let content: String
+    /// When set (⌘F active), prose segments highlight the matches.
+    var searchQuery: String = ""
 
     var body: some View {
         let segments = parseMarkdownSegments(content)
@@ -2265,7 +2553,7 @@ struct MarkdownContentView: View {
             ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
                 switch segment {
                 case .text(let text):
-                    MarkdownProseView(text: text)
+                    MarkdownProseView(text: text, highlightQuery: searchQuery)
                 case .code(let lang, let code):
                     CodeBlockView(lang: lang, code: code)
                 }
@@ -2276,6 +2564,7 @@ struct MarkdownContentView: View {
 
 private struct MarkdownProseView: View {
     let text: String
+    var highlightQuery: String = ""
 
     @AppStorage(AppSettings.Keys.chatFontSize)
     private var chatFontSize = 15.0
@@ -2348,12 +2637,10 @@ private struct MarkdownProseView: View {
         weight: Font.Weight = .regular
     ) -> some View {
         Group {
-            if let attributed = try? AttributedString(
-                markdown: text,
-                options: AttributedString.MarkdownParsingOptions(
-                    interpretedSyntax: .inlineOnlyPreservingWhitespace
-                )
-            ) {
+            if !highlightQuery.isEmpty,
+               let highlighted = highlightedAttributedString(text, query: highlightQuery) {
+                Text(highlighted)
+            } else if let attributed = cachedInline(text, size: size, weight: weight) {
                 Text(attributed)
             } else {
                 Text(text)
@@ -2363,6 +2650,27 @@ private struct MarkdownProseView: View {
         .lineSpacing(ChatTypography.lineSpacing(chatFontSize))
         .textSelection(.enabled)
         .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// Identical paragraphs across renders hit the cache; only the streaming
+    /// bubble's tail paragraph re-parses per flush.
+    private func cachedInline(
+        _ text: String,
+        size: CGFloat,
+        weight: Font.Weight
+    ) -> AttributedString? {
+        let key = MarkdownCache.key("\(size)", "\(weight)", text)
+        if let cached = MarkdownCache.inline.object(forKey: key)?.value {
+            return cached
+        }
+        guard let attributed = try? AttributedString(
+            markdown: text,
+            options: AttributedString.MarkdownParsingOptions(
+                interpretedSyntax: .inlineOnlyPreservingWhitespace
+            )
+        ) else { return nil }
+        MarkdownCache.inline.setObject(CachedBox(attributed), forKey: key)
+        return attributed
     }
 }
 
@@ -2391,7 +2699,7 @@ private struct CodeBlockView: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(copied ? Color.green : Color.secondary)
-                .help("Copy code")
+                .help(NSLocalizedString("Copy code", comment: ""))
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
@@ -2426,6 +2734,49 @@ private struct CodeBlockView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
             copied = false
         }
+    }
+}
+
+/// Claude-desktop-style context meter: slim progress bar + numeric readout,
+/// escalating to orange/red as the conversation fills the context window.
+private struct ContextMeter: View {
+    let used: Double
+    let limit: Double?
+
+    private var ratio: Double? {
+        guard let limit, limit > 0 else { return nil }
+        return min(max(used / limit, 0), 1)
+    }
+
+    private var tint: Color {
+        guard let ratio else { return .secondary }
+        return ratio > 0.85 ? .red : (ratio > 0.6 ? .orange : .secondary)
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if let limit, limit > 0, let ratio {
+                Capsule()
+                    .fill(Color.primary.opacity(0.08))
+                    .frame(width: 76, height: 4)
+                    .overlay(alignment: .leading) {
+                        Capsule()
+                            .fill(tint)
+                            .frame(width: max(3, 76 * ratio))
+                    }
+                Text("\(compactCount(used)) / \(compactCount(limit)) · \(Int((ratio * 100).rounded()))%")
+                    .foregroundStyle(tint)
+                    .monospacedDigit()
+            } else {
+                Text("\(compactCount(used)) tokens")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .font(.system(size: 12))
+        .help(NSLocalizedString(
+            "Context window usage — input tokens of the last response vs the model's context limit",
+            comment: ""
+        ))
     }
 }
 
@@ -2809,10 +3160,22 @@ private struct PermissionBanner: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(3)
             }
-            HStack {
-                Button("Allow once") { store.reply(to: request, reply: "once") }
-                Button("Always allow") { store.reply(to: request, reply: "always") }
-                Button("Reject") { store.reply(to: request, reply: "reject") }
+            HStack(spacing: 8) {
+                Button("Allow once") {
+                    store.reply(to: request, reply: "once")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                Button("Always allow") {
+                    store.reply(to: request, reply: "always")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                Button("Reject", role: .destructive) {
+                    store.reply(to: request, reply: "reject")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
             }
         }
         .padding(12)

@@ -29,12 +29,26 @@ struct SettingsView: View {
 private struct GeneralSettingsPane: View {
     @AppStorage(AppSettings.Keys.quitBehavior)
     private var quitBehaviorRaw = QuitBehavior.stopServer.rawValue
+    @AppStorage(AppSettings.Keys.appLanguage)
+    private var appLanguageRaw = "zh-Hans"
 
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var launchError: String?
 
     var body: some View {
         Form {
+            Picker("Language", selection: $appLanguageRaw) {
+                Text("跟随系统 / System").tag("system")
+                Text("简体中文").tag("zh-Hans")
+                Text("English").tag("en")
+            }
+            Text("Takes effect after relaunch.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.leading, 4)
+
+            Divider()
+
             Picker("When app quits:", selection: $quitBehaviorRaw) {
                 Text("Stop server").tag(QuitBehavior.stopServer.rawValue)
                 Text("Keep server running").tag(QuitBehavior.keepRunning.rawValue)
@@ -88,6 +102,7 @@ private struct ServerSettingsPane: View {
     @State private var resolvedNodePath = ""
     @State private var backupStatus: String?
     @State private var backupFailed = false
+    @State private var showLogViewer = false
     @State private var diagnosticsCopied = false
 
     var body: some View {
@@ -159,6 +174,7 @@ private struct ServerSettingsPane: View {
             HStack {
                 Button("Reveal Log Folder") { reveal(ServerManager.logFileURL) }
                 Button("Reveal Data Folder") { reveal(ServerManager.dataDirectory) }
+                Button("View Log…") { showLogViewer = true }
                 Spacer()
             }
 
@@ -201,6 +217,9 @@ private struct ServerSettingsPane: View {
         }
         .padding(20)
         .onAppear(perform: refreshResolved)
+        .sheet(isPresented: $showLogViewer) {
+            LogViewerSheet()
+        }
     }
 
     private var resolvedDisplay: String {
@@ -523,5 +542,51 @@ private struct AboutSettingsPane: View {
         }
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
+// MARK: - Log viewer
+
+/// Live tail of the managed server's log output (same content as server.log).
+private struct LogViewerSheet: View {
+    @EnvironmentObject var server: ServerManager
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Server log")
+                    .font(.headline)
+                Text("\(server.logTail.count) chars")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Copy All") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(server.logTail, forType: .string)
+                }
+                .controlSize(.small)
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+            .padding(14)
+
+            Divider()
+
+            ScrollViewReader { proxy in
+                ScrollView {
+                    Text(server.logTail.isEmpty ? "(no output yet)" : server.logTail)
+                        .font(.system(size: 11, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                        .id("log-bottom")
+                }
+                .onChange(of: server.logTail.count) { _ in
+                    proxy.scrollTo("log-bottom", anchor: .bottom)
+                }
+            }
+        }
+        .frame(width: 720, height: 480)
     }
 }

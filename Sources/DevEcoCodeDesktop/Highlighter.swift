@@ -8,8 +8,20 @@ enum CodeHighlighter {
     private static let stringColor = Color(red: 0.80, green: 0.32, blue: 0.16)
     private static let keywordColor = Color.purple
     private static let numberColor = Color.teal
+    /// Code blocks are stable across streaming flushes; highlight only the
+    /// changed block instead of re-running regexes over the whole transcript.
+    private static let cache = NSCache<NSString, CachedAttributedString>()
+
+    private final class CachedAttributedString {
+        let value: AttributedString
+        init(_ value: AttributedString) { self.value = value }
+    }
 
     static func highlight(_ code: String, language: String) -> AttributedString {
+        let cacheKey = "\(language)|\(code)" as NSString
+        if let cached = cache.object(forKey: cacheKey)?.value {
+            return cached
+        }
         let lang = language.lowercased()
         var pattern = ""
         var colors: [Color] = []
@@ -61,6 +73,7 @@ enum CodeHighlighter {
         if cursor < code.endIndex {
             attributed += AttributedString(code[cursor..<code.endIndex])
         }
+        cache.setObject(CachedAttributedString(attributed), forKey: cacheKey)
         return attributed
     }
 

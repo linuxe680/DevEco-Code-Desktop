@@ -1,0 +1,36 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run tests
+        run: swift test --disable-sandbox
+
+      - name: Build DMG
+        run: ./Scripts/make-dmg.sh
+
+      - name: Resolve version
+        id: version
+        run: |
+          version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Attach DMG to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          files: |
+            build/DevEco Code Desktop-*.dmg
+            build/DevEco Code Desktop-*.dmg.sha256

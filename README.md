@@ -1,92 +1,175 @@
 # DevEco Code Desktop
 
-A native macOS GUI for the locally installed `deveco` CLI. The app manages a local `deveco serve` process and talks to its HTTP API.
+A native macOS GUI for the locally installed `deveco` CLI. The app manages a local `deveco serve` process and talks to its HTTP API — the same API the bundled web UI uses (`GET /doc` on a running server).
 
-## Run
+中文说明见下方 [中文文档](#中文文档)。
+
+![App icon](Resources/AppIcon.png)
+
+## Requirements
+
+- macOS 13+
+- Xcode command line tools (Swift 5.9)
+- `deveco` CLI installed locally (`npm i -g deveco`) and Node.js on PATH
+
+## Build & Run
 
 ```bash
 ./Scripts/build-app.sh     # build the .app bundle
 open "DevEco Code Desktop.app"
 ```
 
-## Distribute
+The build script signs with a persistent self-signed certificate (created once in `~/Library/Application Support/DevEcoCodeDesktop/signing`). A stable signing identity keeps TCC grants (folder access, etc.) across rebuilds; ad-hoc signing would reset them every build. If the identity is unavailable the script falls back to ad-hoc with a warning.
 
-```bash
-./Scripts/make-dmg.sh      # build + package build/DevEco Code Desktop-<version>.dmg
-./Scripts/make-icon.sh     # regenerate AppIcon.png / AppIcon.icns from make-icon.swift
-```
+## Features
 
-Requirements: macOS 13+, Xcode command line tools, and `deveco` installed locally.
+**Sessions & input**
 
-The build script signs the app with a persistent self-signed development
-certificate stored in `~/Library/Application Support/DevEcoCodeDesktop/signing`.
-This keeps the code identity stable across rebuilds, so macOS remembers
-permissions such as access to the project folder in `~/Documents`. The first
-launch after the initial setup may ask once; later rebuilds reuse the grant.
+- Create (⌘N), search, rename, archive, and delete sessions; grouped by Today / Yesterday / Earlier with relative timestamps. New sessions take their title from the first prompt; placeholder titles are backfilled when loaded.
+- Enter sends (Shift+Enter newline, ⌘⏎ also sends); prompts stream live with a single generation indicator (tool, todo progress, retry reason, stalled hint, stop button).
+- **Prompt queueing**: Enter while generating queues the prompt as a removable chip; it sends automatically on idle. **Prompt history**: Option+↑/↓ recalls recent prompts.
+- Drafts, queues, attachments, model picks, and generating state are fully isolated per session — switching chats never hijacks the composer.
+- `@` file mentions with 180 ms debounce (`/api/fs/find`), junk filtered (dot-directories, `node_modules`, logs/temp); Enter completes the highlighted candidate, and mentions work after line breaks. Slash commands (`/name args`) route to the command endpoint; Enter completes a half-typed command name.
+- Image/file attachments: pasted images compress to ≤1568 px (pixel-accurate on Retina), oversized ones warn; files attach by reference, must live inside the project folder.
 
-## What works
+**Transcript & rendering**
 
-- Choose a project folder; the app starts `deveco serve` on a free local port (starting at `127.0.0.1:4096`, configurable).
-- The app resolves the `deveco` binary itself (common npm/homebrew locations, then the login shell's `PATH`), so it works when launched from Finder/Dock. A specific path can also be set in Settings.
-- **Settings (⌘,)**: quit behavior for the server process, launch at login, deveco binary path, starting port, auto-start, Enter-to-send, per-session default model, font size, auto-scroll, and Thinking default expansion.
-- Sessions: create (⌘N), search, rename, **archive** (server-side `time.archived`, shown in an Archived section), and delete — all via the sidebar context menu; sessions are grouped by Today / Yesterday / Earlier with relative timestamps. New sessions take their title from the first prompt, and existing placeholder titles are backfilled when loaded.
-- Send prompts with Enter (Shift+Enter inserts a newline, ⌘⏎ also sends) and stream assistant text, reasoning, and tool status live; the transcript follows the stream and shows a Generating indicator until the session goes idle.
-- Conversations use a Codex-style transcript: compact right-aligned user bubbles, borderless left-aligned assistant prose, elapsed time above each reply, and quiet tool cards with per-call duration. Assistant prose supports headings, lists, quotes, inline formatting, and scalable code blocks.
-- Chat text size defaults to 15 pt and is adjustable from the **Aa** menu in the chat header or Settings → Chat (13–30 pt); the setting scales prose, code, tool output, and the composer. Codex declares 16 px in CSS, but its CJK fallback renders optically smaller than AppKit at the same nominal size, so 15 pt is the default visual match. Secondary text follows Codex's 14 pt / 12 pt tiers, and code defaults to 14 pt.
-- Assistant output renders inline Markdown; fenced code blocks get a language label and a copy button.
-- Agent todo list is shown as a collapsible panel (from the `todo.updated` event and `GET /session/{id}/todo`).
-- Assistant messages show friendly model names plus token usage and cost below the reply.
-- **Changes (Diff)**: view all files a session modified with unified diffs and +/− counts (`GET /session/{id}/diff` + `session.diff` events).
-- **Compact** compresses long conversation context (`POST /session/{id}/compact`).
-- **Revert**: right-click any message to roll the session back to before it (`/revert` + `/unrevert`, with an orange banner while reverted).
-- **Export**: save any session as a Markdown transcript (sidebar context menu or File menu).
-- **⌘K** opens a quick switcher for active sessions; the Project menu keeps recent folders.
-- Retry-aware status: when the model provider rate-limits, the footer shows "Retrying · attempt n · reason"; the sidebar marks busy/retrying sessions.
-- **Prompt queueing**: Enter while generating queues the prompt (removable chips); it sends automatically when the session goes idle.
-- **Prompt history**: Option+↑/↓ recalls recently sent prompts.
-- Drafts, queued prompts, attachments, and generating/retry state are isolated per session, so switching chats never hijacks the current composer or sends another session's files. The sidebar and ⌘K switcher flag background sessions that need permission, need an answer, failed, are retrying, or finished with unread activity. A macOS notification + optional sound fire when a background session finishes (Settings → Chat).
-- A banner appears when the server reports a newer deveco version.
-- **Agent questions**: when the agent asks for a decision (single/multi-select options or free text), an inline card handles answering or skipping (`question.asked` → `/question/{id}/reply`).
-- **Slash commands**: typing "/" in the chat input shows completions for commands, skills, and MCP prompts (`GET /command`); sending "/name args" routes to the dedicated command endpoint. Sessions can be forked from the sidebar.
-- A first-run setup card appears when the deveco CLI is missing, with a binary picker and retry.
-- The Dock icon shows a badge while permission requests or agent questions are pending.
-- The sidebar footer shows project usage totals (sessions/messages/cost from `GET /stats/usage`); the status bar shows the current git branch (`GET /vcs` + `vcs.branch.updated`).
-- File attachments in messages render as clickable chips (image/PDF/text icons).
-- Diff panels colorize unified diff lines (+green / −red / @@blue).
-- **Backup & Restore** (Settings → Server): zip/restore the deveco data directory; restoring stops the server, replaces data, and restarts.
-- Answer permission requests from the UI with Allow once, Always allow, or Reject.
-- Server log tail and error banner.
-- **Models & Providers**: browse configured and available providers, add or edit custom OpenAI-compatible providers, set base URL and API key, manage models with context/output limits and reasoning flag, delete providers, and set the default model.
-- Pick a model per chat session from the composer footer, next to reasoning effort and send; the picker covers **every model the server can run** (`GET /api/model` — built-in, configured, and plugin providers), merged with models from custom providers. Model IDs may contain slashes; selection routes as `providerID/modelID`. Effort levels come from the selected model (or the global default while the session is on “Server default”), are shown as 低/中/高/极高/最高/无 in Chinese, and are sent with each prompt.
-- Configure a built-in provider as a custom template from the Available providers list.
-- Quitting the app stops the managed server process (configurable in Settings).
+- Codex-style transcript: compact right-aligned user bubbles, borderless assistant prose, elapsed time per reply, quiet tool cards with durations and localized tool names.
+- Markdown prose (headings, lists, quotes, inline formatting) and code blocks with language label, copy button, and lightweight syntax highlighting. Streaming renders parse/highlight only the changed bubble via caches.
+- **⌘F** search with highlight and match navigation; **Changes** panel with colorized unified diffs; agent todo panel; assistant messages show model name, token usage, and cost.
+- **Compact** compresses context; **Revert/unrevert** rolls back to before any message; export any session as Markdown.
+- Context meter in the composer shows tokens vs. the selected model's context window.
+
+**Models & providers**
+
+- The composer model picker covers every runnable model (`GET /api/model`) merged with custom providers; IDs route as `providerID/modelID` (slashes allowed). Reasoning-effort variants are per model, labeled 低/中/高/… in Chinese.
+- **Models & Providers** settings: browse/add/edit OpenAI-compatible providers (base URL, API key, models with limits/reasoning), delete, set the server default model. New sessions preselect the configured default model.
+
+**Status & notifications**
+
+- Retry-aware status (attempt/reason), per-session sidebar indicators (busy, retrying, needs permission, needs answer, failed, unread), Dock badge for pending permissions/questions.
+- Background session completion fires a macOS notification + optional sound; clicking it routes to that session. Permission nudges after 10 s unanswered.
+- Network-class send failures auto-retry once after a 2 s backoff; a second failure surfaces the inline error card.
+
+**Server & data**
+
+- Starts `deveco serve` on a free local port (from `127.0.0.1:4096`, configurable); resolves the binary from common npm/homebrew paths or the login-shell PATH. Quit behavior configurable (stop vs. keep the server).
+- Backup/restore the deveco data directory (zip); live server log viewer; update-available banner; project usage totals and git branch in the UI.
 
 ## Release & distribution
 
-Build a versioned DMG with release notes and SHA-256 in one command — see [RELEASE.md](RELEASE.md):
-
 ```bash
-Scripts/release.sh        # bumps the version, builds, packages, verifies
+Scripts/release.sh        # bumps version, builds, packages, verifies, tags v<x.y.z>
+git push origin v0.5.x    # pushes the tag → GitHub Actions builds & publishes the Release
 ```
+
+`release.sh` produces `build/DevEco Code Desktop-<version>.dmg` + `.sha256` + release notes (see [RELEASE.md](RELEASE.md)). Pushing a `v*` tag triggers [.github/workflows/release.yml](.github/workflows/release.yml): tests run, the DMG is built on a clean macOS runner (ad-hoc signed), and a GitHub Release is created with the DMG and checksum attached. The DMG is **not notarized** — on other Macs, right-click → Open or `xattr -dr com.apple.quarantine`.
 
 ## Design notes
 
-See [ROADMAP.md](ROADMAP.md) for the analysis methodology (server OpenAPI → official web-UI bundle → upstream opencode/codex sources) and the phased feature plan.
-
-## Localization
-
-The UI ships in English and Simplified Chinese; macOS picks automatically per system language. Strings live in `Resources/{en,zh-Hans}.lproj/Localizable.strings`.
-
-## Notes
-
-- The server runs without a password and binds to loopback only.
-- The app sets `XDG_DATA_HOME` to `~/Library/Application Support/DevEcoCodeDesktop/deveco-data` so server logs stay inside the app container.
-- Provider changes use `PATCH /config`; model selection per prompt uses the `model` field of `POST /session/{id}/prompt_async`.
-- Streaming updates come over the `GET /event` SSE stream with exponential-backoff reconnects; a light poll only runs while a prompt is in flight as a fallback.
-- The API is the same one used by the bundled web UI (`GET /doc` on the running server).
+- Streaming updates arrive over the `GET /event` SSE stream with exponential-backoff reconnects; a light 2 s poll only runs for the visible session while a prompt is in flight.
+- The server binds to loopback only and runs without a password. `XDG_DATA_HOME` points at `~/Library/Application Support/DevEcoCodeDesktop/deveco-data`.
+- Provider edits use `PATCH /config`; per-prompt model selection uses the `model` field of `POST /session/{id}/prompt_async`.
 
 ## Tests
 
 ```bash
-swift test
+swift test --disable-sandbox
 ```
+
+68 tests cover failure classification, queue hardening, session isolation, mention parsing, path filtering, image downscaling, and settings migrations.
+
+## Localization
+
+The UI ships in English and Simplified Chinese; macOS picks automatically. Strings live in `Resources/{en,zh-Hans}.lproj/Localizable.strings`.
+
+## License & credits
+
+Licensed under [Apache-2.0](LICENSE). The app icon adapts the "cobra" icon by Delapouite from [game-icons.net](https://game-icons.net/) (CC BY 3.0), recolored white on a flat indigo squircle; see `Resources/snake-cobra.svg`.
+
+---
+
+# 中文文档
+
+DevEco Code Desktop 是本机 `deveco` CLI 的原生 macOS 图形客户端。应用负责管理本地 `deveco serve` 进程，并通过其 HTTP API 通信——与内置 Web UI 使用同一套 API（运行中的服务器访问 `GET /doc` 可见）。
+
+## 环境要求
+
+- macOS 13+
+- Xcode 命令行工具（Swift 5.9）
+- 本机已安装 `deveco` CLI（`npm i -g deveco`）且 Node.js 在 PATH 中
+
+## 构建与运行
+
+```bash
+./Scripts/build-app.sh     # 构建 .app
+open "DevEco Code Desktop.app"
+```
+
+构建脚本使用持久自签名证书签名（首次自动创建于 `~/Library/Application Support/DevEcoCodeDesktop/signing`）。签名身份稳定可保留 macOS 已授予的权限（如文件夹访问）；ad-hoc 签名每次构建 CDHash 都会变化导致权限重置。找不到证书时自动回退 ad-hoc 并警告。
+
+## 功能
+
+**会话与输入**
+
+- 新建（⌘N）、搜索、重命名、归档、删除会话；按 今天/昨天/更早 分组并显示相对时间。新会话以首条 prompt 命名，占位标题在加载时自动回填。
+- 回车发送（Shift+回车换行，⌘⏎ 也可发送）；生成状态单一指示条（当前工具、todo 进度、重试原因、卡顿提示、停止按钮）。
+- **队列**：生成中回车会把 prompt 排队（可删除的 chip），空闲后自动发送。**历史**：Option+↑/↓ 调出最近发送记录。
+- 草稿、队列、附件、模型选择、生成状态按会话完全隔离——切换会话不会劫持输入框。
+- `@` 文件引用：180ms 防抖（`/api/fs/find`），过滤隐藏目录/`node_modules`/日志临时文件；回车补全选中项，换行后仍可触发。斜杠命令（`/name args`）走命令端点；未输完参数时回车先补全命令名。
+- 图片/文件附件：粘贴图片压缩到 ≤1568px（Retina 像素口径精确），过大图片有提示；文件按引用附加，必须在项目目录内。
+
+**转写与渲染**
+
+- Codex 风格转写：用户气泡右对齐紧凑、助手正文无边框、每条回复上方显示耗时、安静的工具卡（含耗时与中文名：读取/运行命令/…）。
+- Markdown 正文（标题/列表/引用/行内格式）与代码块（语言标签、复制按钮、轻量语法高亮）。流式期间经缓存只重新解析变化中的气泡。
+- **⌘F** 搜索（高亮 + 计数导航）；**变更**面板（着色 unified diff）；agent todo 面板；助手消息下方显示模型名、token 用量与费用。
+- **压缩**长上下文；**回退/撤销回退**到任意消息之前；导出任意会话为 Markdown。
+- 输入框左下角上下文占用表：tokens 与所选模型上下文窗口之比。
+
+**模型与供应商**
+
+- 输入框模型选择器覆盖服务器可运行的全部模型（`GET /api/model`），并与自定义供应商合并；ID 以 `providerID/modelID` 路由（允许含斜杠）。强度档位来自所选模型，中文显示 低/中/高/…。
+- **模型与供应商**设置：浏览/新增/编辑 OpenAI 兼容供应商（base URL、API key、模型上下文/输出上限与推理标记）、删除、设置服务端默认模型。新会话自动预选该默认模型。
+
+**状态与通知**
+
+- 重试状态（第 n 次 · 原因）、侧栏逐会话指示（运行中/重试/待权限/待回答/失败/未读）、待处理权限与提问时 Dock 角标。
+- 后台会话完成触发系统通知（可选提示音），点击直达对应会话；权限请求 10 秒未响应时提醒。
+- 网络类发送失败 2 秒退避后自动重试一次；二次失败才显示行内错误卡。
+
+**服务器与数据**
+
+- 在空闲本地端口启动 `deveco serve`（起始 `127.0.0.1:4096`，可配置）；自动解析 deveco 二进制（常见 npm/homebrew 路径、登录 shell PATH），也可在设置中指定。退出行为可配置（停止/保留服务进程）。
+- 备份与恢复 deveco 数据目录（zip）；实时服务器日志查看器；新版本横幅；侧栏显示项目用量统计与 git 分支。
+
+## 发布与分发
+
+```bash
+Scripts/release.sh        # 递增版本、构建、打包、校验、打 v<x.y.z> 标签
+git push origin v0.5.x    # 推送标签 → GitHub Actions 自动构建并发布 Release
+```
+
+`release.sh` 产出 `build/DevEco Code Desktop-<version>.dmg` + `.sha256` + 发布说明（详见 [RELEASE.md](RELEASE.md)）。推送 `v*` 标签触发 [.github/workflows/release.yml](.github/workflows/release.yml)：干净 macOS runner 上先跑测试再构建 DMG（ad-hoc 签名），自动创建 GitHub Release 并附 DMG 与校验和。DMG **未做公证**——在其他 Mac 上首次打开请右键 → 打开，或执行 `xattr -dr com.apple.quarantine`。
+
+## 设计说明
+
+- 流式更新走 `GET /event` SSE，指数退避重连；仅在可见会话有进行中的 prompt 时才启用 2 秒兜底轮询。
+- 服务器只绑定 loopback、无密码运行。`XDG_DATA_HOME` 指向 `~/Library/Application Support/DevEcoCodeDesktop/deveco-data`。
+- 供应商编辑用 `PATCH /config`；逐 prompt 模型选择用 `POST /session/{id}/prompt_async` 的 `model` 字段。
+
+## 测试
+
+```bash
+swift test --disable-sandbox
+```
+
+68 项测试覆盖失败分类、队列加固、会话隔离、@ 解析、路径过滤、图片压缩与设置迁移。
+
+## 本地化
+
+界面支持英文与简体中文，macOS 按系统语言自动选择。字符串位于 `Resources/{en,zh-Hans}.lproj/Localizable.strings`。
+
+## 许可与署名
+
+项目基于 [Apache-2.0](LICENSE) 开源。应用图标改编自 [game-icons.net](https://game-icons.net/) Delapouite 的 "cobra" 图标（CC BY 3.0），重新着色为纯色靛蓝底白色剪影；源文件见 `Resources/snake-cobra.svg`。

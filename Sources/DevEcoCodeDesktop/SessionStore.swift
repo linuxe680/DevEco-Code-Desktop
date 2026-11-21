@@ -14,6 +14,12 @@ final class SessionStore: ObservableObject {
     /// prevents a busy background chat from hijacking the composer when the
     /// user switches to an idle conversation.
     @Published private(set) var activeSessionIDs: Set<String> = []
+    /// Client-side pinned sessions (the server has no pin field); ordering
+    /// follows pin order, newest pin first.
+    @Published private(set) var pinnedSessionIDs: [String] = AppSettings.pinnedSessionIDs
+    /// Durable "always allow" rules the client records itself; the deveco
+    /// server only remembers them for the lifetime of one server process.
+    @Published private(set) var savedPermissionRules: [String] = AppSettings.savedPermissionRules
     @Published private(set) var abortingSessionIDs: Set<String> = []
     var isSending: Bool {
         guard let id = selectedSessionID else { return false }
@@ -114,19 +120,12 @@ final class SessionStore: ObservableObject {
         ))
     }
 
-    /// Downscale helper: nil = keep the original (too small or decode failed).
+    /// Downscale helper. Uses **pixel** dimensions (cgImage) rather than
+    /// NSImage.size (points): on Retina displays points are half the pixels,
+    /// which used to let a 3136px output slip past the 1568 cap.
+    /// nil = keep the original (too small or decode failed).
     static func downscaledImage(from data: Data) -> Data? {
-        guard let image = NSImage(data: data) else { return nil }
-        var size = image.size
-        let longest = max(size.width, size.height)
-        guard longest > 0 else { return nil }
-        let scale = min(1, maxImageDimension / longest)
-        size.width *= scale
-        size.height *= scale
-        let resized = NSImage(size: size)
-        resized.lockFocus()
-        image.draw(in: NSRect(origin: .zero, size: size))
-        resized.unlockFocus()
+        guard let resized = scaledPixelImage(from: data, maxDimension: maxImageDimension) else { return nil }
         guard let tiff = resized.tiffRepresentation,
               let rep = NSBitmapImageRep(data: tiff),
               let jpeg = rep.representation(using: .jpeg, properties: [.compressionFactor: 0.85]),
@@ -136,21 +135,36 @@ final class SessionStore: ObservableObject {
 
     /// Tiny preview for the attachment chip.
     private static func thumbnailData(from data: Data) -> Data? {
-        guard let image = NSImage(data: data) else { return nil }
-        var size = image.size
-        let longest = max(size.width, size.height)
-        guard longest > 0, longest > 64 else { return nil }
-        let scale = 64 / longest
-        size.width *= scale
-        size.height *= scale
-        let resized = NSImage(size: size)
-        resized.lockFocus()
-        image.draw(in: NSRect(origin: .zero, size: size))
-        resized.unlockFocus()
+        guard let resized = scaledPixelImage(from: data, maxDimension: 64) else { return nil }
         guard let tiff = resized.tiffRepresentation,
               let rep = NSBitmapImageRep(data: tiff),
               let png = rep.representation(using: .png, properties: [:]) else { return nil }
         return png
+    }
+
+    /// High-quality resample bounded by pixel dimensions; nil when the source
+    /// already fits (or decode failed).
+    private static func scaledPixelImage(from data: Data, maxDimension: CGFloat) -> NSImage? {
+        guard let image = NSImage(data: data),
+              let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+        let pixelWidth = CGFloat(cgImage.width)
+        let pixelHeight = CGFloat(cgImage.height)
+        let longest = max(pixelWidth, pixelHeight)
+        guard longest > maxDimension else { return nil }
+        let scale = maxDimension / longest
+        let newWidth = max(1, Int((pixelWidth * scale).rounded()))
+        let newHeight = max(1, Int((pixelHeight * scale).rounded()))
+        guard let context = CGContext(
+            data: nil, width: newWidth, height: newHeight,
+            bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        context.interpolationQuality = .high
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: newWidth, height: newHeight))
+        guard let resized = context.makeImage() else { return nil }
+        // 1:1 points-to-pixels so downstream size checks see true pixel dims.
+        return NSImage(cgImage: resized, size: NSSize(width: newWidth, height: newHeight))
     }
 
     /// Adds a file reference. The server only reads paths inside the project
@@ -299,6 +313,9 @@ final class SessionStore: ObservableObject {
     private var autoTitleInFlight = Set<String>()
     /// Last sent prompt per session, for exact-context retry after an error.
     private var lastSentPromptBySession: [String: PromptSnapshot] = [:]
+    /// Automatic retry counter for network-class failures, per session; reset
+    /// when the user sends again so a broken network can't loop forever.
+    private var autoRetryCountBySession: [String: Int] = [:]
     /// Streaming deltas buffered between flushes (~120ms batches).
     private var pendingDeltas: [String: String] = [:]
     private var lastDeltaFlush = Date.distantPast
@@ -464,6 +481,10 @@ final class SessionStore: ObservableObject {
     func select(_ id: String) {
         guard selectedSessionID != id else { return }
         if let old = selectedSessionID {
+            // Background fallback polling only serves the visible transcript;
+            // switching away would otherwise leave a 2s idle wakeup running.
+            // select() restarts it when the session comes back.
+            stopPolling(for: old)
             draftsBySession[old] = draft
             queuesBySession[old] = queuedPrompts
             attachmentsBySession[old] = attachments
@@ -803,6 +824,7 @@ final class SessionStore: ObservableObject {
         activeSessionIDs.insert(id)
         inlineErrorsBySession.removeValue(forKey: id)
         lastSentPromptBySession[id] = prompt
+        autoRetryCountBySession[id] = 0
         autoTitleIfNeeded(sessionID: id, prompt: prompt.text)
 
         // "/name args…" matching a registered command goes to the dedicated
@@ -978,10 +1000,20 @@ final class SessionStore: ObservableObject {
         guard let api else { return [] }
         do {
             let response: FsFindResponse = try await api.get("api/fs/find", query: ["query": query])
-            return (response.data ?? []).filter { $0.type == "file" || $0.mime != nil }
+            return (response.data ?? []).filter {
+                ($0.type == "file" || $0.mime != nil) && Self.isSearchablePath($0.path)
+            }
         } catch {
             return []
         }
+    }
+
+    /// Paths the @ picker should not offer: anything inside a dot-directory
+    /// (.git, .build), node_modules, plus log/temp dumps the server surfaces.
+    nonisolated static func isSearchablePath(_ path: String) -> Bool {
+        let components = path.split(separator: "/")
+        if components.contains(where: { $0.hasPrefix(".") || $0 == "node_modules" }) { return false }
+        return !path.hasSuffix(".log") && !path.hasSuffix(".tmp")
     }
 
     /// Edits a past user message: reverts the session to just before it and
@@ -1065,6 +1097,22 @@ final class SessionStore: ObservableObject {
         }
     }
 
+    /// Pins or unpins a session; pinning puts it at the top of the list.
+    func togglePinned(_ id: String, pinned: Bool? = nil) {
+        var ids = pinnedSessionIDs
+        let isPinned = ids.contains(id)
+        let target = pinned ?? !isPinned
+        if target == isPinned { return }
+        if target {
+            ids.removeAll { $0 == id }
+            ids.insert(id, at: 0)
+        } else {
+            ids.removeAll { $0 == id }
+        }
+        pinnedSessionIDs = ids
+        AppSettings.pinnedSessionIDs = ids
+    }
+
     /// Opens the most recent non-archived session when nothing is selected.
     private func autoSelectRecentSession() {
         guard selectedSessionID == nil, !sessions.isEmpty else { return }
@@ -1091,6 +1139,10 @@ final class SessionStore: ObservableObject {
         inlineErrorsBySession.removeValue(forKey: id)
         unreadSessionIDs.remove(id)
         stopPolling(for: id)
+        autoRetryCountBySession.removeValue(forKey: id)
+        if pinnedSessionIDs.contains(id) {
+            togglePinned(id, pinned: false)
+        }
         modelsBySession.removeValue(forKey: id)
         variantsBySession.removeValue(forKey: id)
         AppSettings.sessionModels = modelsBySession
@@ -1138,15 +1190,46 @@ final class SessionStore: ObservableObject {
 
     func reply(to request: PermissionRequest, reply: String) {
         guard let api else { return }
-        let body = ["reply": reply]
+        let body = ["response": reply]
+        if reply == "always" {
+            savePermissionRule(from: request)
+        }
         Task {
             do {
-                let _: EmptyResponse = try await api.post("permission/\(request.id)/reply", body: try body.jsonData())
+                let _: EmptyResponse = try await api.post(
+                    "session/\(request.sessionID)/permissions/\(request.id)",
+                    body: try body.jsonData()
+                )
                 pendingPermissions.removeAll { $0.id == request.id }
             } catch {
                 errorMessage = error.localizedDescription
             }
         }
+    }
+
+    private func matchesSavedPermission(_ request: PermissionRequest) -> Bool {
+        let kind = request.permission ?? ""
+        let patterns = request.patterns ?? []
+        if patterns.isEmpty {
+            return savedPermissionRules.contains("\(kind)|")
+        }
+        return patterns.allSatisfy { pattern in
+            savedPermissionRules.contains("\(kind)|\(pattern)")
+        }
+    }
+
+    private func savePermissionRule(from request: PermissionRequest) {
+        let kind = request.permission ?? ""
+        let patterns = request.patterns ?? []
+        let newRules = patterns.isEmpty
+            ? ["\(kind)|"]
+            : patterns.map { "\(kind)|\($0)" }
+        var rules = savedPermissionRules
+        for rule in newRules where !rules.contains(rule) {
+            rules.append(rule)
+        }
+        savedPermissionRules = rules
+        AppSettings.savedPermissionRules = rules
     }
 
     /// Per-session fallback snapshot refresh. The SSE stream remains the
@@ -1155,11 +1238,18 @@ final class SessionStore: ObservableObject {
     private func startFallbackPolling(for sessionID: String) {
         stopPolling(for: sessionID)
         pollTasksBySession[sessionID] = Task { [weak self] in
-            for _ in 0..<300 { // 2s × 300 = 10 min cap
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
+            // No hard iteration cap: finishRun cancels the loop when the run
+            // ends, so very long generations keep their fallback refresh.
+            while !Task.isCancelled {
+                // The SSE stream normally carries every update; only hit the
+                // API while reconnecting (fast tick) or when output stalled
+                // (slow tick). Healthy streaming stays fully silent.
+                let reconnecting = self?.isReconnecting ?? false
+                try? await Task.sleep(nanoseconds: reconnecting ? 2_000_000_000 : 6_000_000_000)
                 guard let self, !Task.isCancelled else { return }
                 guard self.activeSessionIDs.contains(sessionID) else { return }
-                if sessionID == self.selectedSessionID {
+                let stalled = Date().timeIntervalSince(self.lastStreamActivity) > 45
+                if (reconnecting || stalled), sessionID == self.selectedSessionID {
                     await self.loadMessages()
                 }
             }
@@ -1190,6 +1280,33 @@ final class SessionStore: ObservableObject {
             kind: kind ?? FailureKind.classify(message)
         )
         inlineErrorsBySession[sessionID] = error
+    }
+
+    /// Network-class send failures get exactly one automatic retry after a
+    /// short backoff — transient connection resets recover on their own, and
+    /// the ActivityBar shows progress via retryInfo. Anything else, a second
+    /// failure, or a missing snapshot surfaces the inline error as before.
+    private func maybeAutoRetry(_ sessionID: String, kind: FailureKind, message: String) {
+        guard kind == .network,
+              (autoRetryCountBySession[sessionID] ?? 0) < 1 else {
+            recordSessionFailure(sessionID, message: message, kind: kind)
+            return
+        }
+        autoRetryCountBySession[sessionID] = 1
+        retryInfoBySession[sessionID] = NSLocalizedString(
+            "Network error — retrying…", comment: ""
+        )
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard let self, !Task.isCancelled else { return }
+            self.retryInfoBySession.removeValue(forKey: sessionID)
+            guard let prompt = self.lastSentPromptBySession[sessionID],
+                  !self.abortingSessionIDs.contains(sessionID),
+                  self.performSend(prompt, sessionID: sessionID) else {
+                self.recordSessionFailure(sessionID, message: message, kind: kind)
+                return
+            }
+        }
     }
 
     private func scheduleReconnect() {
@@ -1314,6 +1431,12 @@ final class SessionStore: ObservableObject {
         case "permission.asked", "permission.v2.asked":
             guard let properties = event.properties,
                   let request: PermissionRequest = decode(properties) else { return }
+            // A saved rule ("permission|pattern") approves the request without
+            // surfacing the banner; otherwise the user decides.
+            if matchesSavedPermission(request) {
+                reply(to: request, reply: "once")
+                return
+            }
             if !pendingPermissions.contains(where: { $0.id == request.id }) {
                 pendingPermissions.append(request)
                 schedulePermissionNotification()
@@ -1368,7 +1491,7 @@ final class SessionStore: ObservableObject {
                 let kind = FailureKind.classify(errorText)
                 if let sessionID = event.property("sessionID") {
                     finishRun(sessionID)
-                    recordSessionFailure(sessionID, message: errorText, kind: kind)
+                    maybeAutoRetry(sessionID, kind: kind, message: errorText)
                 } else {
                     errorMessage = kind.label + ": " + errorText
                 }
@@ -1412,6 +1535,9 @@ final class SessionStore: ObservableObject {
             format: NSLocalizedString("“%@” finished generating.", comment: ""),
             title
         )
+        if let sessionID {
+            content.userInfo = ["sessionID": sessionID]
+        }
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request)
     }
@@ -1437,6 +1563,7 @@ final class SessionStore: ObservableObject {
               !notifiedPermissionIDs.contains(request.id) else { return }
         notifiedPermissionIDs.insert(request.id)
         let tool = request.title
+        let permissionSessionID = request.sessionID
         Task {
             try? await Task.sleep(nanoseconds: 10_000_000_000)
             guard pendingPermissions.contains(where: { $0.id == request.id }),
@@ -1444,6 +1571,7 @@ final class SessionStore: ObservableObject {
             let content = UNMutableNotificationContent()
             content.title = NSLocalizedString("Permission needed", comment: "")
             content.body = tool
+            content.userInfo = ["sessionID": permissionSessionID]
             let request = UNNotificationRequest(identifier: "permission-\(UUID().uuidString)", content: content, trigger: nil)
             try? await UNUserNotificationCenter.current().add(request)
         }

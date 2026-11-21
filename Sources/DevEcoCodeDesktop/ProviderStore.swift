@@ -10,34 +10,53 @@ final class ProviderStore: ObservableObject {
     @Published var isSaving = false
     /// Every runnable model from GET /api/model (built-ins + configured).
     @Published private(set) var serverModels: [ServerModel] = []
-    /// "Always allow" rules saved via permission cards; revocable.
-    @Published private(set) var savedPermissions: [SavedPermission] = []
+    /// Cached model list for pickers and hot-path lookups; rebuilt only when
+    /// serverModels/providers change (was rebuilt+sorted on every access).
+    @Published private(set) var allModelChoices: [ModelChoice] = []
+    /// O(1) display-name lookup for message metadata (rebuilt on load).
+    private var modelChoicesByID: [String: ModelChoice] = [:]
 
-    private var api: APIClient?
-    private var rawConfig: [String: JSONValue] = [:]
-
-    /// The authoritative picker source: /api/model covers built-in and
-    /// configured providers; configured-only entries are appended in case the
-    /// server list is unavailable. IDs use "providerID/modelID" (model IDs may
-    /// themselves contain slashes — send() splits on the first one).
-    var allModelChoices: [ModelChoice] {
+    private func rebuildModelLookup() {
+        var lookup: [String: ModelChoice] = [:]
         var seen = Set<String>()
         var choices: [ModelChoice] = []
         for model in serverModels {
             let providerID = model.providerID ?? "unknown"
             let id = "\(providerID)/\(model.id)"
             guard seen.insert(id).inserted else { continue }
-            choices.append(ModelChoice(id: id, provider: providerID, name: model.name ?? model.id))
+            let choice = ModelChoice(id: id, provider: providerID, name: model.name ?? model.id)
+            choices.append(choice)
+            lookup[id] = choice
         }
         for provider in providers {
             for model in provider.models {
                 let id = "\(provider.id)/\(model.id)"
                 guard seen.insert(id).inserted else { continue }
-                choices.append(ModelChoice(id: id, provider: provider.id, name: model.name))
+                let choice = ModelChoice(id: id, provider: provider.id, name: model.name)
+                choices.append(choice)
+                lookup[id] = choice
             }
         }
-        return choices.sorted { ($0.provider, $0.name) < ($1.provider, $1.name) }
+        let sorted = choices.sorted { ($0.provider, $0.name) < ($1.provider, $1.name) }
+        allModelChoices = sorted
+        for choice in sorted {
+            lookup[choice.id] = choice
+        }
+        modelChoicesByID = lookup
     }
+
+    /// Display name for a "providerID/modelID" identifier; falls back to a
+    /// fuzzy match on the bare model id. Hot path during streaming.
+    func modelDisplayName(for identifier: String, fuzzyModel: String) -> String? {
+        if let choice = modelChoicesByID[identifier] { return choice.name }
+        return modelChoicesByID.values
+            .first { $0.name.localizedCaseInsensitiveContains(fuzzyModel) }?.name
+    }
+    /// "Always allow" rules saved via permission cards; revocable.
+    @Published private(set) var savedPermissions: [SavedPermission] = []
+
+    private var api: APIClient?
+    private var rawConfig: [String: JSONValue] = [:]
 
     /// Variant ids (e.g. reasoning effort) available for the given model.
     func variants(for modelID: String?) -> [String] {
@@ -120,6 +139,7 @@ final class ProviderStore: ObservableObject {
         } catch {
             // Model list is decoration for the picker; keep quiet on failure.
         }
+        rebuildModelLookup()
     }
 
     func modelChoices(for providerID: String) -> [ModelEntry] {
