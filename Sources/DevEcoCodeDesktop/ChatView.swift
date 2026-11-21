@@ -2870,6 +2870,36 @@ private struct ContextMeter: View {
 /// re-decoding a multi-MB screenshot each time would spike the CPU.
 private enum ImageCache {
     static let cache = NSCache<NSString, NSImage>()
+
+    /// Bounds decoded bitmaps. A screenshot that arrives as a 12MP data URL
+    /// otherwise stays resident at full size for the whole session.
+    static let maxPixelDimension: CGFloat = 2048
+
+    static func decoded(_ data: Data) -> NSImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            return NSImage(data: data)
+        }
+        let longest = CGFloat(max(image.width, image.height))
+        guard longest > maxPixelDimension else {
+            return NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
+        }
+        let scale = maxPixelDimension / longest
+        let width = max(1, Int((CGFloat(image.width) * scale).rounded()))
+        let height = max(1, Int((CGFloat(image.height) * scale).rounded()))
+        guard let context = CGContext(
+            data: nil, width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            return NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
+        }
+        context.interpolationQuality = .high
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        guard let resized = context.makeImage() else { return nil }
+        return NSImage(cgImage: resized, size: NSSize(width: width, height: height))
+    }
 }
 
 /// File attachment from a prompt or an agent message. Images render inline
@@ -2937,17 +2967,16 @@ struct AttachmentChip: View {
         if let cached = ImageCache.cache.object(forKey: key) {
             return cached
         }
-        let image: NSImage?
-        if urlString.hasPrefix("data:"), let url = URL(string: urlString), let data = try? Data(contentsOf: url) {
-            image = NSImage(data: data)
+        let data: Data?
+        if urlString.hasPrefix("data:"), let url = URL(string: urlString) {
+            data = try? Data(contentsOf: url)
         } else if let url = URL(string: urlString), url.isFileURL {
-            image = NSImage(contentsOf: url)
+            data = try? Data(contentsOf: url)
         } else {
-            image = nil
+            data = nil
         }
-        if let image {
-            ImageCache.cache.setObject(image, forKey: key)
-        }
+        guard let data, let image = ImageCache.decoded(data) else { return nil }
+        ImageCache.cache.setObject(image, forKey: key)
         return image
     }
 

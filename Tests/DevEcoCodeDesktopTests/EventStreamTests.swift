@@ -12,6 +12,12 @@ final class EventStreamTests: XCTestCase {
         stream.onEvent = { [weak self] event in self?.events.append(event) }
     }
 
+    override func tearDown() {
+        stream.disconnect()
+        stream = nil
+        super.tearDown()
+    }
+
     func testFrameSplitInsideMultiByteCharacter() {
         let payload = #"{"type":"message.part.delta","properties":{"sessionID":"s1","messageID":"m1","partID":"p1","delta":"你好世界"}}"#
         let frame = Data("data: \(payload)\n\n".utf8)

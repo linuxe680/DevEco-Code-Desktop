@@ -16,7 +16,7 @@ final class EventStream: NSObject, URLSessionDataDelegate {
     private var task: URLSessionDataTask?
     private var buffer = Data()
     private var lastReceiveDate: Date?
-    private let stalledCheck: DispatchSourceTimer
+    private var stalledCheck: DispatchSourceTimer?
 
     /// 连续解码失败计数。服务端事件格式变更或密钥轮换时，
     /// 静默丢帧会让 UI 永远停在旧状态——需要显式告警。
@@ -31,28 +31,34 @@ final class EventStream: NSObject, URLSessionDataDelegate {
     fileprivate static func makeStalledCheckTimer() -> DispatchSourceTimer {
         let timer = DispatchSource.makeTimerSource(queue: .main)
         timer.schedule(deadline: .now() + 5, repeating: 5)
-        timer.resume()
         return timer
     }
 
     override init() {
-        stalledCheck = Self.makeStalledCheckTimer()
         super.init()
-        stalledCheck.setEventHandler { [weak self] in
+    }
+
+    private func ensureStalledCheck() {
+        guard stalledCheck == nil else { return }
+        let timer = Self.makeStalledCheckTimer()
+        timer.setEventHandler { [weak self] in
             guard let self,
                   self.task != nil,
                   self.heartbeatIsStale() else { return }
             Log.stream.warning("SSE heartbeat stalled — forcing reconnect")
             self.onStalled?()
         }
+        timer.resume()
+        stalledCheck = timer
     }
 
     deinit {
-        stalledCheck.cancel()
+        stalledCheck?.cancel()
     }
 
     func connect(baseURL: URL) {
         disconnect()
+        ensureStalledCheck()
         let configuration = URLSessionConfiguration.default
         configuration.timeoutIntervalForRequest = .infinity
         configuration.timeoutIntervalForResource = .infinity
@@ -75,6 +81,8 @@ final class EventStream: NSObject, URLSessionDataDelegate {
         lastReceiveDate = nil
         isReceivingHeartbeats = false
         consecutiveDecodeFailures = 0
+        stalledCheck?.cancel()
+        stalledCheck = nil
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
@@ -87,7 +95,8 @@ final class EventStream: NSObject, URLSessionDataDelegate {
     /// normally sends periodic SSE comments, so 15s is a conservative guard.
     func heartbeatIsStale(timeout: TimeInterval = 15) -> Bool {
         guard let lastReceiveDate else { return false }
-        return Date().timeIntervalSince(lastReceiveDate) >= max(0, timeout)
+        let elapsed = Date().timeIntervalSince(lastReceiveDate)
+        return elapsed >= max(0, timeout)
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
