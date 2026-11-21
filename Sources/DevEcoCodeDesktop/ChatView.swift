@@ -3123,13 +3123,6 @@ private struct ToolCardView: View {
         }
     }
 
-    private func toolInputRows(_ value: JSONValue) -> [(key: String, value: String)] {
-        guard case .object(let object) = value else { return [] }
-        return object
-            .sorted { $0.key < $1.key }
-            .map { (key: $0.key, value: $0.value.displayText) }
-            .filter { !$0.value.isEmpty }
-    }
 }
 
 /// Session-scoped error shown inside the conversation: a failure category
