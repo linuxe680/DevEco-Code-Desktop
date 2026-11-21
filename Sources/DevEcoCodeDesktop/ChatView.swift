@@ -1152,13 +1152,9 @@ struct ChatView: View {
                 }
                 if let request = store.pendingPermissions.first(where: { $0.sessionID == store.selectedSessionID }) {
                     PermissionBanner(request: request, pendingCount: store.pendingPermissions.count)
-                        .padding(.horizontal, 12)
-                        .padding(.top, 8)
                 }
                 if let request = store.pendingQuestions.first(where: { $0.sessionID == store.selectedSessionID }) {
                     QuestionBanner(request: request)
-                        .padding(.horizontal, 12)
-                        .padding(.top, 8)
                 }
                 VStack(spacing: 0) {
                     if !store.attachments.isEmpty {
@@ -3342,6 +3338,8 @@ private struct QuestionBanner: View {
     @EnvironmentObject var store: SessionStore
     let request: UserQuestionRequest
 
+    private let contentMaxWidth: CGFloat = 760
+
     /// Selected labels per question index; single-select questions replace,
     /// multi-select questions toggle.
     @State private var selections: [Int: [String]] = [:]
@@ -3412,15 +3410,18 @@ private struct QuestionBanner: View {
                 .controlSize(.large)
                 .disabled(!isComplete)
             }
+            .frame(maxWidth: 560)
+            .frame(maxWidth: .infinity)
         }
         .padding(16)
         .background(Theme.composerFill)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(Theme.softStroke, lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.08), radius: 10, y: 3)
+        .frame(maxWidth: contentMaxWidth)
+        .frame(maxWidth: .infinity)
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(Theme.hairline)
+                .frame(height: 1)
+        }
     }
 
     private func isSelected(_ index: Int, _ label: String) -> Bool {
@@ -3461,6 +3462,7 @@ private struct QuestionBanner: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
+            .frame(maxWidth: 560)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)

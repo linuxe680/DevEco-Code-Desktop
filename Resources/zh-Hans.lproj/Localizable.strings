@@ -89,6 +89,8 @@
 "Agent question" = "Agent 提问";
 "%d agent questions" = "%d 个提问";
 "Skip" = "跳过";
+"Ready to send" = "已选择，可以发送";
+"Select an option to continue" = "请选择一个选项后发送";
 "Send Answers" = "发送回答";
 "Custom answer…" = "自定义回答…";
 
