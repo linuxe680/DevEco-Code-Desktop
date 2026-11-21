@@ -389,11 +389,17 @@ struct ChatView: View {
         let effectiveModel = store.selectedModel
             ?? (store.serverDefaultModel.isEmpty ? nil : store.serverDefaultModel)
         let limit = providers.contextLimit(for: effectiveModel)
-        let used = store.messages
-            .last(where: { $0.info.role == "assistant" })?
-            .info.tokens?.total ?? store.messages
-                .last(where: { $0.info.role == "assistant" })?
-                .info.tokens?.input ?? 0
+        let lastAssistant = store.messages.last(where: { $0.info.role == "assistant" })
+        let used: Double
+        if let total = lastAssistant?.info.tokens?.total, total > 0 {
+            used = total
+        } else if let previous = store.messages.reversed().dropFirst(
+            lastAssistant == nil ? 0 : 1
+        ).first(where: { $0.info.role == "assistant" && ($0.info.tokens?.total ?? 0) > 0 }) {
+            used = previous.info.tokens?.total ?? 0
+        } else {
+            used = lastAssistant?.info.tokens?.input ?? 0
+        }
         guard limit != nil || used > 0 else { return nil }
         return (used, limit)
     }
