@@ -909,11 +909,6 @@ struct ChatView: View {
                 Divider()
             }
 
-            if let request = store.pendingQuestions.first(where: { $0.sessionID == store.selectedSessionID }) {
-                QuestionBanner(request: request)
-                Divider()
-            }
-
             if !store.todos.isEmpty {
                 TodoPanel(todos: store.todos)
                 Divider()
@@ -1157,6 +1152,11 @@ struct ChatView: View {
                 }
                 if let request = store.pendingPermissions.first(where: { $0.sessionID == store.selectedSessionID }) {
                     PermissionBanner(request: request, pendingCount: store.pendingPermissions.count)
+                        .padding(.horizontal, 12)
+                        .padding(.top, 8)
+                }
+                if let request = store.pendingQuestions.first(where: { $0.sessionID == store.selectedSessionID }) {
+                    QuestionBanner(request: request)
                         .padding(.horizontal, 12)
                         .padding(.top, 8)
                 }
@@ -3309,28 +3309,37 @@ private struct QuestionBanner: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
                 Image(systemName: "questionmark.circle")
+                    .font(.title2)
                     .foregroundStyle(.blue)
-                Text(request.questions.count > 1 ? "Agent questions" : "Agent question")
-                    .font(.headline)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Needs an answer")
+                        .font(.title3.weight(.semibold))
+                    Text(request.questions.count > 1
+                         ? String(format: NSLocalizedString("%d agent questions", comment: ""), request.questions.count)
+                         : NSLocalizedString("Agent question", comment: ""))
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
                 Button("Skip") {
                     Task { await store.rejectQuestion(request) }
                 }
-                .controlSize(.small)
+                .controlSize(.regular)
             }
 
             ForEach(Array(request.questions.enumerated()), id: \.offset) { index, question in
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 8) {
                     Text(question.header)
-                        .font(.caption.weight(.semibold))
+                        .font(.callout.weight(.semibold))
                         .foregroundStyle(.secondary)
                     Text(question.question)
+                        .font(.body.weight(.medium))
                     if let details = question.details, !details.isEmpty {
                         Text(details)
-                            .font(.caption)
+                            .font(.callout)
                             .foregroundStyle(.secondary)
                     }
                     ForEach(question.options) { option in
@@ -3354,11 +3363,19 @@ private struct QuestionBanner: View {
                     Task { await store.answer(request, answers: answers) }
                 }
                 .keyboardShortcut(.defaultAction)
+                .controlSize(.large)
                 .disabled(!isComplete)
             }
         }
-        .padding(12)
-        .background(Theme.bannerInfo)
+        .padding(18)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Theme.bannerInfo)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(.blue.opacity(0.30), lineWidth: 1)
+        )
     }
 
     private func isSelected(_ index: Int, _ label: String) -> Bool {
