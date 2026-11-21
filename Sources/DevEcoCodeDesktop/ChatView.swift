@@ -2945,6 +2945,7 @@ private struct ToolCardView: View {
 
     private var hasDetail: Bool {
         if let output = state?.output, !output.isEmpty { return true }
+        if part.tool == "question" { return false }
         if state?.input != nil { return true }
         if let error = state?.error, !error.isEmpty, isError { return true }
         return false
@@ -2963,6 +2964,9 @@ private struct ToolCardView: View {
     }
 
     private var headline: String {
+        if part.tool == "question", let input = state?.input, let questions = toolQuestions(input), let first = questions.first {
+            return first.question
+        }
         if let title = state?.title, !title.isEmpty { return title }
         if let summary = state?.summary, !summary.isEmpty { return summary }
         return toolName
