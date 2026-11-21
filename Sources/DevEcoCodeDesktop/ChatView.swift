@@ -909,11 +909,6 @@ struct ChatView: View {
                 Divider()
             }
 
-            if let request = store.pendingPermissions.first(where: { $0.sessionID == store.selectedSessionID }) {
-                PermissionBanner(request: request, pendingCount: store.pendingPermissions.count)
-                Divider()
-            }
-
             if let request = store.pendingQuestions.first(where: { $0.sessionID == store.selectedSessionID }) {
                 QuestionBanner(request: request)
                 Divider()
@@ -1159,6 +1154,11 @@ struct ChatView: View {
                     CommandPaletteView(commands: commandMatches, selectedIndex: paletteIndex) { command in
                         applyCompletion(command)
                     }
+                }
+                if let request = store.pendingPermissions.first(where: { $0.sessionID == store.selectedSessionID }) {
+                    PermissionBanner(request: request, pendingCount: store.pendingPermissions.count)
+                        .padding(.horizontal, 12)
+                        .padding(.top, 8)
                 }
                 VStack(spacing: 0) {
                     if !store.attachments.isEmpty {

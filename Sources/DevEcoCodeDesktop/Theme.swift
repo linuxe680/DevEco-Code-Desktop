@@ -6,14 +6,14 @@ enum Theme {
     /// Codex-like neutral surfaces. The transcript sits on the darkest canvas,
     /// while navigation and chrome step up one level for separation.
     static let canvas = adaptive(light: 0xFFFFFF, dark: 0x181818)
-    static let sidebarFill = adaptive(light: 0xF2F2F2, dark: 0x242424)
-    static let barFill = adaptive(light: 0xECECEC, dark: 0x242424)
-    static let chromeFill = adaptive(light: 0xF2F2F2, dark: 0x242424)
-    static let composerFill = adaptive(light: 0xFFFFFF, dark: 0x343434)
+    static let sidebarFill = adaptive(light: 0xF9F9F9, dark: 0x1F1F1F)
+    static let barFill = adaptive(light: 0xF4F4F4, dark: 0x242424)
+    static let chromeFill = adaptive(light: 0xF7F7F7, dark: 0x222222)
+    static let composerFill = adaptive(light: 0xFFFFFF, dark: 0x2B2B2B)
     static let windowChromeNSColor = NSColor(name: nil) { appearance in
         appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
             ? NSColor(srgbRed: 36.0 / 255.0, green: 36.0 / 255.0, blue: 36.0 / 255.0, alpha: 1)
-            : NSColor(srgbRed: 236.0 / 255.0, green: 236.0 / 255.0, blue: 236.0 / 255.0, alpha: 1)
+            : NSColor(srgbRed: 247.0 / 255.0, green: 247.0 / 255.0, blue: 247.0 / 255.0, alpha: 1)
     }
 
     // Banners
@@ -30,8 +30,8 @@ enum Theme {
     static let softStroke = Color.secondary.opacity(0.18)
     static let hairline = Color.secondary.opacity(0.12)
     // Use a neutral, low-saturation bubble; Codex keeps the transcript calm.
-    static let userBubble = Color.primary.opacity(0.065)
-    static let userBubbleStroke = Color.primary.opacity(0.055)
+    static let userBubble = Color(red: 0.925, green: 0.925, blue: 0.925)
+    static let userBubbleStroke = Color.primary.opacity(0.06)
     static let assistantBubble = Color(nsColor: .controlBackgroundColor)
 
     private static func adaptive(light: UInt32, dark: UInt32) -> Color {
