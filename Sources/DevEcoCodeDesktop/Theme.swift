@@ -30,8 +30,8 @@ enum Theme {
     static let softStroke = Color.secondary.opacity(0.18)
     static let hairline = Color.secondary.opacity(0.12)
     // Use a neutral, low-saturation bubble; Codex keeps the transcript calm.
-    static let userBubble = Color(red: 0.925, green: 0.925, blue: 0.925)
-    static let userBubbleStroke = Color.primary.opacity(0.06)
+    static let userBubble = adaptive(light: 0xF2F2F2, dark: 0x232323)
+    static let userBubbleStroke = Color.primary.opacity(0.08)
     static let assistantBubble = Color(nsColor: .controlBackgroundColor)
 
     private static func adaptive(light: UInt32, dark: UInt32) -> Color {

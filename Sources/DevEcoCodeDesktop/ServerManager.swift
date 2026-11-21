@@ -85,7 +85,7 @@ final class ServerManager: ObservableObject {
         rememberRecent(url)
         if state != .stopped {
             stop()
-            start()
+            Task { @MainActor [weak self] in self?.start() }
         }
     }
 
@@ -344,6 +344,35 @@ final class ServerManager: ObservableObject {
         }
     }
 
+    nonisolated private static func runDitto(_ arguments: [String], domain: String, timeout: TimeInterval = 120) throws {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        task.arguments = arguments
+        let errorPipe = Pipe()
+        task.standardOutput = FileHandle.nullDevice
+        task.standardError = errorPipe.fileHandleForWriting
+        try task.run()
+        errorPipe.fileHandleForWriting.closeFile()
+
+        let deadline = Date().addingTimeInterval(timeout)
+        while task.isRunning && Date() < deadline {
+            usleep(50_000)
+        }
+        if task.isRunning {
+            task.terminate()
+            usleep(200_000)
+            if task.isRunning { kill(task.processIdentifier, SIGKILL) }
+            throw NSError(domain: domain, code: 124,
+                          userInfo: [NSLocalizedDescriptionKey: "ditto timed out after \(Int(timeout))s"])
+        }
+        guard task.terminationStatus == 0 else {
+            let detail = String(data: errorPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            throw NSError(domain: domain, code: Int(task.terminationStatus),
+                          userInfo: [NSLocalizedDescriptionKey: "ditto exited with status \(task.terminationStatus). \(detail)"])
+        }
+    }
+
     private func cleanUpIO() {
         readTask?.cancel()
         readTask = nil
@@ -379,8 +408,9 @@ final class ServerManager: ObservableObject {
 
     private func appendLog(_ text: String) {
         let safe = Self.redact(text)
-        logTail += safe
-        if logTail.count > 20_000 { logTail = String(logTail.suffix(20_000)) }
+        // Unbounded string concatenation on a chatty server is a slow memory
+        // leak that eventually stalls the main thread. Trim every append.
+        logTail = String((logTail + safe).suffix(20_000))
         logHandle?.write(Data(safe.utf8))
     }
 
@@ -427,46 +457,31 @@ final class ServerManager: ObservableObject {
     }
 
     /// Zips the deveco data directory (sessions DB, logs) to the given URL.
-    static func backupData(to destination: URL) throws {
+    nonisolated static func backupData(to destination: URL) throws {
         let dataDir = dataDirectory
         guard FileManager.default.fileExists(atPath: dataDir.path) else {
             throw NSError(domain: "backup", code: 1,
                           userInfo: [NSLocalizedDescriptionKey: "Nothing to back up yet — the data folder does not exist."])
         }
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
-        task.arguments = ["-c", "-k", "--sequesterRsrc", "--keepParent", dataDir.path, destination.path]
-        task.standardOutput = FileHandle.nullDevice
-        task.standardError = FileHandle.nullDevice
-        try task.run()
-        task.waitUntilExit()
-        guard task.terminationStatus == 0 else {
-            throw NSError(domain: "backup", code: Int(task.terminationStatus),
-                          userInfo: [NSLocalizedDescriptionKey: "ditto exited with status \(task.terminationStatus)"])
-        }
+        try Self.runDitto(
+            ["-c", "-k", "--sequesterRsrc", "--keepParent", dataDir.path, destination.path],
+            domain: "backup"
+        )
     }
 
     /// Replaces the deveco data directory with the contents of a backup zip.
     /// Stops the server first, then restarts it with the restored data.
-    func restoreData(from archive: URL) throws {
-        stop()
-
+    nonisolated func restoreData(from archive: URL) throws {
         let support = Self.applicationSupportDirectory()
-        let dataDir = Self.dataDirectory
+        let dataDir = support.appendingPathComponent("deveco-data", isDirectory: true)
         let staging = support.appendingPathComponent("restore-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
 
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
-        task.arguments = ["-x", "-k", archive.path, staging.path]
-        task.standardOutput = FileHandle.nullDevice
-        task.standardError = FileHandle.nullDevice
-        try task.run()
-        task.waitUntilExit()
-        guard task.terminationStatus == 0 else {
+        do {
+            try Self.runDitto(["-x", "-k", archive.path, staging.path], domain: "restore")
+        } catch {
             try? FileManager.default.removeItem(at: staging)
-            throw NSError(domain: "restore", code: Int(task.terminationStatus),
-                          userInfo: [NSLocalizedDescriptionKey: "ditto exited with status \(task.terminationStatus)"])
+            throw error
         }
 
         // 归档含 deveco-data 目录（--keepParent），严格校验顶层条目，
@@ -502,7 +517,6 @@ final class ServerManager: ObservableObject {
             // 新数据已就位；保留旧目录作为回滚副本，等下一次成功启动再清理。
             try? FileManager.default.removeItem(at: staging)
             UserDefaults.standard.set(backupURL.path, forKey: "pendingRestoreBackup")
-            start()
         } catch {
             if didRenameOld && !FileManager.default.fileExists(atPath: dataDir.path) {
                 try? FileManager.default.moveItem(at: backupURL, to: dataDir)

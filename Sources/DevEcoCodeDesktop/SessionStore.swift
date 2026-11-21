@@ -343,6 +343,9 @@ final class SessionStore: ObservableObject {
     /// when the user sends again so a broken network can't loop forever.
     private var autoRetryCountBySession: [String: Int] = [:]
     /// Streaming deltas buffered between flushes (~120ms batches).
+    /// Guard so repeated snapshot flushes cannot stack up: `loadMessages()`
+    /// is called from SSE, fallback polling, and connect refresh at once.
+    private var messageLoadTasks: [String: Task<Void, Never>] = [:]
     private var pendingDeltas: [String: String] = [:]
     private var lastDeltaFlush = Date.distantPast
 
@@ -365,6 +368,15 @@ final class SessionStore: ObservableObject {
         }
         eventStream.onDisconnect = { [weak self] in
             Task { @MainActor in self?.scheduleReconnect() }
+        }
+        eventStream.onStalled = { [weak self] in
+            Task { @MainActor in
+                guard let self, self.api != nil else { return }
+                // Force a fresh socket without clearing the session list:
+                // a silent SSE connection is the classic "app froze" symptom.
+                self.eventStream.disconnect()
+                self.scheduleReconnect()
+            }
         }
         // 设置页撤销权限后，服务端规则是唯一真相，同步刷新本地缓存。
         NotificationCenter.default.addObserver(
@@ -423,6 +435,8 @@ final class SessionStore: ObservableObject {
         retryTask = nil
         pollTasksBySession.values.forEach { $0.cancel() }
         pollTasksBySession = [:]
+        messageLoadTasks.values.forEach { $0.cancel() }
+        messageLoadTasks = [:]
         activeSessionIDs = []
         abortingSessionIDs = []
         sessions = []
@@ -741,10 +755,27 @@ final class SessionStore: ObservableObject {
     /// 加载会话消息。传入 `sessionID` 用于后台会话快照（只写缓存，不覆盖 UI）；
     /// 不传则加载当前选中会话并更新 `messages`。
     func loadMessages(for sessionID: String? = nil) async {
-        guard let api, let id = sessionID ?? selectedSessionID else {
+        guard api != nil, let id = sessionID ?? selectedSessionID else {
             if sessionID == nil { isLoadingMessages = false }
             return
         }
+        // Coalesce concurrent refreshes for the same session. They would all
+        // write the same snapshot and repeatedly clear buffered deltas.
+        if let existing = messageLoadTasks[id], !existing.isCancelled {
+            await existing.value
+            return
+        }
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.loadMessagesUncoalesced(sessionID: id, isExplicit: sessionID == nil)
+        }
+        messageLoadTasks[id] = task
+        await task.value
+        if messageLoadTasks[id] == task { messageLoadTasks.removeValue(forKey: id) }
+    }
+
+    private func loadMessagesUncoalesced(sessionID id: String, isExplicit: Bool) async {
+        guard let api else { return }
         let isVisible = id == selectedSessionID
         if isVisible { isLoadingMessages = true }
         defer {
@@ -771,6 +802,7 @@ final class SessionStore: ObservableObject {
             pendingDeltas.removeAll()
             autoTitleFromFirstMessageIfNeeded()
         } catch {
+            guard isExplicit else { return }
             guard id == selectedSessionID else { return }
             errorMessage = error.localizedDescription
         }

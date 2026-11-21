@@ -237,8 +237,10 @@ private struct ServerSettingsPane: View {
     }
 
     private func refreshResolved() {
-        resolvedPath = ServerManager.resolveDevecoExecutable()?.path ?? ""
-        resolvedNodePath = ServerManager.resolveNodeDirectory() ?? ""
+        let devecoPath = ServerManager.resolveDevecoExecutable()?.path ?? ""
+        let nodePath = ServerManager.resolveNodeDirectory() ?? ""
+        resolvedPath = devecoPath
+        resolvedNodePath = nodePath
     }
 
     private func browse() {
@@ -264,13 +266,20 @@ private struct ServerSettingsPane: View {
         panel.allowedContentTypes = [.zip]
         panel.canCreateDirectories = true
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            try ServerManager.backupData(to: url)
-            backupFailed = false
-            backupStatus = "Backed up to \(url.lastPathComponent)."
-        } catch {
-            backupFailed = true
-            backupStatus = "Backup failed: \(error.localizedDescription)"
+        backupStatus = "Backing up…"
+        Task.detached(priority: .userInitiated) {
+            do {
+                try ServerManager.backupData(to: url)
+                await MainActor.run {
+                    backupFailed = false
+                    backupStatus = "Backed up to \(url.lastPathComponent)."
+                }
+            } catch {
+                await MainActor.run {
+                    backupFailed = true
+                    backupStatus = "Backup failed: \(error.localizedDescription)"
+                }
+            }
         }
     }
 
@@ -291,13 +300,23 @@ private struct ServerSettingsPane: View {
         alert.alertStyle = .warning
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
-        do {
-            try server.restoreData(from: url)
-            backupFailed = false
-            backupStatus = "Restored from \(url.lastPathComponent)."
-        } catch {
-            backupFailed = true
-            backupStatus = "Restore failed: \(error.localizedDescription)"
+        backupStatus = "Restoring…"
+        let server = server
+        Task.detached(priority: .userInitiated) {
+            do {
+                await MainActor.run { server.stop() }
+                try server.restoreData(from: url)
+                await MainActor.run {
+                    backupFailed = false
+                    backupStatus = "Restored from \(url.lastPathComponent)."
+                    server.start()
+                }
+            } catch {
+                await MainActor.run {
+                    backupFailed = true
+                    backupStatus = "Restore failed: \(error.localizedDescription)"
+                }
+            }
         }
     }
 }

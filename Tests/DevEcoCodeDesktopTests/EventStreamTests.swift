@@ -68,4 +68,32 @@ final class EventStreamTests: XCTestCase {
         stream.ingest(Data("tial\"}\n\n".utf8))
         XCTAssertEqual(events.map(\.type), ["partial"])
     }
+
+    func testHeartbeatStallTracking() {
+        XCTAssertFalse(stream.isReceivingHeartbeats)
+        XCTAssertFalse(stream.heartbeatIsStale(timeout: 60))
+
+        stream.ingest(Data(": keepalive\n\n".utf8))
+        XCTAssertTrue(stream.isReceivingHeartbeats)
+        XCTAssertFalse(stream.heartbeatIsStale(timeout: 60))
+        XCTAssertFalse(stream.heartbeatIsStale(timeout: 60))
+        XCTAssertTrue(stream.heartbeatIsStale(timeout: 0))
+
+        stream.disconnect()
+        XCTAssertFalse(stream.isReceivingHeartbeats)
+    }
+
+    func testLongFrameIsNotCorruptedByChunkedBytes() {
+        let payload = #"{"type":"long","properties":{"text":""# + String(repeating: "中文代码 abc ", count: 400) + #""}}"#
+        let frame = Data("data: \(payload)\n\n".utf8)
+        var offset = 0
+        while offset < frame.count {
+            let end = min(offset + 7, frame.count)
+            stream.ingest(frame.subdata(in: offset..<end))
+            offset = end
+        }
+        XCTAssertEqual(events.count, 1)
+        XCTAssertEqual(events[0].type, "long")
+        XCTAssertEqual(events[0].property("text")?.count, 400 * "中文代码 abc ".count)
+    }
 }

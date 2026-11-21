@@ -58,6 +58,9 @@ struct ChatView: View {
     @State private var dragHover = false
     @State private var showModelPicker = false
     @State private var modelQuery = ""
+    /// Set on send so the next clear-draft render cannot refocus the input
+    /// and steal focus from the transcript while the agent starts working.
+    @State private var suppressFocusOnce = false
 
     private func applyCompletion(_ command: DevCommand) {
         store.draft = "/" + command.name + " "
@@ -1209,19 +1212,15 @@ struct ChatView: View {
                               onPasteFileURLs: { urls in addPastedFiles(urls) },
                               onDragHover: { dragHover = $0 },
                               onEscape: handleEscape,
-                              onContentHeight: { inputHeight = $0 }) { store.send() }
+                onContentHeight: { inputHeight = $0 }) {
+                    suppressFocusOnce = true
+                    store.send()
+                }
                         .frame(height: inputHeight)
                         .padding(.horizontal, 12)
                         .padding(.top, 9)
 
                     HStack(spacing: 8) {
-                        if store.isSending {
-                            ProgressView()
-                                .controlSize(.mini)
-                            Text("Generating…")
-                                .font(.system(size: ChatTypography.meta(chatFontSize), weight: .medium))
-                                .foregroundStyle(.secondary)
-                        }
                         if let usage = contextUsage {
                             ContextMeter(used: usage.used, limit: usage.limit)
                         }
@@ -1257,9 +1256,16 @@ struct ChatView: View {
             paletteIndex = 0
             mentionIndex = 0
             updateMentionResults()
+            if suppressFocusOnce {
+                suppressFocusOnce = false
+            } else if !store.isSending {
+                focusTrigger += 1
+            }
         }
         .onChange(of: store.selectedSessionID) { _ in
             isNearBottom = true
+            searchQuery = ""
+            showSearch = false
             focusTrigger += 1
         }
         .sheet(isPresented: $showDiff) {
@@ -1810,7 +1816,8 @@ private final class ChatTextView: NSTextView {
     }
 
     required init?(coder: NSCoder) {
-        fatalError("init(coder:) is not supported")
+        super.init(coder: coder)
+        registerForDraggedTypes([.fileURL, .string])
     }
 
     override func insertNewline(_ sender: Any?) {
@@ -2031,16 +2038,9 @@ private struct MessageBubble: View {
             }
             .font(.system(size: ChatTypography.body(chatFontSize)))
             .lineSpacing(ChatTypography.lineSpacing(chatFontSize))
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(
-                Theme.userBubble,
-                in: RoundedRectangle(cornerRadius: 13, style: .continuous)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 13, style: .continuous)
-                    .stroke(Theme.userBubbleStroke)
-            )
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(Theme.canvas)
             .overlay(alignment: .topTrailing) {
                 if hovered && !isStreamingThis {
                     hoverActionBar
@@ -2292,7 +2292,9 @@ private struct StreamingTextView: View {
         let revealed = revealedCount >= target.count
             ? target
             : String(target.prefix(revealedCount))
-        return revealed + " ▍"
+        // Only show the caret while there is text left to reveal; keeping it
+        // after completion makes finished answers look permanently "generating".
+        return revealedCount >= target.count ? revealed : revealed + " ▍"
     }
 
     var body: some View {
@@ -3082,6 +3084,7 @@ private struct ToolCardView: View {
                             Text(headline)
                                 .font(.system(size: ChatTypography.meta(chatFontSize), weight: .medium))
                                 .foregroundStyle(.primary)
+                                .textSelection(.enabled)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                         }
@@ -3134,7 +3137,7 @@ private struct ToolCardView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
-        .background(Theme.cardFill)
+        .background(Theme.canvas)
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -3270,6 +3273,9 @@ private struct PermissionBanner: View {
     let request: PermissionRequest
     var pendingCount: Int = 1
 
+    @AppStorage(AppSettings.Keys.chatFontSize)
+    private var chatFontSize = 15.0
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
@@ -3277,22 +3283,22 @@ private struct PermissionBanner: View {
                     .font(.title2)
                     .foregroundStyle(.orange)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("需要授权")
-                        .font(.title3.weight(.semibold))
+                    Text(NSLocalizedString("Permission required", comment: ""))
+                        .font(.system(size: ChatTypography.body(chatFontSize), weight: .semibold))
                     Text(request.title)
-                        .font(.subheadline)
+                        .font(.system(size: ChatTypography.body(chatFontSize)))
                         .foregroundStyle(.secondary)
                 }
                 if pendingCount > 1 {
                     Text("(\(pendingCount) pending)")
-                        .font(.callout)
+                        .font(.system(size: ChatTypography.meta(chatFontSize)))
                         .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
             }
             if !request.detail.isEmpty {
                 Text(request.detail)
-                    .font(.system(.callout, design: .monospaced))
+                    .font(.system(size: ChatTypography.code(chatFontSize), design: .monospaced))
                     .foregroundStyle(.secondary)
                     .lineLimit(6)
             }
@@ -3301,17 +3307,14 @@ private struct PermissionBanner: View {
                     store.reply(to: request, reply: "once")
                 }
                 .buttonStyle(.borderedProminent)
-                .controlSize(.large)
                 Button("Always allow") {
                     store.reply(to: request, reply: "always")
                 }
                 .buttonStyle(.bordered)
-                .controlSize(.large)
                 Button("Reject", role: .destructive) {
                     store.reply(to: request, reply: "reject")
                 }
                 .buttonStyle(.bordered)
-                .controlSize(.large)
             }
         }
         .padding(18)
