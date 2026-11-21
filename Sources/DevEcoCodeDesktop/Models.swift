@@ -263,6 +263,7 @@ struct MessageInfo: Codable {
 /// Usage counters reported on assistant messages; all optional so partial
 /// data from any server version still decodes.
 struct MessageTokens: Codable {
+    let total: Double?
     let input: Double?
     let output: Double?
     let reasoning: Double?

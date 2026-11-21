@@ -381,17 +381,19 @@ struct ChatView: View {
         .padding(.top, 64)
     }
 
-    /// "ctx 12.3k/200k · $0.50" — context usage (last assistant input tokens,
+    /// "ctx 12.3k/200k · $0.50" — context usage (last assistant total tokens,
     /// vs the selected model's limit) plus session cost, in the header.
-    /// Context usage of the selected session: the last assistant response's
-    /// input tokens approximate what the next call will feed the model.
+    /// The server reports the full next-call context size in `total`;
+    /// the uncached `input` field alone undercounts after long conversations.
     private var contextUsage: (used: Double, limit: Double?)? {
         let effectiveModel = store.selectedModel
             ?? (store.serverDefaultModel.isEmpty ? nil : store.serverDefaultModel)
         let limit = providers.contextLimit(for: effectiveModel)
         let used = store.messages
             .last(where: { $0.info.role == "assistant" })?
-            .info.tokens?.input ?? 0
+            .info.tokens?.total ?? store.messages
+                .last(where: { $0.info.role == "assistant" })?
+                .info.tokens?.input ?? 0
         guard limit != nil || used > 0 else { return nil }
         return (used, limit)
     }
@@ -2142,8 +2144,7 @@ private struct MessageBubble: View {
         if let tokens = info.tokens {
             // Harness semantics: input = uncached input of this request,
             // cache.read = context served from cache, output/reasoning =
-            // tokens generated for this reply. "total" spans the whole
-            // processed context and is intentionally not shown here.
+            // tokens generated for this reply.
             let generated = (tokens.output ?? 0) + (tokens.reasoning ?? 0)
             if generated > 0 {
                 pieces.append(String(format: NSLocalizedString("Output %@", comment: "per-message tokens"), compactCount(generated)))
@@ -3351,7 +3352,7 @@ private struct QuestionBanner: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 14) {
             ForEach(Array(request.questions.enumerated()), id: \.offset) { index, question in
                 VStack(alignment: .leading, spacing: 10) {
                     HStack(alignment: .firstTextBaseline) {
@@ -3409,8 +3410,11 @@ private struct QuestionBanner: View {
             }
             .frame(maxWidth: 560)
             .frame(maxWidth: .infinity)
+            .padding(.horizontal, 4)
         }
-        .padding(16)
+        .padding(.horizontal, 16)
+        .padding(.top, 14)
+        .padding(.bottom, 12)
         .background(Theme.composerFill)
         .frame(maxWidth: contentMaxWidth)
         .frame(maxWidth: .infinity)
