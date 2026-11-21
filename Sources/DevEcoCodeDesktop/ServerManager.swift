@@ -31,9 +31,13 @@ final class ServerManager: ObservableObject {
 
     private(set) var port: UInt16 = 4096
 
-    private var process: Process?
+    /// Handle to the managed server's process group. Replaces `Process` so
+    /// `stop()` can terminate the deveco launcher *and* its Node children.
+    private var serverProcess: ProcessGroupLauncher.Launched?
+    private var monitorTask: Task<Void, Never>?
     private var outputPipe: Pipe?
     private var logHandle: FileHandle?
+    private var readTask: Task<Void, Never>?
     private var healthTask: Task<Void, Never>?
     private var startupActivity: NSObjectProtocol?
 
@@ -96,7 +100,7 @@ final class ServerManager: ObservableObject {
     }
 
     func start() {
-        if process != nil {
+        if serverProcess != nil {
             if state == .starting {
                 // A previous boot may still be finishing; let a foreground
                 // event re-probe instead of silently doing nothing.
@@ -146,52 +150,69 @@ final class ServerManager: ObservableObject {
         let logURL = support.appendingPathComponent("server.log")
         try? FileManager.default.createDirectory(at: dataDirectory, withIntermediateDirectories: true)
         FileManager.default.createFile(atPath: logURL.path, contents: nil)
-        logHandle = try? FileHandle(forWritingTo: logURL)
 
-        let task = Process()
-        task.executableURL = executable
-        task.arguments = ["serve", "--port", String(port), "--hostname", "127.0.0.1"]
-        task.currentDirectoryURL = projectDirectory
-        var environment = ProcessInfo.processInfo.environment
-        environment["XDG_DATA_HOME"] = dataDirectory.path
         // deveco's launcher is a `#!/usr/bin/env node` script, so the child
         // needs Node.js on PATH even though GUI apps get a minimal PATH.
+        var environment = ProcessInfo.processInfo.environment
+        environment["XDG_DATA_HOME"] = dataDirectory.path
         var pathPrefix: [String] = [executable.deletingLastPathComponent().path]
         if let nodeDir = Self.resolveNodeDirectory() {
             pathPrefix.append(nodeDir)
         }
         environment["PATH"] = pathPrefix.joined(separator: ":")
             + ":" + (environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin")
-        task.environment = environment
 
+        // stdout/stderr 汇入同一个 Pipe，由本进程读取后写入日志文件并更新 logTail。
         let output = Pipe()
-        task.standardOutput = output
-        task.standardError = output
         outputPipe = output
-        output.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let text = String(data: handle.availableData, encoding: .utf8) ?? ""
-            guard !text.isEmpty else { return }
-            Task { @MainActor in
-                self?.appendLog(text)
-            }
-        }
+        logHandle = try? FileHandle(forWritingTo: logURL)
 
-        task.terminationHandler = { [weak self] _ in
-            Task { @MainActor in
-                self?.handleTermination()
-            }
-        }
+        let config = ProcessGroupLauncher.Configuration(
+            executable: executable,
+            arguments: ["serve", "--port", String(port), "--hostname", "127.0.0.1"],
+            environment: environment,
+            workingDirectory: projectDirectory,
+            stdout: output.fileHandleForWriting,
+            stderr: output.fileHandleForWriting
+        )
 
         do {
-            try task.run()
-            process = task
+            serverProcess = try ProcessGroupLauncher.launch(config)
             Log.server.info("deveco serve launched on port \(self.port) (project: \(self.projectDirectory.path, privacy: .public))")
         } catch {
+            serverProcess = nil
+            cleanUpIO()
             state = .failed
             failureReason = .launchFailed
             errorMessage = error.localizedDescription
             Log.server.error("launch failed: \(error.localizedDescription, privacy: .public)")
             endStartupActivity()
+            return // 不再启动健康检查
+        }
+
+        // 后台读取 pipe（关闭写端后 availableData 返回空，循环自然退出）。
+        readTask = Task { [weak self] in
+            let reader = output.fileHandleForReading
+            while !Task.isCancelled {
+                let data = reader.availableData
+                if data.isEmpty { break }
+                let text = String(data: data, encoding: .utf8)
+                    ?? String(decoding: data, as: UTF8.self)
+                await MainActor.run { self?.appendLog(text) }
+            }
+        }
+
+        // 监控子进程退出
+        let launchedPID = serverProcess!.pid
+        monitorTask = Task { [weak self] in
+            while !Task.isCancelled {
+                let status = waitpid(launchedPID, nil, WNOHANG)
+                if status == launchedPID || (status == -1 && errno == ECHILD) {
+                    await MainActor.run { self?.handleTermination() }
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 500_000_000)
+            }
         }
 
         healthTask = Task { [weak self] in
@@ -202,17 +223,25 @@ final class ServerManager: ObservableObject {
     func stop() {
         healthTask?.cancel()
         healthTask = nil
+        monitorTask?.cancel()
+        monitorTask = nil
         endStartupActivity()
-        guard let process else {
+        guard let serverProcess else {
             cleanUpIO()
             return
         }
-        // Mark stopped before terminating so the termination handler does not
-        // flash a "server exited" error.
+        // 先标记为已停止，避免终止处理器闪现"服务器意外退出"。
         state = .stopped
-        process.terminate()
-        self.process = nil
+        // 终止整个进程组（deveco 启动器 + Node 服务），避免孤儿进程占端口。
+        serverProcess.terminate()
+        self.serverProcess = nil
+        readTask?.cancel()
+        readTask = nil
         cleanUpIO()
+    }
+
+    private func isServerAlive(_ launched: ProcessGroupLauncher.Launched) -> Bool {
+        kill(launched.pid, 0) == 0 || errno == EPERM
     }
 
     private func waitForHealth() async {
@@ -221,13 +250,12 @@ final class ServerManager: ObservableObject {
                 endStartupActivity()
                 return
             }
-            // Bail out early if the process died while booting; the
-            // termination handler reports the failure.
-            guard let process = process, process.isRunning else {
+            // 进程在健康检查期间退出则交给 monitorTask 报失败。
+            guard let launched = serverProcess, isServerAlive(launched) else {
                 endStartupActivity()
                 return
             }
-            if await probeHealth(), process.isRunning {
+            if await probeHealth(), isServerAlive(launched) {
                 markRunning()
                 return
             }
@@ -260,20 +288,23 @@ final class ServerManager: ObservableObject {
     /// healthy, leaving the UI stuck on "Starting…".
     func recheckHealthIfNeeded() {
         guard state == .starting || state == .failed else { return }
-        guard let process, process.isRunning else { return }
+        guard let launched = serverProcess, isServerAlive(launched) else { return }
         Task { [weak self] in
             guard let self else { return }
-            guard await self.probeHealth() else { return }
+            guard await self.probeHealth(), self.state == .starting || self.state == .failed else { return }
             self.markRunning()
         }
     }
 
     private func markRunning() {
+        // 只有在启动中或显式复查态才能置为 running，防止失败态被误改。
+        guard state == .starting || state == .failed else { return }
         Log.server.info("health check passed — server ready")
         state = .running
         errorMessage = nil
         failureReason = nil
         endStartupActivity()
+        clearPendingRestoreBackupIfNeeded()
     }
 
     private func beginStartupActivity() {
@@ -291,35 +322,66 @@ final class ServerManager: ObservableObject {
     }
 
     private func handleTermination() {
-        process = nil
+        // 只有我们主动终止时才跳过错误提示；monitorTask 感知到退出后调用。
+        guard state != .stopped else { return }
+        serverProcess = nil
+        monitorTask?.cancel()
+        monitorTask = nil
+        readTask?.cancel()
+        readTask = nil
         cleanUpIO()
         endStartupActivity()
-        if state != .stopped {
-            state = .failed
-            failureReason = .exited
-            Log.server.error("deveco serve exited unexpectedly")
-            if logTail.contains("node: No such file or directory") {
-                errorMessage = """
-                deveco serve could not find Node.js. Set the Node.js path in Settings → Server. \
-                Auto-detected: \(Self.resolveNodeDirectory() ?? "not found").
-                """
-            } else {
-                errorMessage = "deveco serve exited. \(logTail.suffix(400))"
-            }
+        state = .failed
+        failureReason = .exited
+        Log.server.error("deveco serve exited unexpectedly")
+        if logTail.contains("node: No such file or directory") {
+            errorMessage = """
+            deveco serve could not find Node.js. Set the Node.js path in Settings → Server. \
+            Auto-detected: \(Self.resolveNodeDirectory() ?? "not found").
+            """
+        } else {
+            errorMessage = "deveco serve exited. \(Self.redact(String(logTail.suffix(400))))"
         }
     }
 
     private func cleanUpIO() {
-        outputPipe?.fileHandleForReading.readabilityHandler = nil
+        readTask?.cancel()
+        readTask = nil
+        outputPipe?.fileHandleForWriting.closeFile()
+        outputPipe?.fileHandleForReading.closeFile()
         outputPipe = nil
         try? logHandle?.close()
         logHandle = nil
     }
 
+    /// 写入日志前抹掉常见凭据形态（API key / Bearer token / Authorization 头），
+    /// 避免 server.log 与诊断报告把密钥带出去。
+    nonisolated static func redact(_ text: String) -> String {
+        var result = text
+        // sk-xxx / Bearer xxx 形式的密钥
+        result = result.replacingOccurrences(
+            of: #"(?i)(sk-[A-Za-z0-9_\-]{8,})"#,
+            with: "sk-***REDACTED***",
+            options: .regularExpression
+        )
+        result = result.replacingOccurrences(
+            of: #"(?i)(Bearer\s+)[A-Za-z0-9._\-]+"#,
+            with: "$1***REDACTED***",
+            options: .regularExpression
+        )
+        result = result.replacingOccurrences(
+            of: #"(?i)(Authorization\s*[:=]\s*)[^\s,;]+"#,
+            with: "$1***REDACTED***",
+            options: .regularExpression
+        )
+        return result
+    }
+
     private func appendLog(_ text: String) {
-        logTail += text
+        let safe = Self.redact(text)
+        logTail += safe
         if logTail.count > 20_000 { logTail = String(logTail.suffix(20_000)) }
-        logHandle?.write(Data(text.utf8))
+        logHandle?.write(Data(safe.utf8))
     }
 
     /// One-clipboard support bundle: versions, paths, state, and the server
@@ -342,10 +404,10 @@ final class ServerManager: ObservableObject {
         Node directory: \(node)
         Data directory: \(Self.dataDirectory.path)
         Log file: \(Self.logFileURL.path)
-        Last error: \(errorMessage ?? "none")
+        Last error: \(Self.redact(errorMessage ?? "none"))
 
         --- server log tail ---
-        \(logTail.isEmpty ? "(empty)" : String(logTail.suffix(800)))
+        \(logTail.isEmpty ? "(empty)" : Self.redact(String(logTail.suffix(800))))
         """
     }
 
@@ -407,23 +469,57 @@ final class ServerManager: ObservableObject {
                           userInfo: [NSLocalizedDescriptionKey: "ditto exited with status \(task.terminationStatus)"])
         }
 
-        // The archive contains the deveco-data folder (--keepParent); find it.
+        // 归档含 deveco-data 目录（--keepParent），严格校验顶层条目，
+        // 防止恶意/损坏归档把任意目录注入我们的数据目录。
         let contents = try FileManager.default.contentsOfDirectory(at: staging, includingPropertiesForKeys: [.isDirectoryKey])
-        guard let restored = contents.first(where: {
-            (try? $0.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
-        }) else {
+        guard contents.count == 1,
+              let restored = contents.first,
+              (try? restored.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true,
+              restored.lastPathComponent == "deveco-data" else {
             try? FileManager.default.removeItem(at: staging)
             throw NSError(domain: "restore", code: 1,
-                          userInfo: [NSLocalizedDescriptionKey: "Backup archive does not contain a data folder."])
+                          userInfo: [NSLocalizedDescriptionKey: "Backup archive does not contain a single deveco-data folder."])
         }
 
-        if FileManager.default.fileExists(atPath: dataDir.path) {
-            try FileManager.default.removeItem(at: dataDir)
+        // 原子替换：先把旧目录改名保留，新数据就位并验证后才删除备份。
+        let backupURL = support.appendingPathComponent("deveco-data.pre-restore-\(UUID().uuidString)", isDirectory: true)
+        var didRenameOld = false
+        do {
+            if FileManager.default.fileExists(atPath: dataDir.path) {
+                try FileManager.default.moveItem(at: dataDir, to: backupURL)
+                didRenameOld = true
+            }
+            do {
+                try FileManager.default.moveItem(at: restored, to: dataDir)
+            } catch {
+                // 新数据移动失败，立刻恢复旧数据。
+                if didRenameOld {
+                    try? FileManager.default.moveItem(at: backupURL, to: dataDir)
+                }
+                try? FileManager.default.removeItem(at: staging)
+                throw error
+            }
+            // 新数据已就位；保留旧目录作为回滚副本，等下一次成功启动再清理。
+            try? FileManager.default.removeItem(at: staging)
+            UserDefaults.standard.set(backupURL.path, forKey: "pendingRestoreBackup")
+            start()
+        } catch {
+            if didRenameOld && !FileManager.default.fileExists(atPath: dataDir.path) {
+                try? FileManager.default.moveItem(at: backupURL, to: dataDir)
+            }
+            throw error
         }
-        try FileManager.default.moveItem(at: restored, to: dataDir)
-        try? FileManager.default.removeItem(at: staging)
+    }
 
-        start()
+    /// 服务健康后清理由 restoreData 保留的旧数据备份。
+    func clearPendingRestoreBackupIfNeeded() {
+        guard let path = UserDefaults.standard.string(forKey: "pendingRestoreBackup"),
+              state == .running else { return }
+        let url = URL(fileURLWithPath: path)
+        if url.path.hasPrefix(Self.applicationSupportDirectory().path) {
+            try? FileManager.default.removeItem(at: url)
+        }
+        UserDefaults.standard.removeObject(forKey: "pendingRestoreBackup")
     }
 
     nonisolated static func resolveDevecoExecutable() -> URL? {
@@ -448,11 +544,11 @@ final class ServerManager: ObservableObject {
             return URL(fileURLWithPath: match)
         }
 
-        // Fall back to the user's login shell so PATH entries from their
-        // profile (.zshrc / .zprofile) still count. Runs once, then cached.
+        // 从当前进程继承的 PATH 里查找（不加载 .zshrc/.zprofile）。
+        // 使用登录 shell（-l）会执行用户启动脚本中的任意代码，GUI 应用不该这样做。
         let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        task.arguments = ["-lc", "command -v deveco"]
+        task.executableURL = URL(fileURLWithPath: "/bin/sh")
+        task.arguments = ["-c", "command -v deveco"]
         let pipe = Pipe()
         task.standardOutput = pipe
         task.standardError = FileHandle.nullDevice
@@ -506,10 +602,10 @@ final class ServerManager: ObservableObject {
             return (match as NSString).deletingLastPathComponent
         }
 
-        // Fall back to the user's login shell PATH, then cache.
+        // Fall back to a plain sh PATH lookup (no profile scripts), then cache.
         let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        task.arguments = ["-lc", "command -v node"]
+        task.executableURL = URL(fileURLWithPath: "/bin/sh")
+        task.arguments = ["-c", "command -v node"]
         let pipe = Pipe()
         task.standardOutput = pipe
         task.standardError = FileHandle.nullDevice

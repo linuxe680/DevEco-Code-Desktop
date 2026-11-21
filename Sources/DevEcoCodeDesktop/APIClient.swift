@@ -56,11 +56,14 @@ final class APIClient {
         request.httpBody = body
         request.timeoutInterval = 30
 
-        // One backoff retry for transient failures (server boot races, brief
-        // connection drops); permanent errors surface immediately.
+        // 仅 GET 是幂等的，才可安全自动重试。写请求（POST/PATCH/DELETE）
+        // 若服务端已提交但响应丢失，重试会重复发送消息/创建会话——
+        // 这类错误交给上层 inlineError + Retry 由用户显式决定。
+        let maxAttempts = method == "GET" ? 2 : 1
+
         var lastError: Error = APIError.invalidResponse
         var attempt = 0
-        while attempt < 2 {
+        while attempt < maxAttempts {
             attempt += 1
             do {
                 let (data, response) = try await URLSession.shared.data(for: request)
@@ -68,7 +71,7 @@ final class APIClient {
                 guard (200..<300).contains(http.statusCode) else {
                     let text = String(data: data, encoding: .utf8) ?? ""
                     let error = APIError.status(http.statusCode, String(text.prefix(300)))
-                    if http.statusCode >= 500, attempt == 1 {
+                    if http.statusCode >= 500, attempt < maxAttempts {
                         lastError = error
                         Log.network.warning("HTTP \(http.statusCode) from \(url.path, privacy: .public) — retrying once")
                         try? await Task.sleep(nanoseconds: 300_000_000)
@@ -78,7 +81,7 @@ final class APIClient {
                 }
                 return data.isEmpty ? Data("{}".utf8) : data
             } catch let urlError as URLError
-                where attempt == 1 && Self.retriableErrorCodes.contains(urlError.code) {
+                where attempt < maxAttempts && Self.retriableErrorCodes.contains(urlError.code) {
                 lastError = urlError
                 Log.network.warning("\(urlError.code.rawValue, privacy: .public) on \(url.path, privacy: .public) — retrying once")
                 try? await Task.sleep(nanoseconds: 300_000_000)
