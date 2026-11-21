@@ -14,14 +14,19 @@ enum TranscriptExporter {
             lines.append("- Model: `\(model)`")
         }
         let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd HH:mm"
-        lines.append("- Exported: \(formatter.string(from: exportedAt))")
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        formatter.locale = Locale.current
+        lines.append("- \(NSLocalizedString("Exported", comment: "export header")): \(formatter.string(from: exportedAt))")
         lines.append("")
 
         for message in messages {
             lines.append("---")
             lines.append("")
-            lines.append("## \(message.info.role == "user" ? "You" : "DevEco")\(metaSuffix(message.info))")
+            let role = message.info.role == "user"
+                ? NSLocalizedString("You", comment: "message role")
+                : "DevEco"
+            lines.append("## \(role)\(metaSuffix(message.info))")
             lines.append("")
             for part in message.parts {
                 appendPart(part, to: &lines)
@@ -62,7 +67,7 @@ enum TranscriptExporter {
             }
         case "reasoning":
             if let text = part.text, !text.isEmpty {
-                lines.append("<details><summary>Thinking</summary>")
+                lines.append("<details><summary>\(NSLocalizedString("Thinking", comment: "export section"))</summary>")
                 lines.append("")
                 lines.append(text)
                 lines.append("")

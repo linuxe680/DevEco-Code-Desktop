@@ -231,9 +231,6 @@ struct ChatView: View {
             }
         }
         .background(Theme.canvas)
-        .sheet(isPresented: $showDiff) {
-            DiffSheet()
-        }
     }
 
     /// Full-area empty state: opaque so the input underneath is clearly not
@@ -1011,9 +1008,13 @@ struct ChatView: View {
                         } else {
                             LazyVStack(alignment: .leading, spacing: 26) {
                                 ForEach(visibleMessages) { message in
-                                    MessageBubble(message: message, searchQuery: searchQuery)
-                                        .id(message.id)
-                                        .transition(.opacity.combined(with: .move(edge: .bottom)))
+                                    MessageBubble(
+                                        message: message,
+                                        isStreaming: store.isSending && message.id == visibleMessages.last?.id,
+                                        searchQuery: searchQuery
+                                    )
+                                    .id(message.id)
+                                    .transition(.opacity.combined(with: .move(edge: .bottom)))
                                 }
                                 if searchQuery.isEmpty, let error = store.inlineError, error.sessionID == store.selectedSessionID {
                                     InlineErrorBubble(error: error) {
@@ -1924,18 +1925,19 @@ private final class ChatTextView: NSTextView {
 
     override func keyDown(with event: NSEvent) {
         let hasOption = event.modifierFlags.contains(.option)
-        if hasOption && event.keyCode == 126 { // Option+↑
+        let special = event.specialKey
+        if hasOption && special == .upArrow {
             onHistoryUp?()
             return
         }
-        if hasOption && event.keyCode == 125 { // Option+↓
+        if hasOption && special == .downArrow {
             onHistoryDown?()
             return
         }
-        if event.keyCode == 126, let up = onArrowUp, up() { return } // ↑
-        if event.keyCode == 125, let down = onArrowDown, down() { return } // ↓
-        if event.keyCode == 48, let tab = onTab, tab() { return } // Tab
-        if event.keyCode == 53, let onEscape { onEscape(); return } // Escape
+        if special == .upArrow, let up = onArrowUp, up() { return }
+        if special == .downArrow, let down = onArrowDown, down() { return }
+        if special == .tab, let tab = onTab, tab() { return }
+        if event.keyCode == 53, let onEscape { onEscape(); return } // Escape 不在 SpecialKey 中
         super.keyDown(with: event)
     }
 }
@@ -1944,6 +1946,9 @@ private struct MessageBubble: View {
     @EnvironmentObject var store: SessionStore
     @EnvironmentObject var providers: ProviderStore
     let message: MessageRecord
+    /// 由父视图显式传入：仅正在流式输出的最后一条为 true。
+    /// 避免每个气泡都读 store.isSending/messages.last 导致全量重算。
+    var isStreaming: Bool = false
     var searchQuery: String = ""
 
     @AppStorage(AppSettings.Keys.chatFontSize)
@@ -1952,9 +1957,7 @@ private struct MessageBubble: View {
     @State private var hovered = false
     @State private var copied = false
 
-    private var isStreamingThis: Bool {
-        store.isSending && store.messages.last?.id == message.id
-    }
+    private var isStreamingThis: Bool { isStreaming }
 
     /// Shared effort label mapping used by the composer and message metadata.
     static func effortLabelShared(_ variant: String) -> String {

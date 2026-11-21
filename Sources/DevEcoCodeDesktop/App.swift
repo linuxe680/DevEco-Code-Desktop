@@ -4,7 +4,8 @@ import UserNotifications
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let server = ServerManager()
-    private weak var store: SessionStore?
+    /// 强引用：Dock 菜单的"新建会话"必须在 Scene 生命周期之外始终可用。
+    private var store: SessionStore?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Re-assert the bundle icon at runtime. The Dock otherwise keeps the

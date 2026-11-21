@@ -10,6 +10,18 @@ struct ProviderEditorView: View {
     @State private var newModelName = ""
     @Environment(\.dismiss) private var dismiss
 
+    private var isValid: Bool {
+        guard !provider.id.trimmingCharacters(in: .whitespaces).isEmpty,
+              !provider.name.trimmingCharacters(in: .whitespaces).isEmpty else { return false }
+        let base = provider.baseURL.trimmingCharacters(in: .whitespaces)
+        guard !base.isEmpty else { return true } // 允许留空使用服务端默认
+        guard let url = URL(string: base),
+              let scheme = url.scheme?.lowercased(),
+              ["http", "https"].contains(scheme),
+              url.host != nil else { return false }
+        return true
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             HStack {
@@ -18,7 +30,7 @@ struct ProviderEditorView: View {
                 Button("Cancel") { onCancel() }
                 Button("Save") { onSave() }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(provider.id.trimmingCharacters(in: .whitespaces).isEmpty || provider.name.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(!isValid)
             }
             .padding(14)
 

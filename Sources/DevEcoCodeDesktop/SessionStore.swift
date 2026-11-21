@@ -297,6 +297,9 @@ final class SessionStore: ObservableObject {
 
     private var retryTask: Task<Void, Never>?
     private var pollTasksBySession: [String: Task<Void, Never>] = [:]
+    /// 后台会话在 idle 时抓取的消息快照。切回该会话时先展示缓存，
+    /// 避免 SSE 增量因 `sessionID != selectedSessionID` 被丢弃后只显示空态。
+    private var messagesCacheBySession: [String: [MessageRecord]] = [:]
     private var reconnectAttempts = 0
     /// Drafts stashed per session so switching preserves in-progress text.
     private var draftsBySession: [String: String] = [:]
@@ -379,6 +382,16 @@ final class SessionStore: ObservableObject {
         eventStream.onDisconnect = { [weak self] in
             Task { @MainActor in self?.scheduleReconnect() }
         }
+        // 设置页撤销权限后，服务端规则是唯一真相，同步刷新本地缓存。
+        NotificationCenter.default.addObserver(
+            forName: .savedPermissionsDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.savedPermissionRules = AppSettings.savedPermissionRules
+            }
+        }
     }
 
     func connect(baseURL: URL) {
@@ -396,6 +409,26 @@ final class SessionStore: ObservableObject {
         Task { await loadUsage() }
         Task { await loadCommands() }
         Task { await loadAgreement() }
+        Task { await syncSavedPermissionsFromServer() }
+    }
+
+    /// 以服务端 /api/permission/saved 为准刷新本地"Always allow"缓存，
+    /// 避免设置页撤销后客户端仍按旧规则自动放行。
+    private func syncSavedPermissionsFromServer() async {
+        guard let api else { return }
+        do {
+            let response: SavedPermissionResponse = try await api.get("api/permission/saved")
+            let rules = (response.data ?? []).compactMap { saved -> String? in
+                let action = saved.action ?? ""
+                let resource = saved.resource ?? ""
+                if action.isEmpty { return nil }
+                return resource.isEmpty ? "\(action)|" : "\(action)|\(resource)"
+            }
+            savedPermissionRules = rules
+            AppSettings.savedPermissionRules = rules
+        } catch {
+            // 服务端不可用时保留上次缓存，不阻塞连接。
+        }
     }
 
     func disconnect() {
@@ -504,11 +537,14 @@ final class SessionStore: ObservableObject {
             attachmentsBySession[old] = attachments
             modelsBySession[old] = selectedModel ?? ""
             variantsBySession[old] = selectedVariant ?? ""
+            // 切走前保存当前会话的转写，供再次切回时秒显。
+            if !messages.isEmpty { messagesCacheBySession[old] = messages }
         }
         unreadSessionIDs.remove(id)
         selectedSessionID = id
         persistCache()
-        messages = []
+        // 后台会话空闲时已抓过快照，先展示它，避免空白闪烁。
+        messages = messagesCacheBySession[id] ?? []
         isLoadingMessages = true
         todos = []
         diffs = []
@@ -621,7 +657,13 @@ final class SessionStore: ObservableObject {
 
     /// Writes the session transcript as Markdown to the given file URL.
     func export(_ session: Session, to url: URL) async throws {
-        guard let api else { return }
+        guard let api else {
+            throw NSError(
+                domain: "Export",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Cannot export while the server is not connected."]
+            )
+        }
         let messages: [MessageRecord] = try await api.get("session/\(session.id)/message")
         let markdown = TranscriptExporter.markdown(session: session, messages: messages)
         try markdown.write(to: url, atomically: true, encoding: .utf8)
@@ -712,22 +754,32 @@ final class SessionStore: ObservableObject {
         }
     }
 
-    func loadMessages() async {
-        guard let api, let id = selectedSessionID else {
-            isLoadingMessages = false
+    /// 加载会话消息。传入 `sessionID` 用于后台会话快照（只写缓存，不覆盖 UI）；
+    /// 不传则加载当前选中会话并更新 `messages`。
+    func loadMessages(for sessionID: String? = nil) async {
+        guard let api, let id = sessionID ?? selectedSessionID else {
+            if sessionID == nil { isLoadingMessages = false }
             return
         }
-        isLoadingMessages = true
+        let isVisible = id == selectedSessionID
+        if isVisible { isLoadingMessages = true }
         defer {
-            if id == selectedSessionID {
-                isLoadingMessages = false
-            }
+            if isVisible && id == selectedSessionID { isLoadingMessages = false }
         }
         do {
             let fetched: [MessageRecord] = try await api.get("session/\(id)/message")
+            if !isVisible {
+                // 后台快照：只缓存，绝不触碰当前 UI 状态。
+                messagesCacheBySession[id] = fetched
+                return
+            }
             // Another select may have happened while the request was in flight.
-            guard id == selectedSessionID else { return }
+            guard id == selectedSessionID else {
+                messagesCacheBySession[id] = fetched
+                return
+            }
             messages = fetched
+            messagesCacheBySession[id] = fetched
             // The snapshot supersedes every buffered delta: the server writes
             // state before emitting events, so anything still buffered is
             // already included in `fetched`. Keeping it would append the same
@@ -1145,6 +1197,7 @@ final class SessionStore: ObservableObject {
         draftsBySession.removeValue(forKey: id)
         queuesBySession.removeValue(forKey: id)
         attachmentsBySession.removeValue(forKey: id)
+        messagesCacheBySession.removeValue(forKey: id)
         lastSentPromptBySession.removeValue(forKey: id)
         sessionStatuses.removeValue(forKey: id)
         activeSessionIDs.remove(id)
@@ -1377,6 +1430,13 @@ final class SessionStore: ObservableObject {
             }
             if wasGenerating {
                 notifyCompletion(sessionID: sessionID)
+            }
+            // 后台会话的 SSE 增量被 upsert/append 的 selectedSessionID 守卫
+            // 丢弃；空闲时抓一次快照存入缓存，切回时立即可见完整转写。
+            if sessionID != selectedSessionID {
+                Task { [weak self] in
+                    await self?.loadMessages(for: sessionID)
+                }
             }
             markUnreadIfNeeded(sessionID, wasGenerating: wasGenerating)
             Task { await loadUsage() }

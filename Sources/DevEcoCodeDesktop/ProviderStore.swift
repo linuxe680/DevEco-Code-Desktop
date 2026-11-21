@@ -1,6 +1,11 @@
 import Foundation
 import Combine
 
+extension Notification.Name {
+    /// 服务端 "Always allow" 规则变更后发出，SessionStore 据此刷新本地缓存。
+    static let savedPermissionsDidChange = Notification.Name("savedPermissionsDidChange")
+}
+
 @MainActor
 final class ProviderStore: ObservableObject {
     @Published var providers: [ProviderEntry] = [] {
@@ -88,6 +93,16 @@ final class ProviderStore: ObservableObject {
         do {
             let response: SavedPermissionResponse = try await api.get("api/permission/saved")
             savedPermissions = response.data ?? []
+            // 服务端是"Always allow"规则的唯一真相：用服务端列表覆盖客户端缓存，
+            // 避免用户在设置页撤销后客户端仍按旧规则自动放行。
+            let rules = savedPermissions.compactMap { saved -> String? in
+                let action = saved.action ?? ""
+                let resource = saved.resource ?? ""
+                if action.isEmpty { return nil }
+                return resource.isEmpty ? "\(action)|" : "\(action)|\(resource)"
+            }
+            AppSettings.savedPermissionRules = rules
+            NotificationCenter.default.post(name: .savedPermissionsDidChange, object: nil)
         } catch {
             errorMessage = error.localizedDescription
         }
