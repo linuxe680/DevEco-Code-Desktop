@@ -287,6 +287,8 @@
 /* 会话滚动与消息操作 */
 "Back to latest" = "回到最新";
 "Copy message" = "复制消息";
+"复制回答" = "复制回答";
+"复制 Markdown" = "复制 Markdown";
 
 /* 活动条与 Diff 面板 */
 "Working…" = "正在工作…";

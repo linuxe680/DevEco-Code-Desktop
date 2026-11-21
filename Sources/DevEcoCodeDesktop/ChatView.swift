@@ -2091,12 +2091,39 @@ private struct MessageBubble: View {
     /// Hover action strip: copy, edit & resend (user messages), revert.
     private var hoverActionBar: some View {
         HStack(spacing: 2) {
-            actionButton(
-                copied ? "checkmark" : "doc.on.doc",
-                help: NSLocalizedString("Copy message", comment: ""),
-                tint: copied ? Color.green : Color.secondary
-            ) {
-                copyMessage()
+            if isUser {
+                actionButton(
+                    copied ? "checkmark" : "doc.on.doc",
+                    help: NSLocalizedString("Copy message", comment: ""),
+                    tint: copied ? Color.green : Color.secondary
+                ) {
+                    copyMessage()
+                }
+            } else {
+                if copied {
+                    Label("已复制", systemImage: "checkmark.circle.fill")
+                        .font(.system(size: ChatTypography.micro(chatFontSize), weight: .medium))
+                        .foregroundStyle(.green)
+                } else {
+                    Menu {
+                        Button("复制回答") { copyMessage() }
+                        Button("复制 Markdown") { copyMessage(asMarkdown: true) }
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "doc.on.doc")
+                                .font(.caption)
+                                .foregroundStyle(Color.secondary)
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 8, weight: .semibold))
+                                .foregroundStyle(Color.secondary)
+                        }
+                        .padding(4)
+                        .contentShape(Rectangle())
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .help("复制回答")
+                }
             }
             if message.info.role == "user" {
                 actionButton("pencil", help: NSLocalizedString("Edit & resend…", comment: "")) {
@@ -2130,9 +2157,21 @@ private struct MessageBubble: View {
     }
 
     private func copyMessage() {
+        copyMessage(asMarkdown: false)
+    }
+
+    private func copyMessage(asMarkdown: Bool) {
         guard !messageText.isEmpty else { return }
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(messageText, forType: .string)
+        if asMarkdown {
+            let markdown = message.parts
+                .filter { $0.type == "text" }
+                .compactMap { $0.text }
+                .joined(separator: "\n\n")
+            NSPasteboard.general.setString(markdown, forType: .string)
+        } else {
+            NSPasteboard.general.setString(messageText, forType: .string)
+        }
         copied = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
             copied = false
