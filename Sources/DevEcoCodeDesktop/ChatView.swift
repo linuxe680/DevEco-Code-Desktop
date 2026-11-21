@@ -504,15 +504,7 @@ struct ChatView: View {
     }
 
     private func effortLabel(_ variant: String) -> String {
-        switch variant.lowercased() {
-        case "none": return NSLocalizedString("None", comment: "effort level")
-        case "low": return NSLocalizedString("Low", comment: "effort level")
-        case "medium": return NSLocalizedString("Medium", comment: "effort level")
-        case "high": return NSLocalizedString("High", comment: "effort level")
-        case "xhigh": return NSLocalizedString("Extra high", comment: "effort level")
-        case "max": return NSLocalizedString("Max", comment: "effort level")
-        default: return variant.prefix(1).uppercased() + variant.dropFirst()
-        }
+        MessageBubble.effortLabelShared(variant)
     }
 
     private func selectEffort(_ variant: String?) {
@@ -1964,6 +1956,20 @@ private struct MessageBubble: View {
         store.isSending && store.messages.last?.id == message.id
     }
 
+    /// Shared effort label mapping used by the composer and message metadata.
+    static func effortLabelShared(_ variant: String) -> String {
+        switch variant.lowercased() {
+        case "none": return NSLocalizedString("None", comment: "effort level")
+        case "low": return NSLocalizedString("Low", comment: "effort level")
+        case "medium": return NSLocalizedString("Medium", comment: "effort level")
+        case "high": return NSLocalizedString("High", comment: "effort level")
+        case "xhigh": return NSLocalizedString("Extra high", comment: "effort level")
+        case "max": return NSLocalizedString("Max", comment: "effort level")
+        case "default": return "default"
+        default: return variant.prefix(1).uppercased() + variant.dropFirst()
+        }
+    }
+
     /// Plain text content of the message, for copy / export actions.
     private var messageText: String {
         message.parts
@@ -2145,7 +2151,10 @@ private struct MessageBubble: View {
             }
         }
         if let variant = info.variant {
-            pieces.append(String(format: NSLocalizedString("Effort: %@", comment: ""), variant))
+            let label = Self.effortLabelShared(variant)
+            if label != "default" {
+                pieces.append(String(format: NSLocalizedString("Effort: %@", comment: ""), label))
+            }
         }
         if let tokens = info.tokens {
             // Harness semantics: input = uncached input of this request,
