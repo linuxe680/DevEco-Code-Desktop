@@ -3143,43 +3143,58 @@ private struct PermissionBanner: View {
     var pendingCount: Int = 1
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
                 Image(systemName: "lock.shield")
-                Text(request.title)
-                    .font(.headline)
-                if pendingCount > 1 {
-                    Text("(\(pendingCount) pending)")
-                        .font(.caption)
+                    .font(.title2)
+                    .foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("需要授权")
+                        .font(.title3.weight(.semibold))
+                    Text(request.title)
+                        .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
+                if pendingCount > 1 {
+                    Text("(\(pendingCount) pending)")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
             }
             if !request.detail.isEmpty {
                 Text(request.detail)
-                    .font(.caption)
+                    .font(.system(.callout, design: .monospaced))
                     .foregroundStyle(.secondary)
-                    .lineLimit(3)
+                    .lineLimit(6)
             }
-            HStack(spacing: 8) {
+            HStack(spacing: 12) {
                 Button("Allow once") {
                     store.reply(to: request, reply: "once")
                 }
                 .buttonStyle(.borderedProminent)
-                .controlSize(.small)
+                .controlSize(.large)
                 Button("Always allow") {
                     store.reply(to: request, reply: "always")
                 }
                 .buttonStyle(.bordered)
-                .controlSize(.small)
+                .controlSize(.large)
                 Button("Reject", role: .destructive) {
                     store.reply(to: request, reply: "reject")
                 }
                 .buttonStyle(.bordered)
-                .controlSize(.small)
+                .controlSize(.large)
             }
         }
-        .padding(12)
-        .background(Theme.bannerWarning)
+        .padding(18)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Theme.bannerWarning)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(.orange.opacity(0.35), lineWidth: 1)
+        )
     }
 }
 
