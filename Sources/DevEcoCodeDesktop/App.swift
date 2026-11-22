@@ -136,6 +136,7 @@ struct DevEcoCodeDesktopApp: App {
                 .environmentObject(providers)
                 .frame(minWidth: 940, minHeight: 620)
         }
+        .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(after: .newItem) {
                 Button(NSLocalizedString("New Session", comment: "")) { store.createSession() }

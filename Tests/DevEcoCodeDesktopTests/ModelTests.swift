@@ -14,6 +14,44 @@ final class ModelTests: XCTestCase {
         XCTAssertEqual(object["nested"]?.objectValue?["k"], .null)
     }
 
+    // MARK: Access mode
+
+    func testAccessModeDefaultsToAskWithoutRules() {
+        XCTAssertEqual(SessionAccessMode.current(for: nil), .ask)
+        XCTAssertEqual(SessionAccessMode.current(for: []), .ask)
+    }
+
+    func testAccessModeFollowsLastMatchingRule() {
+        let rules = [
+            PermissionRule(permission: "edit", pattern: "*", action: "allow"),
+            PermissionRule(permission: "edit", pattern: "*", action: "ask"),
+        ]
+        // The server appends rules and the last match wins, so a later "ask"
+        // must re-arm approvals even when an older "allow" exists.
+        XCTAssertEqual(SessionAccessMode.current(for: rules), .ask)
+        XCTAssertEqual(SessionAccessMode.current(for: rules.reversed()), .allowAll)
+    }
+
+    func testAccessModeIgnoresReadOnlyRules() {
+        let rules = [
+            PermissionRule(permission: "read", pattern: "*", action: "allow"),
+            PermissionRule(permission: "grep", pattern: "*", action: "allow"),
+        ]
+        XCTAssertEqual(SessionAccessMode.current(for: rules), .ask)
+    }
+
+    func testAccessModeRulesCoverEveryGatedTool() {
+        for mode in SessionAccessMode.allCases {
+            XCTAssertEqual(
+                Set(mode.rules.map(\.permission)),
+                Set(SessionAccessMode.gatedPermissions)
+            )
+            XCTAssertTrue(mode.rules.allSatisfy { $0.pattern == "*" })
+        }
+        XCTAssertTrue(SessionAccessMode.allowAll.rules.allSatisfy { $0.action == "allow" })
+        XCTAssertTrue(SessionAccessMode.ask.rules.allSatisfy { $0.action == "ask" })
+    }
+
     func testPartWithoutIDGetsStableIdentity() throws {
         let json = #"{"type":"step-start"}"#
         let part = try JSONDecoder.deveco.decode(Part.self, from: Data(json.utf8))
@@ -34,10 +72,19 @@ final class ModelTests: XCTestCase {
         XCTAssertEqual(tokens.contextUsed, 4600)
     }
 
-    func testMessageTokensPrefersExplicitTotal() throws {
-        let json = #"{"total":5000,"input":120,"cache":{"read":3400}}"#
+    func testMessageTokensContextExcludesThisTurnOutput() throws {
+        // `total` is a spend counter (input + output + reasoning). The context
+        // gauge must only count what the model had to read, otherwise a short
+        // reply looks like it nearly filled the window.
+        let json = #"{"total":19330,"input":19099,"output":70,"reasoning":161}"#
         let tokens = try JSONDecoder.deveco.decode(MessageTokens.self, from: Data(json.utf8))
-        XCTAssertEqual(tokens.contextUsed, 5000)
+        XCTAssertEqual(tokens.contextUsed, 19099)
+    }
+
+    func testMessageTokensContextFallsBackToTotalMinusGenerated() throws {
+        let json = #"{"total":5000,"output":120,"reasoning":80}"#
+        let tokens = try JSONDecoder.deveco.decode(MessageTokens.self, from: Data(json.utf8))
+        XCTAssertEqual(tokens.contextUsed, 4800)
     }
 
     func testSessionArchivedFlag() throws {
@@ -130,6 +177,52 @@ final class ModelTests: XCTestCase {
         )
     }
 
+    func testMarkdownProseBlocksHideRecallNotice() {
+        let content = """
+        💡 Recalled 2 memories: deveco-code-desktop-project(project), chinese-language-preference(user)
+        耐心是一种安静的力量。
+        """
+        XCTAssertEqual(
+            parseMarkdownProseBlocks(content),
+            [
+                .paragraph("耐心是一种安静的力量。"),
+            ]
+        )
+    }
+
+    func testSystemNoticeTextDropsDecorativePrefix() {
+        let notice = "💡 Recalled 2 memories: deveco-code-desktop-project(project)"
+        XCTAssertEqual(
+            systemNoticeText(notice),
+            "Recalled 2 memories: deveco-code-desktop-project(project)"
+        )
+    }
+
+    func testRemovingSystemNoticeLinesKeepsAnswerBody() {
+        let text = """
+        💡 Recalled 2 memories: deveco-code-desktop-project(project)
+
+        你好！有什么可以帮你的吗？
+        """
+        XCTAssertEqual(removingSystemNoticeLines(text), "你好！有什么可以帮你的吗？")
+    }
+
+    func testTokenMetadataDistinguishesGeneratedFromContext() {
+        let generatedKey = NSLocalizedString("Generated %@ tokens", comment: "")
+        let contextKey = NSLocalizedString("Context window", comment: "")
+        XCTAssertFalse(generatedKey.contains("输出"))
+        XCTAssertFalse(contextKey.contains("输入"))
+        XCTAssertFalse(contextKey.isEmpty)
+        XCTAssertTrue(generatedKey.contains("token"))
+    }
+
+    func testCompactCountDropsTrailingZeroDecimal() {
+        XCTAssertEqual(compactTokenCount(960_000), "960k")
+        XCTAssertEqual(compactTokenCount(20_300), "20.3k")
+        XCTAssertEqual(compactTokenCount(1_500_000), "1.5M")
+        XCTAssertEqual(compactTokenCount(999), "999")
+    }
+
     func testChatTypographyClampsAndScales() {
         XCTAssertEqual(ChatTypography.body(8), 13)
         XCTAssertEqual(ChatTypography.body(34), 30)
@@ -139,6 +232,24 @@ final class ModelTests: XCTestCase {
 
     func testPrettyModelNameUsesChineseLabelForKnownModels() {
         XCTAssertEqual(prettyModelName("Hy4 flash (hy4flash)"), "混元 Flash")
+    }
+
+    func testServerModelIDWithVendorSuffixResolvesToCatalogName() {
+        let catalog = [
+            (key: normalizedModelKey("magpie/workbuddy/hy4flash-free"), name: "Hy4 flash · WorkBuddy"),
+            (key: normalizedModelKey("magpie/trae-cn/deepseek-v4.1-flash"), name: "DeepSeek-V4.1-Flash · Trae CN"),
+            (key: normalizedModelKey("magpie/trae-cn/deepseek-v4.1-flash-max"), name: "DeepSeek-V4.1-Flash (Max) · Trae CN"),
+        ]
+        XCTAssertEqual(
+            uniqueCatalogModelName(for: "magpie/workbuddy/hy4flash", in: catalog),
+            "Hy4 flash · WorkBuddy"
+        )
+        XCTAssertEqual(
+            uniqueCatalogModelName(for: "magpie/trae-cn/deepseek-v4.1-flash", in: catalog),
+            "DeepSeek-V4.1-Flash · Trae CN"
+        )
+        XCTAssertNil(uniqueCatalogModelName(for: "magpie/trae-cn/deepseek-v4.1", in: catalog))
+        XCTAssertNil(uniqueCatalogModelName(for: "magpie/unknown/model", in: catalog))
     }
 
     func testPlaceholderSessionTitleDisplaysInChinese() throws {

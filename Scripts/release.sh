@@ -82,7 +82,7 @@ done
 
 # --- 5. verification ----------------------------------------------------------
 for ARCH in arm64 x86_64; do
-    APP="$ROOT/DevEco Code Desktop ($ARCH).app"
+    APP="$ROOT/build/DevEco Code Desktop ($ARCH).app"
     ARCH_DMG="$ROOT/build/DevEco Code Desktop-$new_version-$ARCH.dmg"
     [[ -f "$ARCH_DMG" ]] || { echo "DMG not found: $ARCH_DMG"; exit 1; }
     codesign --verify --deep --strict "$APP" && echo "codesign ($ARCH): OK"

@@ -74,6 +74,7 @@ final class SessionStore: ObservableObject {
     /// without opening/closing or leaking one session's artifacts into another.
     @Published var workPanelOpenBySession: [String: Bool] = [:]
     @Published var workPanelTab: WorkPanelTab = .review
+    private var workPanelTabBySession: [String: WorkPanelTab] = [:]
     /// Durable "always allow" rules the client records itself; the deveco
     /// server only remembers them for the lifetime of one server process.
     @Published private(set) var savedPermissionRules: [String] = AppSettings.savedPermissionRules
@@ -254,6 +255,9 @@ final class SessionStore: ObservableObject {
         let sessionID: String
         let message: String
         var kind: FailureKind = .unknown
+        /// Transcript tail when the failure was recorded. A later assistant
+        /// turn replaces it, which means the retry succeeded.
+        var tailMessageID: String?
     }
 
     /// One compact sidebar indicator, in user-priority order. A blocked
@@ -347,6 +351,10 @@ final class SessionStore: ObservableObject {
     /// GET /config's `model`. Used when a session has no explicit pick so new
     /// sessions show (and send) the real model instead of "Server default".
     var serverDefaultModel = ""
+    /// Every model id ("providerID/modelID") the server can currently run.
+    /// A session's saved pick may point at a provider that has since been
+    /// removed; sends must fall back instead of failing with a provider error.
+    var availableModels: Set<String> = []
     private var autoTitleInFlight = Set<String>()
     private var clientAutoTitlesBySession = AppSettings.clientAutoTitles
     private var manuallyRenamedSessionIDs = Set(AppSettings.manuallyRenamedSessionIDs)
@@ -461,6 +469,9 @@ final class SessionStore: ObservableObject {
         autoTitleInFlight.removeAll()
         clientAutoTitlesBySession = AppSettings.clientAutoTitles
         manuallyRenamedSessionIDs = Set(AppSettings.manuallyRenamedSessionIDs)
+        workPanelOpenBySession = [:]
+        workPanelTabBySession = [:]
+        workPanelTab = .review
         isReconnecting = false
         retryTask?.cancel()
         retryTask = nil
@@ -596,6 +607,11 @@ final class SessionStore: ObservableObject {
         }
     }
 
+    func setWorkPanelTab(_ tab: WorkPanelTab) {
+        workPanelTab = tab
+        if let id = selectedSessionID { workPanelTabBySession[id] = tab }
+    }
+
     func select(_ id: String) {
         guard selectedSessionID != id else { return }
         let oldDraft = draft
@@ -609,11 +625,13 @@ final class SessionStore: ObservableObject {
             attachmentsBySession[old] = attachments
             modelsBySession[old] = selectedModel ?? ""
             variantsBySession[old] = selectedVariant ?? ""
+            workPanelTabBySession[old] = workPanelTab
             // 切走前保存当前会话的转写，供再次切回时秒显。
             if !messages.isEmpty { messagesCacheBySession[old] = messages }
         }
         unreadSessionIDs.remove(id)
         selectedSessionID = id
+        if let tab = workPanelTabBySession[id] { workPanelTab = tab }
         persistCache()
         // 后台会话空闲时已抓过快照，先展示它，避免空白闪烁。
         messages = messagesCacheBySession[id] ?? []
@@ -639,7 +657,8 @@ final class SessionStore: ObservableObject {
             }
             return serverDefaultModel.isEmpty ? nil : serverDefaultModel
         }()
-        let restoredModel = modelsBySession[id].map { $0.isEmpty ? nil : $0 } ?? globalDefault
+        let storedModel = modelsBySession[id].map { $0.isEmpty ? nil : $0 } ?? nil
+        let restoredModel = resolvedModel(storedModel) ?? resolvedModel(globalDefault)
         selectedModel = restoredModel
         selectedVariant = restoredVariant
         Task { await loadMessages() }
@@ -654,6 +673,34 @@ final class SessionStore: ObservableObject {
         guard let id = selectedSessionID else { return }
         modelsBySession[id] = selectedModel ?? ""
         AppSettings.sessionModels = modelsBySession
+    }
+
+    /// Returns a usable model id: the requested one when the server still
+    /// offers it, otherwise the server/app default. `nil` only when nothing
+    /// is known yet (model list not loaded), so callers keep current behavior.
+    func resolvedModel(_ candidate: String?) -> String? {
+        guard let candidate, !candidate.isEmpty else { return nil }
+        guard !availableModels.isEmpty else { return candidate }
+        if availableModels.contains(candidate) { return candidate }
+        for fallback in [AppSettings.defaultSessionModel, serverDefaultModel] where !fallback.isEmpty {
+            if availableModels.contains(fallback) { return fallback }
+        }
+        return nil
+    }
+
+    /// After the provider/model list loads, a session may still point at a
+    /// model that no longer exists. Repair the visible pick and its stored
+    /// value so the composer label and the next send agree.
+    func repairStaleModelSelection() {
+        guard !availableModels.isEmpty, let id = selectedSessionID else { return }
+        guard let stored = modelsBySession[id], !stored.isEmpty else { return }
+        guard !availableModels.contains(stored) else { return }
+        let repaired = resolvedModel(stored)
+        modelsBySession[id] = repaired ?? ""
+        AppSettings.sessionModels = modelsBySession
+        if selectedModel != repaired {
+            selectedModel = repaired
+        }
     }
 
     private func stashVariantForSelectedSession() {
@@ -897,6 +944,7 @@ final class SessionStore: ObservableObject {
             }
             messages = fetched
             messagesCacheBySession[id] = fetched
+            clearInlineErrorIfTranscriptMovedPast(fetched, sessionID: id)
             // The snapshot supersedes every buffered delta: the server writes
             // state before emitting events, so anything still buffered is
             // already included in `fetched`. Keeping it would append the same
@@ -1019,6 +1067,24 @@ final class SessionStore: ObservableObject {
               !activeSessionIDs.contains(id),
               !abortingSessionIDs.contains(id) else {
             return false
+        }
+        var prompt = prompt
+        // A stale per-session pick (e.g. a provider removed from config) must
+        // not be sent verbatim: the server rejects it with a provider error
+        // that leaves the conversation stuck. Swap in a live model instead.
+        let model = resolvedModel(prompt.model)
+        if model != prompt.model {
+            prompt = PromptSnapshot(
+                text: prompt.text,
+                model: model,
+                variant: prompt.variant,
+                attachments: prompt.attachments
+            )
+            if id == selectedSessionID {
+                selectedModel = model
+            }
+            modelsBySession[id] = model ?? ""
+            AppSettings.sessionModels = modelsBySession
         }
         activeSessionIDs.insert(id)
         inlineErrorsBySession.removeValue(forKey: id)
@@ -1357,6 +1423,29 @@ final class SessionStore: ObservableObject {
         }
     }
 
+    /// Current composer access mode for the selected session.
+    var accessMode: SessionAccessMode {
+        SessionAccessMode.current(for: selectedSession?.permission)
+    }
+
+    /// Switches the session's approval behavior by appending the full gated
+    /// rule set. The server appends rules, and the last matching rule wins,
+    /// so re-sending the set flips the mode in either direction.
+    func setAccessMode(_ mode: SessionAccessMode) async {
+        guard let api, let id = selectedSessionID else { return }
+        guard mode != accessMode else { return }
+        struct Body: Encodable { let permission: [PermissionRule] }
+        do {
+            let updated: Session = try await api.patch(
+                "session/\(id)",
+                body: try Body(permission: mode.rules).jsonData()
+            )
+            upsert(updated)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     /// Pins or unpins a session; pinning puts it at the top of the list.
     func togglePinned(_ id: String, pinned: Bool? = nil) {
         var ids = pinnedSessionIDs
@@ -1386,6 +1475,8 @@ final class SessionStore: ObservableObject {
 
     private func applyDeletion(of id: String) {
         sessions.removeAll { $0.id == id }
+        workPanelOpenBySession.removeValue(forKey: id)
+        workPanelTabBySession.removeValue(forKey: id)
         pendingPermissions.removeAll { $0.sessionID == id }
         pendingQuestions.removeAll { $0.sessionID == id }
         draftsBySession.removeValue(forKey: id)
@@ -1487,8 +1578,7 @@ final class SessionStore: ObservableObject {
     /// 服务端 /api/permission/saved 用 action/resource；事件里的
     /// PermissionRequest 把同类值放在 permission/action。统一为 action|resource。
     private func permissionKind(_ request: PermissionRequest) -> String {
-        let value = request.action ?? request.permission ?? ""
-        return value == "allow" ? (request.permission ?? value) : value
+        request.tool ?? ""
     }
 
     private func matchesSavedPermission(_ request: PermissionRequest) -> Bool {
@@ -1537,9 +1627,29 @@ final class SessionStore: ObservableObject {
                 let stalled = Date().timeIntervalSince(self.lastStreamActivity) > 45
                 if (reconnecting || stalled), sessionID == self.selectedSessionID {
                     await self.loadMessages()
+                    self.reconcileCompletedRunIfNeeded(sessionID)
                 }
             }
         }
+    }
+
+    /// Self-heal for a lost `session.idle`: the server marks the final
+    /// assistant message with `time.completed` as soon as the run ends. If a
+    /// snapshot already contains that marker while we still consider the
+    /// session active, the idle event never reached us — finish the run here
+    /// so the footer (tokens/duration) stops being suppressed as "streaming".
+    private func reconcileCompletedRunIfNeeded(_ sessionID: String) {
+        guard activeSessionIDs.contains(sessionID),
+              sessionID == selectedSessionID,
+              let last = messages.last(where: { $0.info.role == "assistant" }),
+              last.info.time?.completed != nil else { return }
+        finishRun(sessionID)
+        sessionStatuses[sessionID] = "idle"
+        flushDeltas()
+        if !abortingSessionIDs.contains(sessionID) {
+            flushQueue(for: sessionID)
+        }
+        Task { await loadUsage() }
     }
 
     private func stopPolling(for sessionID: String) {
@@ -1559,12 +1669,32 @@ final class SessionStore: ObservableObject {
         await loadMessages()
     }
 
+    /// The server writes usage (`tokens`, `time.completed`) after the last
+    /// streamed delta, so an idle event alone leaves the final assistant
+    /// message without its footer stats. Re-fetch the transcript once the run
+    /// finishes; a short retry covers servers that persist stats a beat later.
+    private func refreshTranscriptAfterIdle(_ sessionID: String) {
+        guard sessionID == selectedSessionID else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            await self.loadMessages()
+            guard let last = self.messages.last, last.info.role == "assistant",
+                  last.info.tokens == nil || last.info.time?.completed == nil else { return }
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            guard sessionID == self.selectedSessionID, !self.isSending else { return }
+            await self.loadMessages()
+        }
+    }
+
     private func recordSessionFailure(_ sessionID: String, message: String, kind: FailureKind? = nil) {
-        let error = InlineError(
+        var error = InlineError(
             sessionID: sessionID,
             message: message,
             kind: kind ?? FailureKind.classify(message)
         )
+        if sessionID == selectedSessionID {
+            error.tailMessageID = messages.last?.id
+        }
         inlineErrorsBySession[sessionID] = error
     }
 
@@ -1613,7 +1743,21 @@ final class SessionStore: ObservableObject {
     /// Foreground re-probe: App Nap can suspend the reconnect Task while the
     /// app is in the background, leaving `isReconnecting` stuck forever.
     private func recheckConnectionIfNeeded() {
-        guard api != nil, isReconnecting else { return }
+        guard let api else { return }
+        // A socket can be closed by the OS while the app sleeps without our
+        // `onDisconnect` firing; re-open it instead of silently showing stale
+        // transcripts forever.
+        if !eventStream.isConnected {
+            reconnectAttempts = 0
+            eventStream.connect(baseURL: api.baseURL)
+        }
+        // The final usage lands just after the last delta; if we slept through
+        // it, the tail keeps its "streaming" look until the next snapshot.
+        if let last = messages.last(where: { $0.info.role == "assistant" }),
+           last.info.tokens == nil || last.info.time?.completed == nil {
+            Task { await loadMessages() }
+        }
+        guard isReconnecting else { return }
         guard retryTask == nil || retryTask?.isCancelled == true else { return }
         scheduleReconnect()
     }
@@ -1668,6 +1812,7 @@ final class SessionStore: ObservableObject {
             if sessionID == selectedSessionID {
                 flushDeltas()
             }
+            refreshTranscriptAfterIdle(sessionID)
             // During an explicit abort, wait for the abort response before
             // draining the queue so prompt_async cannot race the server.
             if !abortingSessionIDs.contains(sessionID) {
@@ -1699,6 +1844,7 @@ final class SessionStore: ObservableObject {
                 if sessionID == selectedSessionID {
                     flushDeltas()
                 }
+                refreshTranscriptAfterIdle(sessionID)
                 if !abortingSessionIDs.contains(sessionID) {
                     flushQueue(for: sessionID)
                 }
@@ -1927,6 +2073,12 @@ final class SessionStore: ObservableObject {
 
     private func upsert(_ info: MessageInfo, in sessionID: String) {
         guard sessionID == selectedSessionID else { return }
+        // A fresh assistant turn means the previous failure no longer
+        // describes the tail of the conversation: drop the stale card even
+        // when the retry was started outside this window.
+        if info.role == "assistant" {
+            clearStaleInlineError(in: sessionID)
+        }
         if let index = messages.firstIndex(where: { $0.id == info.id }) {
             messages[index].info = info
         } else {
@@ -1937,6 +2089,7 @@ final class SessionStore: ObservableObject {
 
     private func upsert(_ part: Part, messageID: String, in sessionID: String) {
         guard sessionID == selectedSessionID else { return }
+        clearStaleInlineError(in: sessionID)
         if let messageIndex = messages.firstIndex(where: { $0.id == messageID }) {
             if let partIndex = messages[messageIndex].parts.firstIndex(where: { $0.id == part.id }) {
                 messages[messageIndex].parts[partIndex] = part
@@ -1952,6 +2105,38 @@ final class SessionStore: ObservableObject {
             )
         }
         streamTick += 1
+    }
+
+    /// Removes the inline failure once a newer turn starts producing output,
+    /// so a recovered conversation never keeps an obsolete error card. The
+    /// failure remembers the transcript tail it described; anything arriving
+    /// beyond that tail supersedes it.
+    private func clearStaleInlineError(in sessionID: String) {
+        guard let error = inlineErrorsBySession[sessionID],
+              let tail = error.tailMessageID,
+              let index = messages.firstIndex(where: { $0.id == tail }),
+              index < messages.count - 1
+        else { return }
+        inlineErrorsBySession.removeValue(forKey: sessionID)
+    }
+
+    /// Snapshot equivalent of `clearStaleInlineError`: the failure described a
+    /// specific transcript tail, so a reload that no longer ends there means
+    /// the conversation recovered and the card is obsolete.
+    private func clearInlineErrorIfTranscriptMovedPast(_ snapshot: [MessageRecord], sessionID: String) {
+        guard let error = inlineErrorsBySession[sessionID] else { return }
+        // No anchor (the failure happened in a background session that had no
+        // snapshot yet) means there is nothing to compare against; keep it.
+        guard let tail = error.tailMessageID else { return }
+        guard let index = snapshot.firstIndex(where: { $0.id == tail }) else {
+            // The message the failure pointed at is gone (reverted, deleted or
+            // replaced by a retry), so the card can no longer be attached.
+            inlineErrorsBySession.removeValue(forKey: sessionID)
+            return
+        }
+        if index < snapshot.count - 1 {
+            inlineErrorsBySession.removeValue(forKey: sessionID)
+        }
     }
 
     /// Buffers streaming deltas and flushes them to the published transcript

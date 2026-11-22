@@ -172,6 +172,74 @@ struct PermissionRule: Codable, Equatable {
     }
 }
 
+/// Composer access mode, backed by real session permission rules.
+///
+/// The server only APPENDS rules on PATCH, but the last matching rule wins
+/// (live-verified), so writing the full gated set again flips the mode
+/// without needing a clear operation. Read-only tools are left untouched:
+/// "ask" only re-arms the tools that can change state or leave the project.
+enum SessionAccessMode: String, CaseIterable, Identifiable {
+    case ask
+    case allowAll
+
+    var id: String { rawValue }
+
+    /// Tools whose approval prompts this mode governs.
+    static let gatedPermissions = [
+        "edit", "bash", "external_directory", "webfetch", "websearch", "task",
+    ]
+
+    var label: String {
+        switch self {
+        case .ask:
+            return NSLocalizedString("Ask for approval", comment: "composer access mode")
+        case .allowAll:
+            return NSLocalizedString("Full access", comment: "composer access mode")
+        }
+    }
+
+    var shortLabel: String {
+        switch self {
+        case .ask:
+            return NSLocalizedString("Ask", comment: "composer access mode, compact")
+        case .allowAll:
+            return NSLocalizedString("Full access", comment: "composer access mode, compact")
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .ask: return "lock.shield"
+        case .allowAll: return "lock.open"
+        }
+    }
+
+    var help: String {
+        switch self {
+        case .ask:
+            return NSLocalizedString("Edits and commands wait for your approval.", comment: "access mode help")
+        case .allowAll:
+            return NSLocalizedString("Edits and commands run without asking. Use with care.", comment: "access mode help")
+        }
+    }
+
+    /// The mode a session is currently in, read from its appended rules.
+    static func current(for rules: [PermissionRule]?) -> SessionAccessMode {
+        guard let last = rules?.last(where: { gatedPermissions.contains($0.permission) }) else {
+            return .ask
+        }
+        return last.action == "allow" ? .allowAll : .ask
+    }
+
+    /// Rules to append when switching to this mode.
+    var rules: [PermissionRule] {
+        let action = self == .allowAll ? "allow" : "ask"
+        return Self.gatedPermissions.map {
+            PermissionRule(permission: $0, pattern: "*", action: action)
+        }
+    }
+}
+
 struct MessageRecord: Identifiable, Codable {
     var info: MessageInfo
     var parts: [Part]
@@ -275,17 +343,35 @@ struct MessageTokens: Codable {
     let reasoning: Double?
     let cache: TokenCache?
 
-    /// Context occupied after this assistant turn. Prefer the server's
-    /// explicit total; older builds only report input + cached read.
+    /// Tokens the model had to read for this turn. The server's `total`
+    /// includes this turn's output/reasoning, so it is a spend counter, not a
+    /// context gauge — using it overstates how full the window is.
     var contextUsed: Double {
-        if let total, total > 0 { return total }
-        return (input ?? 0) + (cache?.read ?? 0)
+        let prompt = (input ?? 0) + (cache?.read ?? 0)
+        if prompt > 0 { return prompt }
+        guard let total, let output else { return total ?? 0 }
+        return max(0, total - output - (reasoning ?? 0))
     }
 }
 
 struct TokenCache: Codable {
     let read: Double?
     let write: Double?
+}
+
+/// Compact token counts shared by the transcript footer, composer warning,
+/// and Work Panel. Whole thousands drop the redundant ".0" (`960k`, not
+/// `960.0k`) so readouts stay short.
+func compactTokenCount(_ value: Double) -> String {
+    if value >= 1_000_000 {
+        return String(format: "%.1fM", value / 1_000_000)
+            .replacingOccurrences(of: ".0M", with: "M")
+    }
+    if value >= 1_000 {
+        return String(format: "%.1fk", value / 1_000)
+            .replacingOccurrences(of: ".0k", with: "k")
+    }
+    return String(Int(value))
 }
 
 /// Millisecond epochs; assistant messages also carry `completed`.
@@ -311,6 +397,31 @@ func formatChatDuration(milliseconds: Double) -> String {
         return String(format: NSLocalizedString("%.1fs", comment: "seconds with one decimal"), seconds)
     }
     return String(format: NSLocalizedString("%.2fs", comment: "seconds with two decimals"), seconds)
+}
+
+/// Loose identity for model ids: the server may report `workbuddy/hy4flash`
+/// while the catalog calls the same model `workbuddy/hy4flash-free`.
+func normalizedModelKey(_ raw: String) -> String {
+    raw.lowercased().filter { $0.isLetter || $0.isNumber }
+}
+
+/// Resolve a server-reported model id against catalog ids that may carry a
+/// vendor suffix (`hy4flash` vs `hy4flash-free`). Only an exact normalized id
+/// or a unique match on a known suffix qualifies, so a base id never resolves
+/// to its `-max` sibling.
+func uniqueCatalogModelName(
+    for identifier: String,
+    in candidates: [(key: String, name: String)]
+) -> String? {
+    let key = normalizedModelKey(identifier)
+    guard !key.isEmpty else { return nil }
+    if let exact = candidates.first(where: { $0.key == key }) { return exact.name }
+    let suffixMatches = candidates.filter { candidate in
+        guard candidate.key.hasPrefix(key) else { return false }
+        let remainder = candidate.key.dropFirst(key.count)
+        return remainder == "free"
+    }
+    return suffixMatches.count == 1 ? suffixMatches[0].name : nil
 }
 
 /// Provider catalogs often include the raw model id in parentheses, e.g.
@@ -797,6 +908,17 @@ struct PermissionRequest: Identifiable, Decodable {
         action ?? permission ?? NSLocalizedString("Permission required", comment: "")
     }
     var detail: String { (patterns ?? []).joined(separator: "\n") }
+
+    /// deveco v2 emits a literal "allow" in `action` and puts the actual tool
+    /// in `permission`. The old schema used `permission` for the tool and left
+    /// `action` nil. Normalize once so cards, rules, and notifications agree.
+    var tool: String? {
+        if let action, !action.isEmpty, action.lowercased() != "allow", action.lowercased() != "deny" {
+            return action
+        }
+        guard let permission, !permission.isEmpty else { return nil }
+        return permission.lowercased() == "allow" || permission.lowercased() == "deny" ? nil : permission
+    }
 }
 
 enum APIError: LocalizedError {
@@ -806,8 +928,25 @@ enum APIError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidResponse: return "Invalid response from deveco server"
-        case .status(let code, let body): return "Server returned \(code): \(body)"
+        case .status(let code, let body): return "Server returned \(code): \(Self.displayMessage(from: body))"
         }
+    }
+
+    /// Server error bodies are JSON (often with long stack traces). Show the
+    /// actionable message only; keep the raw payload out of the UI.
+    static func displayMessage(from body: String) -> String {
+        guard let data = body.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let payload = object["data"] as? [String: Any],
+              let message = payload["message"] as? String else {
+            return body
+        }
+        let firstLine = message
+            .split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: true)
+            .first
+            .map(String.init)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? message
+        return firstLine.isEmpty ? message : firstLine
     }
 
     /// Category for the failure, so the UI can suggest a concrete next step.
@@ -857,7 +996,10 @@ enum FailureKind: String, Equatable {
             return .quota
         }
         if contains(["model not found", "unknown model", "no such model",
-                     "does not exist", "not a valid model", "model unavailable"]) {
+                     "does not exist", "not a valid model", "model unavailable",
+                     "providermodelnotfound", "provider not found",
+                     "unknown provider", "provider not configured",
+                     "no provider"]) {
             return .modelUnavailable
         }
         if contains(["connection", "timed out", "timeout", "network", "refused",
@@ -913,4 +1055,39 @@ enum FailureKind: String, Equatable {
         case .unknown: return "exclamationmark.triangle"
         }
     }
+}
+
+/// Turns a raw provider/server error into a one-line, user-facing summary.
+/// Servers wrap failures as "UnknownError: ProviderModelNotFoundError:" and
+/// append a JS stack; neither the wrapper nor the stack belongs in the bubble.
+func humanizedErrorSummary(_ raw: String, kind: FailureKind) -> String {
+    let lines = raw
+        .split(separator: "\n", omittingEmptySubsequences: true)
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+    guard var line = lines.first else { return kind.label }
+
+    // Strip chained wrapper prefixes: "UnknownError: FooError: real text".
+    let wrapper = try! NSRegularExpression(
+        pattern: #"^(?:[A-Za-z_][A-Za-z0-9_]*(?:Error|Exception):\s*)+"#
+    )
+    let range = NSRange(line.startIndex..<line.endIndex, in: line)
+    if let match = wrapper.firstMatch(in: line, range: range),
+       let matchRange = Range(match.range, in: line) {
+        line = String(line[matchRange.upperBound...]).trimmingCharacters(in: .whitespaces)
+    }
+
+    // Nothing actionable left (only class names): use the category's own text.
+    if line.isEmpty {
+        switch kind {
+        case .modelUnavailable:
+            return NSLocalizedString(
+                "The selected model is no longer available on the server.",
+                comment: "inline error summary when the model id is unknown"
+            )
+        default:
+            return kind.label
+        }
+    }
+    return line
 }

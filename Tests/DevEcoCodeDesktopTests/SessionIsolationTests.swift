@@ -177,10 +177,61 @@ final class SessionIsolationTests: XCTestCase {
         XCTAssertNil(store.indicator(for: "s1"))
     }
 
+    /// A retry that succeeds must clear the previous failure card; otherwise
+    /// the conversation keeps an "model unavailable" banner below a reply.
+    func testNewerAssistantOutputClearsTheStaleInlineError() throws {
+        let store = SessionStore()
+        store.selectedSessionID = "s1"
+        store.handle(try event(
+            #"{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"m1","role":"user","time":{"created":1}}}}"#
+        ))
+        store.handle(try event(
+            #"{"type":"session.error","properties":{"sessionID":"s1","error":{"name":"ProviderModelNotFoundError","data":{"message":"model not found"}}}}"#
+        ))
+        XCTAssertNotNil(store.inlineError)
+
+        store.handle(try event(
+            #"{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"m2","role":"assistant","time":{"created":2}}}}"#
+        ))
+        store.handle(try event(
+            #"{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p1","messageID":"m2","type":"text","text":"ok"}}}"#
+        ))
+
+        XCTAssertNil(store.inlineError)
+        XCTAssertNil(store.indicator(for: "s1"))
+    }
+
+    func testFailureWithoutANewerTurnStaysVisible() throws {
+        let store = SessionStore()
+        store.selectedSessionID = "s1"
+        store.handle(try event(
+            #"{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"m1","role":"user","time":{"created":1}}}}"#
+        ))
+        store.handle(try event(
+            #"{"type":"session.error","properties":{"sessionID":"s1","error":{"name":"ProviderModelNotFoundError","data":{"message":"model not found"}}}}"#
+        ))
+        // A late update for the *same* tail (e.g. a finish part) must not
+        // silently hide the failure the user still needs to act on.
+        store.handle(try event(
+            #"{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p1","messageID":"m1","type":"text","text":"hi"}}}"#
+        ))
+
+        XCTAssertNotNil(store.inlineError)
+    }
+
     func testDeletedSelectedSessionDoesNotSurfaceRaw404() {
         let error = APIError.status(404, #"{"name":"NotFoundError","data":{"message":"Session not found"}}"#)
         XCTAssertEqual(error.kind, .modelUnavailable)
         XCTAssertTrue(error.localizedDescription.contains("404"))
+    }
+
+    func testAPIErrorDescriptionDoesNotLeakStackTrace() {
+        let body = #"{"name":"ProviderModelNotFoundError","data":{"message":"Model not found\n    at SessionPrompt.doExecute (/src/SessionPrompt.ts:333:31)"}}"#
+        let error = APIError.status(500, body)
+        XCTAssertEqual(
+            error.localizedDescription,
+            "Server returned 500: Model not found"
+        )
     }
 
     func testSessionDeletionEventClearsDeletedSessionState() throws {

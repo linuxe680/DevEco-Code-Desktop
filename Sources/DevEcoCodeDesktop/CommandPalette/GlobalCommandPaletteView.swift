@@ -29,7 +29,7 @@ struct GlobalCommandPaletteView: View {
     var filteredCommands: [CommandAction] {
         guard !needle.isEmpty else { return commands }
         return commands.filter {
-            $0.title.localizedCaseInsensitiveContains(needle)
+            Self.localizedTitles(for: $0).contains { $0.localizedCaseInsensitiveContains(needle) }
                 || $0.keywords.contains { $0.localizedCaseInsensitiveContains(needle) }
         }
     }
@@ -58,6 +58,15 @@ struct GlobalCommandPaletteView: View {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !needle.isEmpty else { return projects }
         return projects.filter { $0.path.localizedCaseInsensitiveContains(needle) }
+    }
+
+    private static func localizedTitles(for command: CommandAction) -> [String] {
+        return [
+            command.title,
+            command.subtitle,
+            NSLocalizedString(command.localizationKey, comment: ""),
+            NSLocalizedString(command.subtitleLocalizationKey, comment: ""),
+        ]
     }
 
     private var hasResults: Bool {
@@ -220,6 +229,8 @@ struct CommandAction: Identifiable {
     let id = UUID()
     let title: String
     let subtitle: String
+    let localizationKey: String
+    let subtitleLocalizationKey: String
     let symbol: String
     let shortcut: String
     let keywords: [String]
@@ -229,6 +240,8 @@ struct CommandAction: Identifiable {
         CommandAction(
             title: NSLocalizedString("New Session", comment: ""),
             subtitle: NSLocalizedString("Start a new conversation in the current project", comment: ""),
+            localizationKey: "New Session",
+            subtitleLocalizationKey: "Start a new conversation in the current project",
             symbol: "square.and.pencil",
             shortcut: "⌘N",
             keywords: ["new", "create", "session", "chat"],
@@ -237,6 +250,8 @@ struct CommandAction: Identifiable {
         CommandAction(
             title: NSLocalizedString("Choose Project Folder…", comment: ""),
             subtitle: NSLocalizedString("Switch the running server to another project", comment: ""),
+            localizationKey: "Choose Project Folder…",
+            subtitleLocalizationKey: "Switch the running server to another project",
             symbol: "folder",
             shortcut: "",
             keywords: ["project", "folder", "open", "workspace"],
@@ -245,6 +260,8 @@ struct CommandAction: Identifiable {
         CommandAction(
             title: NSLocalizedString("Review File Changes", comment: ""),
             subtitle: NSLocalizedString("Open the docked review panel", comment: ""),
+            localizationKey: "Review File Changes",
+            subtitleLocalizationKey: "Open the docked review panel",
             symbol: "doc.text.magnifyingglass",
             shortcut: "⌘J",
             keywords: ["review", "diff", "files", "changes", "work panel"],
@@ -255,6 +272,8 @@ struct CommandAction: Identifiable {
         CommandAction(
             title: NSLocalizedString("Export Session…", comment: ""),
             subtitle: NSLocalizedString("Export the selected transcript as Markdown", comment: ""),
+            localizationKey: "Export Session…",
+            subtitleLocalizationKey: "Export the selected transcript as Markdown",
             symbol: "square.and.arrow.up",
             shortcut: "",
             keywords: ["export", "markdown", "session", "transcript"],
@@ -265,6 +284,8 @@ struct CommandAction: Identifiable {
         CommandAction(
             title: NSLocalizedString("Start Server", comment: ""),
             subtitle: NSLocalizedString("Start the local deveco serve process", comment: ""),
+            localizationKey: "Start Server",
+            subtitleLocalizationKey: "Start the local deveco serve process",
             symbol: "play.circle",
             shortcut: "",
             keywords: ["server", "start", "serve"],
@@ -275,6 +296,8 @@ struct CommandAction: Identifiable {
         CommandAction(
             title: NSLocalizedString("Stop Server", comment: ""),
             subtitle: NSLocalizedString("Stop the local deveco serve process", comment: ""),
+            localizationKey: "Stop Server",
+            subtitleLocalizationKey: "Stop the local deveco serve process",
             symbol: "stop.circle",
             shortcut: "",
             keywords: ["server", "stop", "serve"],
@@ -285,6 +308,8 @@ struct CommandAction: Identifiable {
         CommandAction(
             title: NSLocalizedString("Settings…", comment: ""),
             subtitle: NSLocalizedString("Open application settings", comment: ""),
+            localizationKey: "Settings…",
+            subtitleLocalizationKey: "Open application settings",
             symbol: "gearshape",
             shortcut: "⌘,",
             keywords: ["settings", "preferences", "providers", "permissions"],

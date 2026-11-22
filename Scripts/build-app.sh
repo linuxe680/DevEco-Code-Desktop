@@ -15,7 +15,21 @@ esac
 swift build --disable-sandbox -c release --triple "$TRIPLE" --package-path "$ROOT"
 
 BIN="$(swift build -c release --triple "$TRIPLE" --package-path "$ROOT" --show-bin-path)/DevEcoCodeDesktop"
-APP="$ROOT/DevEco Code Desktop ($ARCH).app"
+# 产物统一放在 build/：仓库根目录不再出现 .app，避免 Spotlight/Launchpad
+# 把构建产物当成第二份已安装应用收录。
+BUILD_DIR="$ROOT/build"
+APP="$BUILD_DIR/DevEco Code Desktop ($ARCH).app"
+
+mkdir -p "$BUILD_DIR"
+# 告诉 Spotlight 不要索引构建目录（否则 build/ 里的 .app 仍会出现在搜索结果里）。
+touch "$BUILD_DIR/.metadata_never_index"
+
+# 清掉旧版脚本遗留在仓库根目录的 .app（gitignore 已忽略，但会污染启动台）。
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
+for legacy in "$ROOT"/DevEco\ Code\ Desktop*.app(N); do
+    [ -x "$LSREGISTER" ] && "$LSREGISTER" -u "$legacy" >/dev/null 2>&1 || true
+    rm -rf "$legacy"
+done
 
 SIGN_ID="DevEco Code Desktop Dev"
 SIGN_DIR="$HOME/Library/Application Support/DevEcoCodeDesktop/signing"
@@ -61,5 +75,9 @@ else
     echo "warning: persistent signing identity unavailable; falling back to ad-hoc" >&2
     codesign --force --sign - "$APP"
 fi
+
+# 构建目录里的 .app 只是打包中间产物，不应出现在聚焦/启动台。LaunchServices
+# 会按 bundle id 收录它，必须在构建后立即注销；安装脚本会把正式副本重新登记。
+[ -x "$LSREGISTER" ] && "$LSREGISTER" -u "$APP" >/dev/null 2>&1 || true
 
 echo "Built $APP"

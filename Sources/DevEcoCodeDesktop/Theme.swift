@@ -9,7 +9,7 @@ enum Theme {
     static let sidebarFill = adaptive(light: 0xF9F9F9, dark: 0x1F1F1F)
     static let barFill = adaptive(light: 0xF4F4F4, dark: 0x242424)
     static let chromeFill = adaptive(light: 0xF7F7F7, dark: 0x222222)
-    static let composerFill = adaptive(light: 0xFFFFFF, dark: 0x2B2B2B)
+    static let composerFill = adaptive(light: 0xFFFFFF, dark: 0x343434)
     static let windowChromeNSColor = NSColor(name: nil) { appearance in
         appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
             ? NSColor(srgbRed: 36.0 / 255.0, green: 36.0 / 255.0, blue: 36.0 / 255.0, alpha: 1)

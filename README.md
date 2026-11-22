@@ -15,11 +15,13 @@ A native macOS GUI for the locally installed `deveco` CLI. The app manages a loc
 ## Build & Run
 
 ```bash
-./Scripts/make-dmg.sh      # build arm64 + Intel .app bundles and DMGs
-open "DevEco Code Desktop (arm64).app"   # or (x86_64).app on Intel
+./Scripts/install.sh       # build and atomically replace /Applications/DevEco Code Desktop.app
+./Scripts/make-dmg.sh      # build arm64 + Intel .app bundles and DMGs (build/)
 ```
 
 The build script signs with a persistent self-signed certificate (created once in `~/Library/Application Support/DevEcoCodeDesktop/signing`). A stable signing identity keeps TCC grants (folder access, etc.) across rebuilds; ad-hoc signing would reset them every build. If the identity is unavailable the script falls back to ad-hoc with a warning.
+
+`install.sh` is the only supported way to put the app on this machine: it builds into `build/`, replaces `/Applications/DevEco Code Desktop.app` in place, and removes leftover `*.backup-*.app` copies plus old in-repo bundles. It also unregisters every other LaunchServices entry for `com.local.deveco-codesktop` (build output, temp install dirs, unmounted DMGs) and fails unless exactly one registered path remains, so there is always exactly one installed copy and no duplicate Launchpad entries.
 
 ## Features
 
@@ -38,7 +40,7 @@ The build script signs with a persistent self-signed certificate (created once i
 - Markdown prose (headings, lists, quotes, inline formatting) and code blocks with language label, copy button, and lightweight syntax highlighting. Streaming renders parse/highlight only the changed bubble via caches.
 - **⌘F** search with highlight and match navigation; **Changes** panel with colorized unified diffs; agent todo panel; assistant messages show model name, token usage, and cost.
 - **Compact** compresses context; **Revert/unrevert** rolls back to before any message; export any session as Markdown.
-- Context meter in the composer shows tokens vs. the selected model's context window.
+- Token usage is shown by dimension instead of one ambiguous number: a warning strip appears only when the context window is ≥80% full, each reply shows generated tokens on hover, and the Work Panel's Context tab breaks down context window, last-turn request size, and session totals.
 
 **Models & providers**
 
@@ -100,7 +102,7 @@ git push origin v0.5.x    # pushes the tag → GitHub Actions builds & publishes
 swift test --disable-sandbox
 ```
 
-129 tests cover failure classification, queue hardening, session isolation, mention parsing, path filtering, image downscaling, and settings migrations.
+135 tests cover failure classification, queue hardening, session isolation, mention parsing, path filtering, image downscaling, and settings migrations.
 
 ## Localization
 
@@ -125,11 +127,13 @@ DevEco Code Desktop 是本机 `deveco` CLI 的原生 macOS 图形客户端。应
 ## 构建与运行
 
 ```bash
-./Scripts/make-dmg.sh      # 构建 arm64 与 Intel 的 .app 和 DMG
-open "DevEco Code Desktop (arm64).app"   # Intel Mac 使用 (x86_64).app
+./Scripts/install.sh       # 构建并原子覆盖安装到 /Applications/DevEco Code Desktop.app
+./Scripts/make-dmg.sh      # 构建 arm64 与 Intel 的 .app 和 DMG（输出到 build/）
 ```
 
 构建脚本使用持久自签名证书签名（首次自动创建于 `~/Library/Application Support/DevEcoCodeDesktop/signing`）。签名身份稳定可保留 macOS 已授予的权限（如文件夹访问）；ad-hoc 签名每次构建 CDHash 都会变化导致权限重置。找不到证书时自动回退 ad-hoc 并警告。
+
+本机安装只走 `install.sh`：它把产物构建到 `build/`，原子替换 `/Applications/DevEco Code Desktop.app`，并顺带清理遗留的 `*.backup-*.app` 与仓库内的旧 `.app`。脚本还会按 bundle id 注销 LaunchServices 里其余所有登记（构建产物、临时安装目录、已卸载 DMG），最后断言只剩 `/Applications` 一条，否则直接失败——因此系统里始终只有一份，启动台不会再出现重复图标。
 
 ## 功能
 
@@ -148,7 +152,7 @@ open "DevEco Code Desktop (arm64).app"   # Intel Mac 使用 (x86_64).app
 - Markdown 正文（标题/列表/引用/行内格式）与代码块（语言标签、复制按钮、轻量语法高亮）。流式期间经缓存只重新解析变化中的气泡。
 - **⌘F** 搜索（高亮 + 计数导航）；**变更**面板（着色 unified diff）；agent todo 面板；助手消息下方显示模型名、token 用量与费用。
 - **压缩**长上下文；**回退/撤销回退**到任意消息之前；导出任意会话为 Markdown。
-- 输入框左下角上下文占用表：tokens 与所选模型上下文窗口之比。
+- token 用量按维度展示，不再在输入框常驻一个含义模糊的数字：上下文窗口占用 ≥80% 时才出现告警条，单条回复悬停显示生成 token，工作台「上下文」页拆分上下文窗口、最近一轮请求体量与本次会话累计。
 
 **模型与供应商**
 
@@ -193,7 +197,7 @@ git push origin v0.5.x    # 推送标签 → GitHub Actions 自动构建并发�
 swift test --disable-sandbox
 ```
 
-129 项测试覆盖失败分类、队列加固、会话隔离、@ 解析、路径过滤、图片压缩与设置迁移。
+136 项测试覆盖失败分类、队列加固、会话隔离、@ 解析、路径过滤、图片压缩、token 口径与设置迁移。
 
 ## 本地化
 

@@ -10,13 +10,17 @@ private struct ModelGroup: Identifiable {
 
 struct ChatView: View {
     @Binding var workPanelOpen: Bool
+    @Binding var showSearch: Bool
+    @Binding var section: AppSection
 
     @EnvironmentObject var store: SessionStore
     @EnvironmentObject var providers: ProviderStore
     @EnvironmentObject var server: ServerManager
 
     /// Keep the conversation readable on wide displays; Codex-style centered column.
-    private let contentMaxWidth: CGFloat = 940
+    private let contentMaxWidth: CGFloat = 740
+    /// Stable scroll target for the inline failure card at the transcript tail.
+    private static let inlineErrorAnchor = "inline-error-anchor"
 
     @AppStorage(AppSettings.Keys.autoScroll)
     private var autoScroll = true
@@ -28,6 +32,10 @@ struct ChatView: View {
     /// False once the user scrolls away from the tail; pauses stream follow
     /// and reveals the "Back to latest" pill.
     @State private var isNearBottom = true
+    /// True when the transcript is shorter than the viewport. Auto-scroll is
+    /// pointless then, and `scrollTo(anchor: .bottom)` overscrolls such short
+    /// transcripts so the first message gets clipped under the top row.
+    @State private var transcriptFitsViewport = false
 
     /// The most recent tool part still running, for the sticky activity bar.
     private var runningTool: Part? {
@@ -52,10 +60,10 @@ struct ChatView: View {
     @State private var mentionResults: [FsEntry] = []
     @State private var mentionIndex = 0
     @State private var mentionDebounce: Task<Void, Never>?
-    @State private var showSearch = false
     @State private var searchQuery = ""
     @State private var searchMatchIndex = 0
     @State private var searchJumpTick = 0
+    @FocusState private var searchFocused: Bool
     @State private var dragHover = false
     @State private var showModelPicker = false
     @State private var modelQuery = ""
@@ -198,6 +206,21 @@ struct ChatView: View {
         }
     }
 
+    /// Composer "+" menu, mirroring Codex's attachment entry point. Files are
+    /// limited to the project directory because the server can only read paths
+    /// inside the workspace it was started for.
+    private func chooseAttachments() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.directoryURL = server.projectDirectory
+        panel.prompt = NSLocalizedString("Attach", comment: "composer attach button")
+        guard panel.runModal() == .OK else { return }
+        addPastedFiles(panel.urls)
+        focusTrigger += 1
+    }
+
     private func historyUp() {
         let history = AppSettings.promptHistory
         guard !history.isEmpty else { return }
@@ -238,6 +261,7 @@ struct ChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            chatTopBar
             if store.selectedSessionID == nil {
                 emptyState
             } else {
@@ -245,6 +269,54 @@ struct ChatView: View {
             }
         }
         .background(Theme.canvas)
+        // The split view re-applies the window's top inset per pane; opt out
+        // so this row shares the titlebar row instead of sitting 28pt lower.
+        .ignoresSafeArea(.container, edges: .top)
+        // Codex floats a compact find field over the transcript's top-right
+        // corner instead of inserting a full-width strip that squeezes it.
+        .overlay(alignment: .topTrailing) {
+            if showSearch, store.selectedSessionID != nil {
+                searchOverlay
+                    .padding(.top, 12)
+                    .padding(.trailing, 16)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .animation(.easeOut(duration: 0.14), value: showSearch)
+    }
+
+    /// The transcript's own top row. Codex keeps this seamless with the
+    /// canvas: the project path on the left, transcript actions on the right.
+    private var chatTopBar: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "folder")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+            Text(server.projectDirectory.path)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            if let branch = store.vcsBranch, !branch.isEmpty {
+                Text(branch)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.tertiary)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(Theme.chipFill)
+                    .clipShape(Capsule())
+            }
+            Spacer(minLength: 8)
+            if store.selectedSessionID != nil {
+                TranscriptToolbarActions(
+                    showSearch: $showSearch,
+                    workPanelOpen: $workPanelOpen
+                )
+            }
+            AppChromeControls()
+        }
+        .padding(.horizontal, 14)
+        .frame(height: 52)
     }
 
     /// Full-area empty state: opaque so the input underneath is clearly not
@@ -306,6 +378,89 @@ struct ChatView: View {
     private var projectName: String {
         let name = server.projectDirectory.lastPathComponent
         return name.isEmpty ? server.projectDirectory.path : name
+    }
+
+    /// Compact floating find field, anchored to the transcript's top-right.
+    private var searchOverlay: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+
+            TextField(NSLocalizedString("Search in conversation", comment: ""), text: $searchQuery)
+                .textFieldStyle(.plain)
+                .font(.system(size: 13))
+                .focused($searchFocused)
+                .onSubmit {
+                    // Enter = next match, Shift+Enter = previous.
+                    let backwards = NSApp.currentEvent?.modifierFlags.contains(.shift) ?? false
+                    jumpSearch(backwards ? -1 : 1)
+                }
+
+            if !searchQuery.isEmpty {
+                Text(searchMatchIndex < visibleMessages.count
+                     ? "\(searchMatchIndex + 1)/\(visibleMessages.count)"
+                     : "0/0")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                    .fixedSize()
+            }
+
+            Button { jumpSearch(-1) } label: {
+                Image(systemName: "chevron.up")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 18, height: 18)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(visibleMessages.isEmpty)
+            .help(NSLocalizedString("Previous match", comment: ""))
+
+            Button { jumpSearch(1) } label: {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 18, height: 18)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(visibleMessages.isEmpty)
+            .help(NSLocalizedString("Next match", comment: ""))
+
+            Button {
+                closeSearch()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 18, height: 18)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(NSLocalizedString("Close search", comment: ""))
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .frame(width: 336)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(Theme.softStroke)
+        )
+        .shadow(color: .black.opacity(0.16), radius: 10, y: 3)
+        .onExitCommand { closeSearch() }
+        .onAppear {
+            DispatchQueue.main.async { searchFocused = true }
+        }
+    }
+
+    private func closeSearch() {
+        showSearch = false
+        searchQuery = ""
+        searchMatchIndex = 0
+        searchFocused = false
     }
 
     private func useStarterPrompt(_ prompt: String) {
@@ -394,44 +549,39 @@ struct ChatView: View {
         .padding(.top, 64)
     }
 
-    /// "ctx 12.3k/200k · $0.50" — context usage (last assistant total tokens,
-    /// vs the selected model's limit) plus session cost, in the header.
-    /// The server reports the full next-call context size in `total`;
-    /// the uncached `input` field alone undercounts after long conversations.
-    private var contextUsage: (used: Double, limit: Double?)? {
+    /// Full request context of the last assistant turn versus the selected
+    /// model's limit. The same 20k context appears on every reply in a long
+    /// chat, so this drives a warning near the limit instead of a permanent
+    /// composer readout. Tapping the composer ring opens the breakdown popover.
+    private var contextUsage: (used: Double, limit: Double?, tokens: MessageTokens?)? {
         let effectiveModel = store.selectedModel
             ?? (store.serverDefaultModel.isEmpty ? nil : store.serverDefaultModel)
         let limit = providers.contextLimit(for: effectiveModel)
         let lastAssistant = store.messages.last(where: { $0.info.role == "assistant" })
-        let used: Double
+        let tokens: MessageTokens?
         if let context = lastAssistant?.info.tokens?.contextUsed, context > 0 {
-            used = context
+            tokens = lastAssistant?.info.tokens
         } else if let previous = store.messages.reversed().dropFirst(
             lastAssistant == nil ? 0 : 1
         ).first(where: { $0.info.role == "assistant" && ($0.info.tokens?.contextUsed ?? 0) > 0 }) {
-            used = previous.info.tokens?.contextUsed ?? 0
+            tokens = previous.info.tokens
         } else {
-            used = lastAssistant?.info.tokens?.contextUsed ?? 0
+            tokens = lastAssistant?.info.tokens
         }
+        let used = tokens?.contextUsed ?? 0
         guard limit != nil || used > 0 else { return nil }
-        return (used, limit)
+        return (used, limit, tokens)
     }
 
-    private func sessionUsage(_ session: Session) -> String? {
-        var pieces: [String] = []
-        if let usage = contextUsage {
-            var context = compactCount(usage.used)
-            if let limit = usage.limit, limit > 0 {
-                context += "/\(compactCount(limit))"
-                pieces.append("ctx \(context) · \(Int((min(usage.used / limit, 1) * 100).rounded()))%")
-            } else {
-                pieces.append("ctx \(context)")
-            }
-        }
-        if let cost = session.cost, cost > 0 {
-            pieces.append("$\(String(format: cost < 0.01 ? "%.4f" : "%.2f", cost))")
-        }
-        return pieces.isEmpty ? nil : pieces.joined(separator: " · ")
+    private var contextWarning: String? {
+        guard let usage = contextUsage,
+              let limit = usage.limit, limit > 0 else { return nil }
+        let ratio = min(max(usage.used / limit, 0), 1)
+        guard ratio >= 0.8 else { return nil }
+        return String(
+            format: NSLocalizedString("Context is %d%% full — compact the conversation to keep replies reliable.", comment: "context warning above composer"),
+            Int((ratio * 100).rounded())
+        )
     }
 
     /// Conversation filter for ⌘F search.
@@ -450,21 +600,6 @@ struct ChatView: View {
         guard !matches.isEmpty else { return }
         searchMatchIndex = (searchMatchIndex + direction + matches.count) % matches.count
         searchJumpTick += 1
-    }
-
-    /// Current match excerpt with the query highlighted, shown in the search bar.
-    private var searchSnippet: AttributedString? {
-        guard !searchQuery.isEmpty, searchMatchIndex < visibleMessages.count else { return nil }
-        let message = visibleMessages[searchMatchIndex]
-        let text = message.parts.compactMap { $0.text }.joined(separator: " · ")
-        guard let range = text.range(of: searchQuery, options: .caseInsensitive) else { return nil }
-        let lower = text.index(range.lowerBound, offsetBy: -40, limitedBy: text.startIndex) ?? text.startIndex
-        let upper = text.index(range.upperBound, offsetBy: 40, limitedBy: text.endIndex) ?? text.endIndex
-        var attributed = AttributedString(String(text[lower..<upper]))
-        if let hit = attributed.range(of: searchQuery, options: [.caseInsensitive, .diacriticInsensitive]) {
-            attributed[hit].backgroundColor = Color.yellow.opacity(0.45)
-        }
-        return attributed
     }
 
     /// The model the picker resolves to: the explicit pick, or the server's
@@ -530,71 +665,6 @@ struct ChatView: View {
         focusTrigger += 1
     }
 
-    private func adjustChatFont(by delta: Double) {
-        chatFontSize = min(
-            ChatTypography.maxFontSize,
-            max(ChatTypography.minFontSize, chatFontSize + delta)
-        )
-    }
-
-    private func headerButton(
-        _ systemImage: String,
-        help: String,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(.secondary)
-                .frame(width: 28, height: 28)
-                .contentShape(RoundedRectangle(cornerRadius: 6))
-        }
-        .buttonStyle(.plain)
-        .help(help)
-    }
-
-    private var chatFontMenu: some View {
-        Menu {
-            Button {
-                adjustChatFont(by: -1)
-            } label: {
-                Label(NSLocalizedString("Smaller text", comment: ""), systemImage: "textformat.size.smaller")
-            }
-            .disabled(chatFontSize <= ChatTypography.minFontSize)
-
-            Button {
-                adjustChatFont(by: 1)
-            } label: {
-                Label(NSLocalizedString("Larger text", comment: ""), systemImage: "textformat.size.larger")
-            }
-            .disabled(chatFontSize >= ChatTypography.maxFontSize)
-
-            Divider()
-            ForEach([13, 14, 15, 16, 17, 18, 20, 22, 24, 26, 28, 30], id: \.self) { size in
-                Button {
-                    chatFontSize = Double(size)
-                } label: {
-                    if Int(chatFontSize) == size {
-                        Label("\(size) pt", systemImage: "checkmark")
-                    } else {
-                        Text("\(size) pt")
-                    }
-                }
-            }
-        } label: {
-            HStack(spacing: 3) {
-                Text("Aa")
-                    .font(.system(size: 14, weight: .semibold))
-                Text("\(Int(chatFontSize))")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-        .help(NSLocalizedString("Chat text size", comment: ""))
-    }
-
     /// Composer model picker: a popover with type-to-filter (64+ models make
     /// a nested menu painful) and a "recent" section fed by explicit picks.
     private var composerModelMenu: some View {
@@ -602,10 +672,7 @@ struct ChatView: View {
             modelQuery = ""
             showModelPicker = true
         } label: {
-            HStack(spacing: 5) {
-                Circle()
-                    .fill(selectedModelProvider.map(providerColor) ?? Color.secondary)
-                    .frame(width: 6, height: 6)
+            HStack(spacing: 4) {
                 Text(selectedModelLabel)
                     .lineLimit(1)
                 if let provider = selectedModelProvider, !selectedModelLabel.contains("·") {
@@ -613,13 +680,11 @@ struct ChatView: View {
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
                 }
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.tertiary)
             }
-            .font(.system(size: ChatTypography.meta(chatFontSize) + 0.5, weight: .medium))
-            .foregroundStyle(.secondary)
+            .font(.system(size: ChatTypography.meta(chatFontSize), weight: .medium))
+            .foregroundStyle(.primary)
             .padding(.vertical, 3)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .fixedSize(horizontal: true, vertical: false)
@@ -782,23 +847,46 @@ struct ChatView: View {
                 }
             }
         } label: {
-            HStack(spacing: 4) {
-                Image(systemName: "slider.horizontal.3")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.tertiary)
-                Text(selectedEffortLabel)
-                    .lineLimit(1)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-            }
-            .font(.system(size: ChatTypography.meta(chatFontSize)))
-            .foregroundStyle(.tertiary)
-            .padding(.vertical, 3)
+            Text(selectedEffortLabel)
+                .lineLimit(1)
+                .font(.system(size: ChatTypography.meta(chatFontSize), weight: .medium))
+                .foregroundStyle(.primary)
+                .padding(.vertical, 3)
+                .contentShape(Rectangle())
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
         .help(NSLocalizedString("Reasoning effort for this model", comment: ""))
+    }
+
+    /// Access mode sits on the composer's left, next to "+", like Codex.
+    /// It writes real session permission rules, so the label always reflects
+    /// what the server will actually do with the next tool call.
+    private var composerAccessMenu: some View {
+        Menu {
+            ForEach(SessionAccessMode.allCases) { mode in
+                Button {
+                    Task { await store.setAccessMode(mode) }
+                } label: {
+                    if store.accessMode == mode {
+                        Label(mode.label, systemImage: "checkmark")
+                    } else {
+                        Text(mode.label)
+                    }
+                }
+            }
+        } label: {
+            Text(store.accessMode.shortLabel)
+                .lineLimit(1)
+                .font(.system(size: ChatTypography.meta(chatFontSize)))
+                .foregroundStyle(store.accessMode == .allowAll ? Color.orange : Color.secondary)
+                .padding(.vertical, 3)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .disabled(store.selectedSessionID == nil)
+        .help(store.accessMode.help)
     }
 
     private var composerSendButton: some View {
@@ -812,27 +900,22 @@ struct ChatView: View {
             Image(systemName: store.isSending ? "stop.fill" : "arrow.up")
                 .font(.system(size: 12, weight: .bold))
                 .foregroundStyle(
-                    store.isSending || canSend
-                        ? Color(nsColor: .textBackgroundColor)
-                        : Color.secondary.opacity(0.75)
+                    store.isSending
+                        ? Color.white
+                        : Color(nsColor: .textBackgroundColor)
                 )
                 .frame(width: 28, height: 28)
                 .background(
                     Circle().fill(
                         store.isSending
-                            ? Color.red.opacity(0.85)
-                            : (canSend ? Color.primary : Color.secondary.opacity(0.12))
-                    )
-                )
-                .overlay(
-                    Circle().stroke(
-                        store.isSending || canSend ? Color.clear : Theme.softStroke,
-                        lineWidth: 1
+                            ? Color.red.opacity(0.9)
+                            : Color.primary.opacity(canSend ? 1 : 0.32)
                     )
                 )
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
+        .padding(.leading, 8)
         .keyboardShortcut(.return, modifiers: .command)
         .disabled(!canSend && !store.isSending)
         .help(store.isSending
@@ -860,63 +943,20 @@ struct ChatView: View {
         .background(.regularMaterial, in: Capsule())
         .overlay(Capsule().stroke(Theme.softStroke))
         .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
-        .padding(.bottom, 14)
+        .padding(.bottom, 14 + queuedPromptsInset)
         .help(NSLocalizedString("Back to latest", comment: ""))
+    }
+
+    /// The queue strip sits between the transcript and the composer, outside
+    /// the ScrollView. Lift the floating pill by the strip's height so the two
+    /// never overlap.
+    private var queuedPromptsInset: CGFloat {
+        guard !store.queuedPrompts.isEmpty else { return 0 }
+        return CGFloat(store.queuedPrompts.count) * 34 + 8
     }
 
     private var sessionArea: some View {
         VStack(spacing: 0) {
-            if let session = store.selectedSession {
-                HStack(spacing: 7) {
-                    if let usage = sessionUsage(session) {
-                        Text(usage)
-                            .font(.system(size: ChatTypography.micro(chatFontSize)))
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(1)
-                    }
-                    Spacer()
-                    chatFontMenu
-                    headerButton(
-                        "magnifyingglass",
-                        help: NSLocalizedString("Search in conversation (⌘F)", comment: "")
-                    ) {
-                        showSearch.toggle()
-                        if !showSearch { searchQuery = "" }
-                    }
-                    .keyboardShortcut("f", modifiers: .command)
-                    headerButton(
-                        "rectangle.split.2x1",
-                        help: NSLocalizedString("Review file changes", comment: "")
-                    ) {
-                        workPanelOpen = true
-                        store.workPanelTab = .review
-                        if let id = store.selectedSessionID {
-                            store.workPanelOpenBySession[id] = true
-                        }
-                        Task { await store.loadDiff() }
-                    }
-                    headerButton(
-                        "arrow.down.right.and.arrow.up.left",
-                        help: store.isCompacting
-                            ? NSLocalizedString("Compacting…", comment: "")
-                            : NSLocalizedString("Compact conversation", comment: "")
-                    ) {
-                        Task { await store.compact() }
-                    }
-                    .disabled(store.isCompacting || store.isSending)
-                }
-                .padding(.horizontal, 22)
-                .padding(.vertical, 4)
-                .frame(height: 38)
-                .frame(maxWidth: contentMaxWidth)
-                .frame(maxWidth: .infinity)
-                .overlay(alignment: .bottom) {
-                    Rectangle()
-                        .fill(Theme.hairline)
-                        .frame(height: 1)
-                }
-            }
-
             if store.needsConsent {
                 ConsentCard(
                     agreement: store.productAgreement,
@@ -931,7 +971,10 @@ struct ChatView: View {
             if !store.pendingPermissions.isEmpty || !store.pendingQuestions.isEmpty {
                 VStack(spacing: 8) {
                     if let request = store.pendingPermissions.first(where: { $0.sessionID == store.selectedSessionID }) {
-                        PermissionCardView(request: request, pendingCount: store.pendingPermissions.count)
+                        let pendingCount = store.pendingPermissions.filter {
+                            $0.sessionID == store.selectedSessionID
+                        }.count
+                        PermissionCardView(request: request, pendingCount: pendingCount)
                     }
                     if let request = store.pendingQuestions.first(where: { $0.sessionID == store.selectedSessionID }) {
                         QuestionBanner(request: request)
@@ -939,12 +982,6 @@ struct ChatView: View {
                 }
                 .padding(.horizontal, 22)
                 .padding(.top, 6)
-            } else if let error = store.inlineError, error.sessionID == store.selectedSessionID {
-                InlineErrorBubble(error: error) {
-                    store.retryLastPrompt()
-                }
-                .padding(.horizontal, 22)
-                .padding(.top, 8)
             }
 
             if !store.todos.isEmpty {
@@ -967,51 +1004,6 @@ struct ChatView: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
                 .background(Theme.bannerWarning)
-                Divider()
-            }
-
-                if showSearch {
-                HStack(spacing: 6) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    TextField("Search in conversation", text: $searchQuery)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 14))
-                        .onSubmit {
-                            // Enter = next match, Shift+Enter = previous.
-                            let backwards = NSApp.currentEvent?.modifierFlags.contains(.shift) ?? false
-                            jumpSearch(backwards ? -1 : 1)
-                        }
-                    if searchMatchIndex < visibleMessages.count, let snippet = searchSnippet {
-                        Text("\(searchMatchIndex + 1)/\(visibleMessages.count)")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
-                        Text(snippet)
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    } else if !searchQuery.isEmpty {
-                        Text("\(visibleMessages.count) matches")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                    }
-                    Button {
-                        showSearch = false
-                        searchQuery = ""
-                        searchMatchIndex = 0
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(Theme.chromeFill)
                 Divider()
             }
 
@@ -1046,7 +1038,7 @@ struct ChatView: View {
                         } else if store.messages.isEmpty && searchQuery.isEmpty {
                             newConversationState
                         } else {
-                            LazyVStack(alignment: .leading, spacing: 26) {
+                            LazyVStack(alignment: .leading, spacing: 34) {
                                 ForEach(visibleMessages) { message in
                                     MessageBubble(
                                         message: message,
@@ -1061,6 +1053,18 @@ struct ChatView: View {
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
+                                // Failures belong to the turn that failed, so
+                                // they render at the tail of the transcript
+                                // (Codex-style) instead of a full-width strip.
+                                if let error = store.inlineError,
+                                   error.sessionID == store.selectedSessionID,
+                                   searchQuery.isEmpty {
+                                    InlineErrorBubble(error: error) {
+                                        store.retryLastPrompt()
+                                    }
+                                    .id(Self.inlineErrorAnchor)
+                                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                                }
                             }
                             .animation(.easeOut(duration: 0.18), value: store.messages.count)
                         }
@@ -1068,10 +1072,11 @@ struct ChatView: View {
                     .padding(.horizontal, 24)
                     .padding(.top, 18)
                     .padding(.bottom, 26)
-                    .frame(maxWidth: contentMaxWidth, alignment: .leading)
+                    .frame(maxWidth: contentMaxWidth)
                     .frame(maxWidth: .infinity)
-                    .background(ScrollTracker { near in
+                    .background(ScrollTracker { near, fits in
                         isNearBottom = near
+                        transcriptFitsViewport = fits
                     })
                 }
                 .coordinateSpace(name: "chatScroll")
@@ -1083,12 +1088,21 @@ struct ChatView: View {
                 }
                 .animation(.easeInOut(duration: 0.15), value: isNearBottom)
                 .onChange(of: store.streamTick) { _ in
-                    guard isNearBottom, autoScroll, searchQuery.isEmpty, let last = store.messages.last?.id else { return }
+                    guard isNearBottom, !transcriptFitsViewport, autoScroll,
+                          searchQuery.isEmpty, let last = store.messages.last?.id else { return }
                     proxy.scrollTo(last, anchor: .bottom)
                 }
                 .onChange(of: store.messages.count) { _ in
-                    guard isNearBottom, autoScroll, searchQuery.isEmpty, let last = store.messages.last?.id else { return }
+                    guard isNearBottom, !transcriptFitsViewport, autoScroll,
+                          searchQuery.isEmpty, let last = store.messages.last?.id else { return }
                     proxy.scrollTo(last, anchor: .bottom)
+                }
+                .onChange(of: store.inlineError?.id) { errorID in
+                    guard errorID != nil, searchQuery.isEmpty else { return }
+                    isNearBottom = true
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        proxy.scrollTo(Self.inlineErrorAnchor, anchor: .bottom)
+                    }
                 }
                 .onChange(of: searchQuery) { query in
                     // Jump to the first matching message when searching.
@@ -1106,83 +1120,99 @@ struct ChatView: View {
             }
 
             if !store.queuedPrompts.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 6) {
                     ForEach(store.queuedPrompts) { queued in
-                        HStack(spacing: 6) {
+                        HStack(spacing: 8) {
                             Image(systemName: "clock")
-                                .font(.system(size: 12))
+                                .font(.system(size: 11))
                                 .foregroundStyle(.secondary)
                             Text(queued.text)
-                                .font(.system(size: 14))
+                                .font(.system(size: 12.5))
+                                .foregroundStyle(.secondary)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                             if !queued.attachments.isEmpty {
                                 Label("\(queued.attachments.count)", systemImage: "paperclip")
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(.secondary)
+                                    .font(.system(size: 10.5))
+                                    .foregroundStyle(.tertiary)
                                     .help(NSLocalizedString("Queued attachments", comment: ""))
                             }
-                            Spacer(minLength: 8)
-                            Button {
-                                store.editQueued(queued)
-                                focusTrigger += 1
-                            } label: {
-                                Image(systemName: "pencil")
-                                    .font(.system(size: 12))
-                                    .foregroundStyle(.secondary)
-                            }
-                            .buttonStyle(.plain)
-                            .help(NSLocalizedString("Edit queued prompt", comment: ""))
-                            Button {
-                                Task { await store.sendQueuedNow(queued) }
-                            } label: {
-                                Image(systemName: "paperplane.fill")
-                                    .font(.system(size: 12))
-                                    .foregroundStyle(.secondary)
-                            }
-                            .buttonStyle(.plain)
-                            .help(NSLocalizedString("Send now — stops the current generation", comment: ""))
-                            Button {
-                                store.removeQueued(queued)
-                            } label: {
-                                Image(systemName: "xmark.circle.fill")
-                                    .font(.system(size: 12))
-                                    .foregroundStyle(.secondary)
-                            }
-                            .buttonStyle(.plain)
-                            .help(NSLocalizedString("Remove queued prompt", comment: ""))
-                        }
-                        // Reorder controls work on every supported macOS
-                        // version; SwiftUI drag/drop requires macOS 13.
-                        HStack(spacing: 4) {
+                            Spacer(minLength: 6)
+                            // Reorder inline: a second control row used to make
+                            // every queued prompt two lines tall.
                             Button {
                                 guard let index = store.queuedPrompts.firstIndex(where: { $0.id == queued.id }),
                                       index > 0 else { return }
                                 store.moveQueued(queued.id, before: store.queuedPrompts[index - 1].id)
                             } label: {
                                 Image(systemName: "chevron.up")
+                                    .font(.system(size: 9, weight: .semibold))
                             }
                             .buttonStyle(.plain)
+                            .foregroundStyle(.tertiary)
                             .disabled(store.queuedPrompts.first?.id == queued.id)
                             Button {
                                 guard let index = store.queuedPrompts.firstIndex(where: { $0.id == queued.id }),
                                       index + 1 < store.queuedPrompts.count else { return }
-                                let target = store.queuedPrompts[index + 2 < store.queuedPrompts.count ? index + 2 : index + 1]
-                                store.moveQueued(queued.id, before: target.id)
+                                // moveQueued inserts *before* the target, so
+                                // skip one further to actually move down.
+                                let targetIndex = index + 2
+                                if targetIndex < store.queuedPrompts.count {
+                                    store.moveQueued(queued.id, before: store.queuedPrompts[targetIndex].id)
+                                } else {
+                                    store.moveQueued(queued.id, before: store.queuedPrompts[index + 1].id)
+                                }
                             } label: {
                                 Image(systemName: "chevron.down")
+                                    .font(.system(size: 9, weight: .semibold))
                             }
                             .buttonStyle(.plain)
+                            .foregroundStyle(.tertiary)
                             .disabled(store.queuedPrompts.last?.id == queued.id)
+                            Button {
+                                store.editQueued(queued)
+                                focusTrigger += 1
+                            } label: {
+                                Image(systemName: "pencil")
+                                    .font(.system(size: 11))
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.tertiary)
+                            .help(NSLocalizedString("Edit queued prompt", comment: ""))
+                            Button {
+                                Task { await store.sendQueuedNow(queued) }
+                            } label: {
+                                Image(systemName: "paperplane.fill")
+                                    .font(.system(size: 11))
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.tertiary)
+                            .help(NSLocalizedString("Send now — stops the current generation", comment: ""))
+                            Button {
+                                store.removeQueued(queued)
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(.system(size: 11))
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.tertiary)
+                            .help(NSLocalizedString("Remove queued prompt", comment: ""))
                         }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(Theme.subtleFill, in: RoundedRectangle(cornerRadius: 8))
                     }
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 6)
-                .background(Theme.subtleFill)
+                .padding(.horizontal, 22)
+                .padding(.top, 4)
+                .padding(.bottom, 2)
+                .frame(maxWidth: contentMaxWidth, alignment: .leading)
+                // Keep the strip at its natural height: without this the
+                // flexible ScrollView above squeezes it and the composer
+                // clips the row in half.
+                .fixedSize(horizontal: false, vertical: true)
+                .layoutPriority(1)
             }
-
-            Divider()
 
             VStack(spacing: 8) {
                 if mentionToken != nil {
@@ -1197,6 +1227,29 @@ struct ChatView: View {
                     CommandPaletteView(commands: commandMatches, selectedIndex: paletteIndex) { command in
                         applyCompletion(command)
                     }
+                }
+                if let warning = contextWarning {
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 11))
+                        Text(warning)
+                            .font(.system(size: 12))
+                        Spacer(minLength: 0)
+                        Button(NSLocalizedString("Compact", comment: "compact conversation button")) {
+                            Task { await store.compact() }
+                        }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Color.accentColor)
+                        .disabled(store.isCompacting || store.isSending)
+                    }
+                    .foregroundStyle(.orange)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .frame(maxWidth: contentMaxWidth)
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 24)
                 }
                 VStack(spacing: 0) {
                     if !store.attachments.isEmpty {
@@ -1260,11 +1313,26 @@ struct ChatView: View {
                               })
                         .frame(height: inputHeight)
                         .padding(.horizontal, 12)
-                        .padding(.top, 9)
+                        .padding(.top, 7)
 
                     HStack(spacing: 8) {
+                        Button {
+                            chooseAttachments()
+                        } label: {
+                            Image(systemName: "plus")
+                                .font(.system(size: 16, weight: .regular))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 24, height: 24)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(store.selectedSessionID == nil)
+                        .help(NSLocalizedString("Attach files from the project", comment: ""))
+
+                        composerAccessMenu
+
                         if let usage = contextUsage {
-                            ContextMeter(used: usage.used, limit: usage.limit)
+                            ContextMeter(used: usage.used, limit: usage.limit, tokens: usage.tokens)
                         }
                         Spacer(minLength: 8)
                         composerModelMenu
@@ -1273,14 +1341,15 @@ struct ChatView: View {
                         }
                         composerSendButton
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.top, 2)
-                    .padding(.bottom, 4)
+                    .padding(.leading, 12)
+                    .padding(.trailing, 9)
+                    .padding(.top, 1)
+                    .padding(.bottom, 8)
                 }
                 .background(Theme.composerFill)
-                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    RoundedRectangle(cornerRadius: 22, style: .continuous)
                         .stroke(dragHover ? Color.accentColor : Theme.softStroke, lineWidth: dragHover ? 2 : 1)
                 )
                 .shadow(color: .black.opacity(0.10), radius: 14, y: 5)
@@ -1310,6 +1379,15 @@ struct ChatView: View {
             showSearch = false
             focusTrigger += 1
         }
+        .onChange(of: showSearch) { isOpen in
+            if !isOpen {
+                searchQuery = ""
+                searchMatchIndex = 0
+                searchFocused = false
+            } else {
+                DispatchQueue.main.async { searchFocused = true }
+            }
+        }
     }
 }
 
@@ -1319,7 +1397,8 @@ struct ChatView: View {
 /// view's bounds changes directly — reliable even with a lazy stack whose
 /// tail views are virtualized away.
 private struct ScrollTracker: NSViewRepresentable {
-    var onNearBottom: (Bool) -> Void
+    /// (nearBottom, contentFitsViewport)
+    var onNearBottom: (Bool, Bool) -> Void
 
     func makeNSView(context: Context) -> TrackerView {
         let view = TrackerView()
@@ -1333,9 +1412,14 @@ private struct ScrollTracker: NSViewRepresentable {
     }
 
     final class TrackerView: NSView {
-        var onNearBottom: ((Bool) -> Void)?
+        var onNearBottom: ((Bool, Bool) -> Void)?
         private var observers: [NSObjectProtocol] = []
         private static let threshold: CGFloat = 80
+        private var lastContentHeight: CGFloat = 0
+        /// Whether the transcript was pinned to the tail before the current
+        /// layout pass. Content growth (streamed text, a footer that appears
+        /// after usage lands) must not be mistaken for the user scrolling up.
+        private var wasNearBottom = true
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
@@ -1361,7 +1445,28 @@ private struct ScrollTracker: NSViewRepresentable {
                   let onNearBottom else { return }
             let clip = scroll.contentView.bounds
             let distance = document.bounds.height - clip.origin.y - clip.height
-            onNearBottom(distance <= Self.threshold || document.bounds.height <= clip.height)
+            let fits = document.bounds.height <= clip.height + 1
+            let grew = document.bounds.height > lastContentHeight + 0.5
+            lastContentHeight = document.bounds.height
+            var near = distance <= Self.threshold || fits
+            // Keep following the tail while the transcript grows. Without this
+            // the final footer (rendered a beat after the last delta) pushes
+            // the content down and leaves the reply clipped by the composer.
+            if grew, wasNearBottom, !fits, NSEvent.pressedMouseButtons == 0 {
+                let target = max(0, document.bounds.height - clip.height)
+                scroll.contentView.scroll(to: NSPoint(x: clip.origin.x, y: target))
+                scroll.reflectScrolledClipView(scroll.contentView)
+                near = true
+            }
+            // A previous `scrollTo(bottom:)` can leave a short transcript
+            // parked a few points above its natural top, which eats the top
+            // padding. With nothing to scroll, the only valid offset is zero.
+            if fits, clip.origin.y != 0 {
+                scroll.contentView.scroll(to: .zero)
+                scroll.reflectScrolledClipView(scroll.contentView)
+            }
+            wasNearBottom = near
+            onNearBottom(near, fits)
         }
 
         deinit {
@@ -1525,7 +1630,7 @@ private struct ChatInput: NSViewRepresentable {
     func makeNSView(context: Context) -> NSScrollView {
         let coordinator = context.coordinator
         let textView = ChatTextView.make(
-            frame: NSRect(x: 0, y: 0, width: 480, height: 44)
+            frame: NSRect(x: 0, y: 0, width: 480, height: 52)
         )
         textView.string = text
         coordinator.lastSyncedToken = draftToken
@@ -1542,7 +1647,7 @@ private struct ChatInput: NSViewRepresentable {
             width: 480,
             height: CGFloat.greatestFiniteMagnitude
         )
-        textView.minSize = NSSize(width: 0, height: 44)
+        textView.minSize = NSSize(width: 0, height: 52)
         textView.maxSize = NSSize(
             width: CGFloat.greatestFiniteMagnitude,
             height: CGFloat.greatestFiniteMagnitude
@@ -1721,7 +1826,7 @@ private final class ChatTextView: NSTextView {
         guard let onContentHeight, let layoutManager else { return }
         let used = layoutManager.usedRect(for: textContainer!).height
         let total = used + textContainerInset.height * 2 + 6
-        let height = max(44, min(160, ceil(total)))
+        let height = max(52, min(160, ceil(total)))
         if abs(frame.height - height) > 0.5 {
             var next = frame
             next.size.height = height
@@ -1868,6 +1973,51 @@ private struct MessageBubble: View {
         ChatTypography.micro(chatFontSize)
     }
 
+    /// Persistent tail metadata. Token counts must not depend on hover (or on
+    /// the server reporting a model id), otherwise a finished reply can look
+    /// like it produced no usage at all.
+    private var assistantFooterMetadata: String? {
+        let info = message.info
+        var pieces: [String] = []
+
+        if let modelID = info.modelID {
+            let identifier = [info.providerID, info.modelID].compactMap { $0 }.joined(separator: "/")
+            let modelName = providers.modelDisplayName(for: identifier, fuzzyModel: modelID)
+                .map(prettyModelName)
+                ?? modelID
+            pieces.append(modelName)
+        }
+
+        if let tokens = info.tokens {
+            // Harness semantics: input = uncached input of this request,
+            // cache.read = context served from cache, output/reasoning =
+            // tokens generated for this reply.
+            let generated = (tokens.output ?? 0) + (tokens.reasoning ?? 0)
+            if generated > 0 {
+                pieces.append(String(format: NSLocalizedString("Output %@", comment: "per-message tokens"), compactTokenCount(generated)))
+            }
+            if let input = tokens.input, input > 0 {
+                pieces.append(String(format: NSLocalizedString("Input %@", comment: "per-message uncached tokens"), compactTokenCount(input)))
+            }
+            if let cached = tokens.cache?.read, cached > 0 {
+                pieces.append(String(format: NSLocalizedString("Cached %@", comment: "per-message cache hits"), compactTokenCount(cached)))
+            }
+        }
+
+        if let variant = info.variant {
+            let label = Self.effortLabelShared(variant)
+            if label != "default" {
+                pieces.append(String(format: NSLocalizedString("Effort: %@", comment: ""), label))
+            }
+        }
+        if let cost = info.cost, cost > 0 {
+            pieces.append("$\(String(format: cost < 0.01 ? "%.4f" : "%.2f", cost))")
+        }
+
+        guard !pieces.isEmpty else { return nil }
+        return pieces.joined(separator: " · ")
+    }
+
     var body: some View {
         Group {
             if isUser {
@@ -1875,12 +2025,6 @@ private struct MessageBubble: View {
             } else {
                 assistantMessage
             }
-        }
-        .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
-        .animation(.easeInOut(duration: 0.12), value: hovered)
-        .onHover { hovered = $0 }
-        .overlay(alignment: .bottomTrailing) {
-            trailingActionBar
         }
         .contextMenu {
             if isUser {
@@ -1903,41 +2047,39 @@ private struct MessageBubble: View {
     private var userMessage: some View {
         HStack(alignment: .top, spacing: 8) {
             Spacer(minLength: 80)
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach(message.parts) { part in
-                    PartView(
-                        part: part,
-                        useMarkdown: false,
-                        isStreaming: isStreamingThis,
-                        searchQuery: searchQuery
-                    )
+            VStack(alignment: .trailing, spacing: 6) {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(message.parts) { part in
+                        PartView(
+                            part: part,
+                            useMarkdown: false,
+                            isStreaming: isStreamingThis,
+                            searchQuery: searchQuery
+                        )
+                    }
+                }
+                .font(.system(size: ChatTypography.body(chatFontSize)))
+                .lineSpacing(ChatTypography.lineSpacing(chatFontSize))
+                .padding(.horizontal, 14)
+                .padding(.vertical, 9)
+                .background(Theme.userBubble, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                // Only reserve space while actually hovered: an invisible
+                // action strip used to add ~30pt of dead air under every
+                // bubble, which read as oversized message spacing.
+                if hovered && !isStreamingThis {
+                    HStack {
+                        Spacer(minLength: 0)
+                        hoverActionBar
+                    }
+                    .transition(.opacity)
                 }
             }
-            .font(.system(size: ChatTypography.body(chatFontSize)))
-            .lineSpacing(ChatTypography.lineSpacing(chatFontSize))
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(Theme.userBubble, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(Theme.userBubbleStroke)
-            )
+            .onHover { hovered = $0 }
         }
     }
 
     private var assistantMessage: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if let elapsed = message.info.elapsedDuration {
-                HStack(spacing: 5) {
-                    Image(systemName: "clock")
-                        .font(.system(size: microSize, weight: .medium))
-                    Text(String(format: NSLocalizedString("Took %@", comment: "assistant response duration"), elapsed))
-                        .font(.system(size: microSize, weight: .medium))
-                }
-                .foregroundStyle(.tertiary)
-                .padding(.bottom, 1)
-            }
-
             ForEach(message.parts) { part in
                 PartView(
                     part: part,
@@ -1947,30 +2089,32 @@ private struct MessageBubble: View {
                 )
             }
 
-            if let metadata = assistantMetadata {
-                Text(metadata)
-                    .font(.system(size: microSize))
-                    .foregroundStyle(.tertiary)
-                    .textSelection(.enabled)
-                    .padding(.top, 1)
+            HStack(spacing: 6) {
+                if let elapsed = message.info.elapsedDuration {
+                    Text(elapsed)
+                        .font(.system(size: microSize))
+                        .foregroundStyle(.tertiary)
+                        .monospacedDigit()
+                }
+                if let metadata = assistantFooterMetadata {
+                    Text(metadata)
+                        .font(.system(size: microSize))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                if hovered {
+                    Spacer(minLength: 0)
+                    hoverActionBar
+                        .transition(.opacity)
+                }
             }
+            .animation(.easeInOut(duration: 0.12), value: hovered)
         }
         .font(.system(size: ChatTypography.body(chatFontSize)))
         .lineSpacing(ChatTypography.lineSpacing(chatFontSize))
         .padding(.vertical, 3)
-    }
-
-    /// Codex keeps transcript actions below the message, right-aligned, so
-    /// they never float over text or obscure the send button.
-    @ViewBuilder
-    private var trailingActionBar: some View {
-        if hovered && !isStreamingThis {
-            HStack {
-                Spacer(minLength: 0)
-                hoverActionBar
-            }
-            .transition(.opacity)
-        }
+        .onHover { hovered = $0 }
     }
 
     /// Hover action strip: copy, edit & resend (user messages), revert.
@@ -1986,7 +2130,7 @@ private struct MessageBubble: View {
                 }
             } else {
                 if copied {
-                    Label("已复制", systemImage: "checkmark.circle.fill")
+                    Label(NSLocalizedString("Copied", comment: ""), systemImage: "checkmark.circle.fill")
                         .font(.system(size: ChatTypography.micro(chatFontSize), weight: .medium))
                         .foregroundStyle(.green)
                 } else {
@@ -2061,45 +2205,6 @@ private struct MessageBubble: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
             copied = false
         }
-    }
-
-    /// Compact usage line under an assistant turn. Duration is shown above
-    /// the response, matching Codex's reading flow.
-    private var assistantMetadata: String? {
-        let info = message.info
-        var pieces: [String] = []
-        if let model = info.modelID {
-            let identifier = [info.providerID, info.modelID].compactMap { $0 }.joined(separator: "/")
-            if let name = providers.modelDisplayName(for: identifier, fuzzyModel: model) {
-                pieces.append(prettyModelName(name))
-            }
-        }
-        if let variant = info.variant {
-            let label = Self.effortLabelShared(variant)
-            if label != "default" {
-                pieces.append(String(format: NSLocalizedString("Effort: %@", comment: ""), label))
-            }
-        }
-        if let tokens = info.tokens {
-            // Harness semantics: input = uncached input of this request,
-            // cache.read = context served from cache, output/reasoning =
-            // tokens generated for this reply.
-            let generated = (tokens.output ?? 0) + (tokens.reasoning ?? 0)
-            if generated > 0 {
-                pieces.append(String(format: NSLocalizedString("Output %@", comment: "per-message tokens"), compactCount(generated)))
-            }
-            if let input = tokens.input, input > 0 {
-                pieces.append(String(format: NSLocalizedString("Input %@", comment: "per-message uncached tokens"), compactCount(input)))
-            }
-            if let cached = tokens.cache?.read, cached > 0 {
-                pieces.append(String(format: NSLocalizedString("Cached %@", comment: "per-message cache hits"), compactCount(cached)))
-            }
-        }
-        if let cost = info.cost, cost > 0 {
-            pieces.append("$\(String(format: cost < 0.01 ? "%.4f" : "%.2f", cost))")
-        }
-        guard !pieces.isEmpty else { return nil }
-        return pieces.joined(separator: " · ")
     }
 
 }
@@ -2191,9 +2296,7 @@ private struct StreamingTextView: View {
     }
 
     private var content: String {
-        guard isTypewriterActive else {
-            return split.hasLiveTail ? split.liveTail : ""
-        }
+        guard isTypewriterActive else { return split.liveTail }
         guard !split.hasLiveTail else { return "▍" }
         return split.liveTail + "▍"
     }
@@ -2227,7 +2330,6 @@ private final class StreamingReveal: ObservableObject {
     @Published private(set) var text = ""
 
     private var target = ""
-    private var streaming = false
     private var displayedUnits = 0
     private var lastTick = Date.distantPast
     /// Set only when the bubble has actually been in a live streaming state.
@@ -2251,7 +2353,6 @@ private final class StreamingReveal: ObservableObject {
             text = ""
         }
         target = newTarget
-        streaming = newStreaming
         guard activated else { return }
         if newStreaming && displayedUnits == 0 && !newTarget.isEmpty {
             displayedUnits = min(6, newTarget.count)
@@ -2267,6 +2368,9 @@ private final class StreamingReveal: ObservableObject {
 
     private func ensureTicking() {
         guard displayedUnits < target.count else {
+            // Caught up with the transcript. Never rewind: a partial reveal
+            // that shrinks while the server is still appending makes the tail
+            // flicker (and can strand a lone caret glyph on its own line).
             text = target
             return
         }
@@ -2308,12 +2412,18 @@ private struct PartView: View {
     var body: some View {
         switch part.type {
         case "text":
-            StreamingTextView(
-                target: part.text ?? "",
-                useMarkdown: useMarkdown,
-                isStreaming: isStreaming,
-                searchQuery: searchQuery
-            )
+            let text = part.text ?? ""
+            let visibleText = removingSystemNoticeLines(text)
+            if visibleText.isEmpty {
+                EmptyView()
+            } else {
+                StreamingTextView(
+                    target: visibleText,
+                    useMarkdown: useMarkdown,
+                    isStreaming: isStreaming,
+                    searchQuery: searchQuery
+                )
+            }
         case "reasoning":
             DisclosureGroup(isExpanded: $thinkingExpanded) {
                 Text(part.text ?? "")
@@ -2323,13 +2433,11 @@ private struct PartView: View {
                     .textSelection(.enabled)
                     .padding(.top, 2)
             } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "sparkles")
-                        .font(.system(size: ChatTypography.meta(chatFontSize) - 1))
-                    Text(NSLocalizedString("Thinking", comment: ""))
-                        .font(.system(size: ChatTypography.meta(chatFontSize), weight: .medium))
-                }
-                .foregroundStyle(.secondary)
+                // DisclosureGroup draws its own chevron; adding one here
+                // rendered a doubled arrow.
+                Text(NSLocalizedString("Thinking", comment: ""))
+                    .font(.system(size: ChatTypography.micro(chatFontSize), weight: .medium))
+                    .foregroundStyle(.quaternary)
             }
         case "tool":
             ToolCardView(part: part)
@@ -2374,12 +2482,6 @@ func highlightedAttributedString(_ text: String, query: String) -> AttributedStr
     }
     result += AttributedString(String(text[cursor...]))
     return result
-}
-
-fileprivate func compactCount(_ value: Double) -> String {
-    if value >= 1_000_000 { return String(format: "%.1fM", value / 1_000_000) }
-    if value >= 1_000 { return String(format: "%.1fk", value / 1_000) }
-    return String(Int(value))
 }
 
 enum MarkdownSegment: Equatable {
@@ -2465,7 +2567,42 @@ enum MarkdownProseBlock: Equatable {
     case bullet(String)
     case numbered(number: Int, text: String)
     case quote(String)
+    case systemNotice(String)
     case divider
+}
+
+/// A narrow set of model-generated bookkeeping lines. They are not user prose
+/// and should not inherit the answer's body typography. Keep this conservative:
+/// unknown lines stay normal paragraphs.
+private func isSystemNoticeLine(_ text: String) -> Bool {
+    let lowered = text.lowercased()
+    let markers = [
+        "recalled ",
+        "remembered ",
+        "loaded skill ",
+        "using skill ",
+        "reading ",
+        "searching ",
+        "fetched ",
+    ]
+    guard markers.contains(where: { lowered.contains($0) }) else { return false }
+    return lowered.contains("(") && lowered.contains(")")
+}
+
+/// Drops bookkeeping lines such as "💡 Recalled … (project)" while keeping
+/// the real answer that follows them in the same text part.
+func removingSystemNoticeLines(_ text: String) -> String {
+    text
+        .split(separator: "\n", omittingEmptySubsequences: false)
+        .filter { !isSystemNoticeLine(String($0.trimmingCharacters(in: .whitespaces))) }
+        .joined(separator: "\n")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+func systemNoticeText(_ text: String) -> String {
+    text
+        .replacingOccurrences(of: "💡 ", with: "")
+        .replacingOccurrences(of: "# ", with: "")
 }
 
 /// Splits prose into headings, lists, quotes, and paragraphs. Inline styling
@@ -2540,6 +2677,8 @@ func parseMarkdownProseBlocks(_ text: String) -> [MarkdownProseBlock] {
             }
             continue
         }
+
+        if isSystemNoticeLine(trimmed) { continue }
 
         paragraphLines.append(trimmed)
     }
@@ -2634,6 +2773,8 @@ private struct MarkdownProseView: View {
                         .fill(Color.accentColor.opacity(0.35))
                         .frame(width: 2)
                 }
+        case .systemNotice:
+            EmptyView()
         case .divider:
             Divider()
                 .padding(.vertical, 2)
@@ -2772,11 +2913,16 @@ private struct CodeBlockView: View {
     }
 }
 
-/// Claude-desktop-style context meter: slim progress bar + numeric readout,
-/// escalating to orange/red as the conversation fills the context window.
+/// Composer token meter: Claude-style ring + numeric readout for the full
+/// request context of the last turn vs. the selected model's limit. The arc
+/// shifts from blue to orange to red as the window fills.
 private struct ContextMeter: View {
     let used: Double
     let limit: Double?
+    var tokens: MessageTokens?
+
+    @State private var showDetails = false
+    @State private var cursorPushed = false
 
     private var ratio: Double? {
         guard let limit, limit > 0 else { return nil }
@@ -2785,33 +2931,144 @@ private struct ContextMeter: View {
 
     private var tint: Color {
         guard let ratio else { return .secondary }
-        return ratio > 0.85 ? .red : (ratio > 0.6 ? .orange : .secondary)
+        if ratio > 0.85 { return .red }
+        if ratio > 0.6 { return .orange }
+        return .blue
     }
 
     var body: some View {
         HStack(spacing: 6) {
             if let limit, limit > 0, let ratio {
-                Capsule()
-                    .fill(Color.primary.opacity(0.08))
-                    .frame(width: 76, height: 4)
-                    .overlay(alignment: .leading) {
-                        Capsule()
-                            .fill(tint)
-                            .frame(width: max(3, 76 * ratio))
-                    }
-                Text("\(compactCount(used)) / \(compactCount(limit)) · \(Int((ratio * 100).rounded()))%")
+                ZStack {
+                    Circle()
+                        .stroke(Color.primary.opacity(0.14), lineWidth: 3)
+                    Circle()
+                        .trim(from: 0, to: max(ratio, 0.001))
+                        .stroke(tint, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                }
+                .frame(width: 16, height: 16)
+                .animation(.easeOut(duration: 0.3), value: ratio)
+                Text("\(compactTokenCount(used)) / \(compactTokenCount(limit)) · \(Int((ratio * 100).rounded()))%")
                     .foregroundStyle(tint)
                     .monospacedDigit()
             } else {
-                Text("\(compactCount(used)) tokens")
+                Text("\(compactTokenCount(used)) tokens")
                     .foregroundStyle(.secondary)
             }
         }
         .font(.system(size: 12))
+        .contentShape(Rectangle())
+        .onTapGesture {
+            showDetails.toggle()
+        }
+        .onHover { hovering in
+            if hovering && !cursorPushed {
+                NSCursor.pointingHand.push()
+                cursorPushed = true
+            } else if !hovering && cursorPushed {
+                NSCursor.pointingHand.pop()
+                cursorPushed = false
+            }
+        }
+        .onDisappear {
+            if cursorPushed {
+                NSCursor.pointingHand.pop()
+                cursorPushed = false
+            }
+        }
+        .popover(isPresented: $showDetails, arrowEdge: .bottom) {
+            ContextDetailsPopover(used: used, limit: limit, tokens: tokens)
+        }
         .help(NSLocalizedString(
-            "Context window usage — input tokens of the last response vs the model's context limit",
+            "Context window usage — click for breakdown",
             comment: ""
         ))
+    }
+}
+
+/// Claude-style context breakdown. The deveco server only reports aggregate
+/// counters (input / cache.read / output), so those are shown honestly instead
+/// of inventing system-prompt / tool splits the API does not expose.
+private struct ContextDetailsPopover: View {
+    let used: Double
+    let limit: Double?
+    let tokens: MessageTokens?
+
+    private var inputTokens: Double { tokens?.input ?? 0 }
+    private var cachedTokens: Double { tokens?.cache?.read ?? 0 }
+    private var generatedTokens: Double {
+        (tokens?.output ?? 0) + (tokens?.reasoning ?? 0)
+    }
+    private var freeSpace: Double {
+        guard let limit, limit > 0 else { return 0 }
+        return max(0, limit - used)
+    }
+    private var ratio: Double? {
+        guard let limit, limit > 0 else { return nil }
+        return min(max(used / limit, 0), 1)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text(NSLocalizedString("Context window", comment: "context popover title"))
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if let limit, limit > 0, let ratio {
+                    Text("\(compactTokenCount(used)) / \(compactTokenCount(limit)) · \(Int((ratio * 100).rounded()))%")
+                        .font(.system(size: 12, design: .monospaced))
+                        .monospacedDigit()
+                } else {
+                    Text(compactTokenCount(used))
+                        .font(.system(size: 12, design: .monospaced))
+                }
+            }
+            if let limit, limit > 0, let ratio {
+                GeometryReader { proxy in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Color.primary.opacity(0.08))
+                        Capsule()
+                            .fill(ratio > 0.85 ? Color.red : (ratio > 0.6 ? Color.orange : Color.blue))
+                            .frame(width: max(3, proxy.size.width * ratio))
+                    }
+                }
+                .frame(height: 5)
+            }
+            Divider()
+            row(color: .blue, label: NSLocalizedString("New input", comment: ""),
+                amount: inputTokens, limit: limit)
+            row(color: .orange, label: NSLocalizedString("Cached input", comment: ""),
+                amount: cachedTokens, limit: limit)
+            row(color: .purple, label: NSLocalizedString("Generated", comment: ""),
+                amount: generatedTokens, limit: nil)
+            row(color: .gray.opacity(0.5), label: NSLocalizedString("Free space", comment: ""),
+                amount: freeSpace, limit: limit)
+        }
+        .padding(14)
+        .frame(width: 300, alignment: .leading)
+    }
+
+    private func row(color: Color, label: String, amount: Double, limit: Double?) -> some View {
+        HStack(spacing: 8) {
+            RoundedRectangle(cornerRadius: 2)
+                .fill(color)
+                .frame(width: 8, height: 8)
+            Text(label)
+                .font(.system(size: 12))
+                .foregroundStyle(.primary)
+            Spacer()
+            Text(compactTokenCount(amount))
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(.secondary)
+            if let limit, limit > 0 {
+                Text(String(format: "%.1f%%", amount / limit * 100))
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 44, alignment: .trailing)
+            }
+        }
     }
 }
 
@@ -3155,7 +3412,7 @@ private struct ToolCardView: View {
                     Image(systemName: Theme.toolSymbol(part.tool ?? ""))
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(toolTint)
-                        .frame(width: 26, height: 26)
+                        .frame(width: 28, height: 28)
                         .background(toolTint.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
 
                     VStack(alignment: .leading, spacing: 2) {
@@ -3388,6 +3645,19 @@ private struct ToolCardView: View {
 private struct InlineErrorBubble: View {
     let error: SessionStore.InlineError
     var onRetry: () -> Void
+    @State private var showsDetails = false
+
+    /// Server errors arrive as "Name: message" followed by a JS stack trace.
+    /// Keep the actionable first line; the trace stays behind a disclosure.
+    private var summary: String {
+        humanizedErrorSummary(error.message, kind: error.kind)
+    }
+
+    private var details: String? {
+        let trimmed = error.message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > summary.count else { return nil }
+        return trimmed
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -3397,14 +3667,37 @@ private struct InlineErrorBubble: View {
                 Text(error.kind.label)
                     .font(.caption.weight(.semibold))
             }
-            Text(error.message)
+            Text(summary)
                 .font(.caption)
                 .textSelection(.enabled)
             Text(error.kind.hint)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Button(NSLocalizedString("Retry", comment: "")) { onRetry() }
-                .controlSize(.small)
+            if let details {
+                DisclosureGroup(isExpanded: $showsDetails) {
+                    ScrollView(.vertical) {
+                        Text(details)
+                            .font(.system(size: 11, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 140)
+                } label: {
+                    Text(NSLocalizedString("Show details", comment: ""))
+                        .font(.caption)
+                }
+            }
+            HStack(spacing: 8) {
+                Button(NSLocalizedString("Retry", comment: "")) { onRetry() }
+                    .controlSize(.small)
+                if let details {
+                    Button(NSLocalizedString("Copy details", comment: "")) {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(details, forType: .string)
+                    }
+                    .controlSize(.small)
+                }
+            }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)

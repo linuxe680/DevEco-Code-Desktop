@@ -90,3 +90,11 @@
 - 2026-11-22 工作台结构第二阶段：新增会话级 Work Panel（Review/Context），将原 DiffSheet 改为 dock 面板并支持 ⌘J/命令面板打开；迁移 DiffFileRow 与 diff 渲染到独立模块，补充面板状态隔离测试。`swift test` 128/128 通过。
 
 - 2026-11-22 工作台结构第三阶段：从 ChatView 拆出增强型权限卡，按工具类型展示风险等级、参数预览（复用日志脱敏）、工作区路径和等待数量；操作文案统一为 Allow once / Allow for session / Deny，保持原有 once/always/reject 协议值。新增风险分类与敏感参数脱敏测试。`swift test` 129/129 通过。
+
+- 2026-11-22 工作台查缺补漏：Work Panel 标签页改为真正按会话记忆并在断开/删除时清理；权限卡兼容 v2 `action=allow` + `permission=<tool>` 事件、复用既有工具名本地化、等待数按当前会话统计；命令面板支持中英文标题搜索；补齐新版界面文案的中文翻译。新增 v2 权限归一化与会话标签页恢复测试。`swift test` 130/130，release 构建通过。
+
+- 2026-11-22 Codex 风格与显示修复：记忆召回等模型状态行从回答中移除；会话列居中并收紧到 760pt；隐藏标题栏改为 Scene 级 `.hiddenTitleBar` 且避免窗口配置重复覆盖；复制成功提示走本地化；token 统计分维度展示：去掉输入框常驻上下文仪表，上下文 ≥80% 才出现告警条，单条回答只在悬停时显示“生成 token/模型”，完整口径放工作台「上下文」页；修复流式回答末行丢失与流式尾部回退闪烁；服务端错误只展示首行可读信息，不再泄露长堆栈。`swift test` 135/135，release 构建通过。
+
+- 2026-11-22 顶部单行与安装收敛：删除 ChatView 的第二行 38pt 头部，把字号/搜索/变更/压缩并入唯一应用工具栏（对齐 Codex 单行：红绿灯 + 项目路径 + 右侧动作），聊天区不再有重复顶栏；`StreamingReveal` 追平后不再回退显示字符，消除流式尾部闪烁与孤立光标；新增 `Scripts/install.sh` 作为唯一安装入口（构建到 `build/`、`ditto` 暂存 + `codesign --verify` 校验 + 原子替换 `/Applications/DevEco Code Desktop.app`、自动清理 `*.backup-*.app`、`AppBackups/*.app` 与仓库内旧 `.app`），`build-app.sh`/`make-dmg.sh`/`release.sh` 产物统一迁到 `build/` 并加 `.metadata_never_index`；清理 `/Applications` 内 33 个历史备份包后核对只剩 1 个；去掉 zh-Hans 9 个重复键（`Files: %lld` 统一为“文件数：%lld”），`plutil -lint` 通过。`swift test` 136/136，release 构建、原子安装与实机单实例核对通过。
+
+- 2026-11-22 重复 App 根因修复：定位到重复图标并非来自 `/Applications`，而是 LaunchServices 按 bundle id 收录了 `build/` 构建产物、`/private/tmp/deveco-accept-install.*` 临时安装目录和已卸载 DMG 的 `/Volumes/...` 路径。`install.sh` 新增 `registered_app_paths`/`prune_registered_copies`：安装前后按 `com.local.deveco-codesktop` 注销所有非 `/Applications` 登记，结束时断言 `/Applications` 与 LaunchServices 均恰好 1 条，读不到登记也判失败；`build-app.sh` 构建后立即注销产物，安装结束删除 `build/*.app`；修复脚本内局部变量 `path` 覆盖 `PATH` 导致 `awk`/`sort` 失效、空结果误判通过的隐患。实测连续 3 次覆盖安装：磁盘仅 1 份、`mdfind` 1 条、`lsregister -dump` 1 条、Dock 1 条，废纸篓/下载/桌面/挂载卷均无残留。`swift test` 136/136。

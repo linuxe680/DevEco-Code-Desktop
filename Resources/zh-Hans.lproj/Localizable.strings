@@ -185,6 +185,9 @@
 "No matching files" = "没有匹配的文件";
 "Search in conversation" = "在会话中搜索";
 "No messages match “%@”" = "没有匹配“%@”的消息";
+"Previous match" = "上一个匹配";
+"Next match" = "下一个匹配";
+"Close search" = "关闭搜索";
 
 /* 附件 / 编辑重发 */
 "Edit & resend…" = "编辑并重发…";
@@ -319,7 +322,6 @@
 "Model unavailable" = "模型不可用";
 "Network problem" = "网络问题";
 "Server error" = "服务端错误";
-"Something went wrong" = "出了点问题";
 "Check the provider's API key in Settings → Models." = "请在 设置 → Models 中检查供应商的 API Key。";
 "Wait a moment and retry, or check the provider's balance and plan." = "请稍后重试，或检查供应商的余额与套餐。";
 "Pick another model from the model menu — this one is not available." = "请从模型菜单换一个模型，当前模型不可用。";
@@ -331,7 +333,6 @@
 "Starting the deveco server…" = "正在启动 deveco 服务…";
 "Server failed" = "服务启动失败";
 "Server stopped" = "服务已停止";
-"Retry" = "重试";
 "Show Log" = "查看日志";
 "deveco CLI not found" = "未找到 deveco CLI";
 "No free local port" = "没有可用的本地端口";
@@ -341,12 +342,10 @@
 "Copy Diagnostics" = "复制诊断信息";
 "Copied" = "已复制";
 "Chats" = "会话";
-"Took %@" = "用时 %@";
 "Review file changes" = "查看文件变更";
 "Compact conversation" = "压缩会话";
 "Effort: %@" = "强度：%@";
 "Default" = "默认";
-"None" = "无";
 "Low" = "低";
 "Medium" = "中";
 "High" = "高";
@@ -379,25 +378,21 @@
 "Server log" = "服务日志";
 "View Log…" = "查看日志…";
 "(%lld pending)" = "（%lld 条排队）";
-"Files: %lld" = "文件：%lld";
 "%lld messages" = "%lld 条消息";
 "Version %@ (%@)" = "版本 %@ (%@)";
-"No messages match “%@”" = "没有匹配“%@”的消息";
 "No models match “%@”" = "没有匹配“%@”的模型";
-"No sessions match “%@”" = "没有匹配“%@”的会话";
 "deveco runs on Node.js. Leave empty to auto-detect; the detected folder is added to the server's PATH." = "deveco 运行在 Node.js 上。留空将自动探测，探测到的目录会加入服务的 PATH。";
 "These were granted with “Always allow” on permission cards. Tools matching them run without asking — revoke any you no longer trust." = "这些规则来自权限卡片上的“始终允许”。匹配的工具将不再询问直接执行——不再信任的请随时移除。";
 "A native macOS client for the local deveco CLI — sessions, streaming, approvals, diffs, and model management." = "本地 deveco CLI 的原生 macOS 客户端——会话、流式输出、权限审批、差异查看与模型管理。";
 "Protocol and UX reference: opencode (MIT) and OpenAI Codex (Apache-2.0). Design learned from their public sources; all code here is original Swift." = "协议与交互参考：opencode（MIT）与 OpenAI Codex（Apache-2.0）。设计借鉴其公开资料，全部代码为原创 Swift 实现。";
-"%lld models" = "%lld 个模型";
 "%lldk ctx" = "%lldk 上下文";
 "%lld tokens" = "%lld tokens";
 "Language" = "界面语言";
 "Takes effect after relaunch." = "更改将在重启应用后生效。";
+"Generated %@ tokens" = "生成 %@ token";
 "Output %@" = "输出 %@";
 "Input %@" = "本次输入 %@";
 "Cached %@" = "缓存 %@";
-"Copy code" = "复制代码";
 
 "Exported" = "导出于";
 
@@ -408,9 +403,6 @@
 "Follow system" = "跟随系统";
 "Light" = "浅色";
 "Dark" = "深色";
-
-/* 批量清理 */
-"Context window usage — input tokens of the last response vs the model's context limit" = "上下文窗口用量——上一次响应的输入 token 与模型上下文上限的对比";
 
 /* 批量清理 */
 "Use This Folder" = "使用此文件夹";
@@ -552,3 +544,58 @@
 
 /* 备份状态 */
 "Restore failed: %@" = "恢复失败：%@";
+
+/* 工作台补漏 */
+"Review" = "审查变更";
+"Review File Changes" = "查看文件变更";
+"Tokens" = "令牌";
+"Close Work Panel" = "关闭工作面板";
+"Commands" = "命令";
+"Projects" = "项目";
+"No matching results" = "没有匹配结果";
+"Search sessions, projects, and commands…" = "搜索会话、项目与命令…";
+"Export the selected transcript as Markdown" = "将选中会话导出为 Markdown";
+"Open application settings" = "打开应用设置";
+"Open the docked review panel" = "打开停靠的审查面板";
+"Start a new conversation in the current project" = "在当前项目中开始新对话";
+"Start the local deveco serve process" = "启动本地 deveco 服务进程";
+"Stop the local deveco serve process" = "停止本地 deveco 服务进程";
+"Switch the running server to another project" = "将正在运行的服务切换到其他项目";
+"Settings…" = "设置…";
+"Allow for session" = "本次会话允许";
+"Deny" = "拒绝";
+"Arguments" = "参数";
+"High risk · runs a local command" = "高风险 · 将执行本地命令";
+"Medium risk · changes project files" = "中风险 · 将修改项目文件";
+"Medium risk · sends data to a remote endpoint" = "中风险 · 将发送数据到远程端点";
+"Review the arguments before allowing" = "允许前请检查参数";
+"+%d waiting" = "另有 %d 项等待";
+"File changes" = "文件改动";
+"Branch" = "分支";
+"No token usage yet." = "暂无 token 用量。";
+"Context window" = "上下文窗口";
+"Latest reply" = "最近回复";
+"This session" = "本会话累计";
+"Generated" = "生成";
+"New input" = "新增输入";
+"Cached input" = "缓存输入";
+"Full request context of the latest turn, including history and tool output — not the size of your message." = "最近一轮请求的完整上下文，包含历史记录与工具输出——不是你这条消息的长度。";
+"Context is %d%% full — compact the conversation to keep replies reliable." = "上下文已用 %d%%，压缩会话可保持回复稳定。";
+"Could not change login item." = "无法更改登录项。";
+"No project" = "无项目";
+
+/* 输入框访问模式 */
+"Ask" = "询问";
+"Ask for approval" = "需要时询问";
+"Full access" = "完全访问";
+"Edits and commands wait for your approval." = "编辑与命令需要你批准后才会执行。";
+"Edits and commands run without asking. Use with care." = "编辑与命令将直接执行，请谨慎使用。";
+"Attach" = "添加附件";
+"Attach files from the project" = "从项目中选择附件";
+"More" = "更多";
+"Show details" = "显示详情";
+"Copy details" = "复制详情";
+"The selected model is no longer available on the server." = "所选模型已不在服务端可用。";
+"Context window usage — click for details" = "上下文窗口用量 — 点击查看详细信息";
+"Free space" = "可用空间";
+"Context window usage — click for breakdown" = "上下文窗口用量 — 点击查看详情";

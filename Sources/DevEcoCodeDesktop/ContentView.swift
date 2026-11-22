@@ -6,6 +6,8 @@ extension Notification.Name {
     static let openQuickSwitch = Notification.Name("com.deveco.openQuickSwitch")
     static let exportSelectedSession = Notification.Name("com.deveco.exportSelectedSession")
     static let openWorkPanel = Notification.Name("com.deveco.openWorkPanel")
+    static let openContextPanel = Notification.Name("com.deveco.openContextPanel")
+    static let openConversationSearch = Notification.Name("com.deveco.openConversationSearch")
 }
 
 struct ContentView: View {
@@ -13,145 +15,13 @@ struct ContentView: View {
     @EnvironmentObject var server: ServerManager
     @EnvironmentObject var store: SessionStore
     @EnvironmentObject var providers: ProviderStore
-    @State private var section: Section = .sessions
+    @State private var section: AppSection = .sessions
     @State private var showSwitcher = false
     @State private var workPanelOpen = false
-
-    enum Section: String, CaseIterable, Identifiable {
-        case sessions, providers
-
-        var id: String { rawValue }
-
-        var navigationLabel: String {
-            switch self {
-            case .sessions: return NSLocalizedString("Chat", comment: "")
-            case .providers: return NSLocalizedString("Models", comment: "")
-            }
-        }
-
-        var icon: String {
-            switch self {
-            case .sessions: return "bubble.left.and.bubble.right"
-            case .providers: return "server.rack"
-            }
-        }
-    }
+    @State private var showSearch = false
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                HStack(spacing: 2) {
-                    ForEach(Section.allCases) { item in
-                        Button {
-                            withAnimation(.easeOut(duration: 0.12)) {
-                                section = item
-                            }
-                        } label: {
-                            Image(systemName: item.icon)
-                                .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(section == item ? .primary : .secondary)
-                            .frame(width: 28, height: 24)
-                            .background(
-                                section == item ? Theme.chipFill : Color.clear,
-                                in: RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            )
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .help(item.navigationLabel)
-                    }
-                }
-                .padding(2)
-                .background(Theme.subtleFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-
-                Rectangle()
-                    .fill(Theme.hairline)
-                    .frame(width: 1, height: 18)
-
-                HStack(spacing: 5) {
-                    Circle()
-                        .fill(statusColor)
-                        .frame(width: 7, height: 7)
-                    Text(statusShortText)
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(.secondary)
-                }
-                .help(statusText)
-
-                HStack(spacing: 4) {
-                    Image(systemName: "folder")
-                        .font(.system(size: 13))
-                        .foregroundStyle(.tertiary)
-                    Text(server.projectDirectory.lastPathComponent)
-                        .font(.system(size: 14, weight: .medium))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .frame(maxWidth: 230, alignment: .leading)
-                }
-                .help(server.projectDirectory.path)
-
-                if let branch = store.vcsBranch, !branch.isEmpty {
-                    Text(branch)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 1)
-                        .background(Theme.chipFill)
-                        .clipShape(Capsule())
-                }
-                Spacer()
-                Menu {
-                    Button(NSLocalizedString("Choose Folder…", comment: "")) { server.chooseFolder() }
-                    if !server.recentProjects.isEmpty {
-                        Divider()
-                        ForEach(server.recentProjects, id: \.path) { url in
-                            Button((url.path as NSString).lastPathComponent) {
-                                server.openProject(url)
-                            }
-                        }
-                    }
-                } label: {
-                    Label(NSLocalizedString("Project", comment: ""), systemImage: "folder")
-                        .font(.system(size: 14, weight: .medium))
-                }
-                .fixedSize()
-                Button {
-                    if server.state == .running {
-                        server.stop()
-                    } else {
-                        server.start()
-                    }
-                } label: {
-                    Image(systemName: server.state == .running ? "stop.circle" : "play.circle")
-                        .font(.system(size: 15, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 24, height: 24)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help(server.state == .running
-                      ? NSLocalizedString("Stop Server", comment: "")
-                      : NSLocalizedString("Start Server", comment: ""))
-                Button {
-                    Self.openSettings()
-                } label: {
-                    Image(systemName: "gearshape")
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 24, height: 24)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help(NSLocalizedString("Settings (⌘,)", comment: ""))
-            }
-            .padding(.horizontal, 14)
-            .frame(height: 42)
-            .background(Theme.barFill)
-
-            Rectangle()
-                .fill(Theme.hairline)
-                .frame(height: 1)
-
             if server.state != .running || store.isReconnecting {
                 ConnectionStatusStrip()
                 Divider()
@@ -161,16 +31,22 @@ struct ContentView: View {
                 switch section {
                 case .sessions:
                     HSplitView {
-                        SessionListView()
+                        SessionListView(section: $section)
                             .frame(minWidth: 230, idealWidth: 270, maxWidth: 330)
-                        ChatView(workPanelOpen: $workPanelOpen)
+                        ChatView(
+                            workPanelOpen: $workPanelOpen,
+                            showSearch: $showSearch,
+                            section: $section
+                        )
                             .frame(minWidth: 460)
                         if workPanelOpen {
                             WorkPanelView(isOpen: $workPanelOpen)
                         }
                     }
+                    .ignoresSafeArea(.container, edges: .top)
                 case .providers:
-                    ProvidersView()
+                    ProvidersView(section: $section)
+                        .ignoresSafeArea(.container, edges: .top)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -211,17 +87,26 @@ struct ContentView: View {
                 .background(Theme.bannerWarning)
             }
         }
-        .navigationTitle(store.selectedSession?.displayTitle ?? "DevEco Code Desktop")
+        // Pull each pane's own top row up under the hidden titlebar so the
+        // traffic lights share it — no separate full-width strip above.
+        .ignoresSafeArea(.container, edges: .top)
         .background(WindowChromeConfigurator())
         .onAppear {
             if server.state == .stopped && AppSettings.autoStartServer {
                 server.start()
             }
             store.serverDefaultModel = providers.defaultModel
+            store.availableModels = Set(providers.allModelChoices.map(\.id))
             applyServerDefaultModelIfNeeded()
         }
         .onChange(of: providers.defaultModel) { _ in
             store.serverDefaultModel = providers.defaultModel
+            store.availableModels = Set(providers.allModelChoices.map(\.id))
+            applyServerDefaultModelIfNeeded()
+        }
+        .onChange(of: providers.allModelChoices) { _ in
+            store.availableModels = Set(providers.allModelChoices.map(\.id))
+            store.repairStaleModelSelection()
             applyServerDefaultModelIfNeeded()
         }
         .onReceive(NotificationCenter.default.publisher(for: .openQuickSwitch)) { _ in
@@ -232,10 +117,21 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .openWorkPanel)) { _ in
             workPanelOpen = true
-            store.workPanelTab = .review
+            store.setWorkPanelTab(.review)
             if let id = store.selectedSessionID {
                 store.workPanelOpenBySession[id] = true
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openContextPanel)) { _ in
+            workPanelOpen = true
+            store.setWorkPanelTab(.context)
+            if let id = store.selectedSessionID {
+                store.workPanelOpenBySession[id] = true
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openConversationSearch)) { _ in
+            section = .sessions
+            showSearch = true
         }
         .onChange(of: store.selectedSessionID) { id in
             guard let id else {
@@ -281,7 +177,7 @@ struct ContentView: View {
         }
     }
 
-    private static func openSettings() {
+    static func openSettings() {
         // The Settings scene adds a menu item automatically; this opens it
         // from the toolbar gear on every supported macOS version.
         NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
@@ -333,40 +229,17 @@ struct ContentView: View {
         server.start()
     }
 
-    private var statusColor: Color {
-        switch server.state {
-        case .running: return .green
-        case .starting: return .orange
-        case .failed: return .red
-        case .stopped: return .gray
-        }
-    }
-
-    private var statusText: String {
-        let endpoint = "127.0.0.1:\(server.port)"
-        switch server.state {
-        case .running: return String(format: NSLocalizedString("Connected · %@", comment: ""), endpoint)
-        case .starting: return String(format: NSLocalizedString("Starting · %@", comment: ""), endpoint)
-        case .failed: return NSLocalizedString("Failed", comment: "")
-        case .stopped: return NSLocalizedString("Stopped", comment: "")
-        }
-    }
-
-    private var statusShortText: String {
-        switch server.state {
-        case .running: return NSLocalizedString("Connected", comment: "")
-        case .starting: return NSLocalizedString("Starting…", comment: "")
-        case .failed: return NSLocalizedString("Failed", comment: "")
-        case .stopped: return NSLocalizedString("Stopped", comment: "")
-        }
-    }
 }
 
 /// Matches the native titlebar to the Codex-style chrome instead of letting
 /// AppKit draw its lighter default dark strip above the app's own toolbar.
 private struct WindowChromeConfigurator: NSViewRepresentable {
+    private final class ConfiguratorView: NSView {
+        weak var configuredWindow: NSWindow?
+    }
+
     func makeNSView(context: Context) -> NSView {
-        let view = NSView(frame: .zero)
+        let view = ConfiguratorView(frame: .zero)
         DispatchQueue.main.async { [weak view] in self.configure(view?.window) }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak view] in
             self.configure(view?.window)
@@ -375,11 +248,17 @@ private struct WindowChromeConfigurator: NSViewRepresentable {
     }
 
     func updateNSView(_ view: NSView, context: Context) {
-        DispatchQueue.main.async { [weak view] in self.configure(view?.window) }
+        guard let view = view as? ConfiguratorView, view.configuredWindow !== view.window else { return }
+        view.configuredWindow = view.window
+        configure(view.window)
     }
 
     private func configure(_ window: NSWindow?) {
         guard let window else { return }
+        if let view = window.contentView as? ConfiguratorView {
+            view.configuredWindow = window
+        }
+        window.styleMask.insert(.fullSizeContentView)
         window.titlebarAppearsTransparent = true
         window.backgroundColor = Theme.windowChromeNSColor
         window.titlebarSeparatorStyle = .none

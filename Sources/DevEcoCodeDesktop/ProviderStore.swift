@@ -25,6 +25,9 @@ final class ProviderStore: ObservableObject {
     /// O(1) display-name lookup for message metadata (rebuilt on load).
     private var modelChoicesByID: [String: ModelChoice] = [:]
     private var modelNameBySuffix: [String: String] = [:]
+    /// Normalized catalog ids used when the server reports a slightly
+    /// different id (vendor suffix differences).
+    private var modelNameByLooseID: [(key: String, name: String)] = []
 
     private func rebuildModelLookup() {
         var lookup: [String: ModelChoice] = [:]
@@ -54,13 +57,16 @@ final class ProviderStore: ObservableObject {
         }
         modelChoicesByID = lookup
         var namesBySuffix: [String: String] = [:]
+        var loose: [(key: String, name: String)] = []
         for choice in sorted {
             // choice.id 形如 "providerID/modelID"；按 modelID 建索引，
             // 不能用展示名，展示名常与 ID 不同。
             guard let slash = choice.id.firstIndex(of: "/") else { continue }
             let modelID = String(choice.id[choice.id.index(after: slash)...])
             if namesBySuffix[modelID] == nil { namesBySuffix[modelID] = choice.name }
+            loose.append((normalizedModelKey(choice.id), choice.name))
         }
+        modelNameByLooseID = loose
         modelNameBySuffix = namesBySuffix
     }
 
@@ -69,6 +75,12 @@ final class ProviderStore: ObservableObject {
     func modelDisplayName(for identifier: String, fuzzyModel: String) -> String? {
         if let choice = modelChoicesByID[identifier] { return choice.name }
         if let exact = modelNameBySuffix[fuzzyModel] { return exact }
+        // Server-reported ids can carry a vendor suffix the catalog spells out
+        // (`hy4flash` vs `hy4flash-free`). Accept a unique prefix match only,
+        // so a base id never resolves to its `-max` sibling.
+        if let loose = uniqueCatalogModelName(for: identifier, in: modelNameByLooseID) {
+            return loose
+        }
         return modelChoicesByID.values
             .first { $0.name.localizedCaseInsensitiveContains(fuzzyModel) }?.name
     }

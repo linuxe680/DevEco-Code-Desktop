@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 
 struct SessionListView: View {
     @EnvironmentObject var store: SessionStore
+    @Binding var section: AppSection
 
     @State private var query = ""
     @State private var renamingSession: Session?
@@ -47,6 +48,17 @@ struct SessionListView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // The sidebar owns the window's top-left corner: its row clears
+            // the traffic lights and keeps the seamless Codex chrome.
+            HStack(spacing: 8) {
+                SectionSwitcher(selection: $section)
+                Spacer(minLength: 4)
+                ServerStatusDot()
+            }
+            .padding(.leading, 84)
+            .padding(.trailing, 12)
+            .frame(height: 52)
+
             HStack(spacing: 8) {
                 Text(NSLocalizedString("Chats", comment: ""))
                     .font(.system(size: 16, weight: .semibold))
@@ -64,7 +76,7 @@ struct SessionListView: View {
                 .help(NSLocalizedString("New session (⌘N)", comment: ""))
             }
             .padding(.horizontal, 14)
-            .padding(.top, 11)
+            .padding(.top, 2)
             .padding(.bottom, 9)
 
             HStack(spacing: 6) {
@@ -109,28 +121,11 @@ struct SessionListView: View {
                 sessionList
             }
 
-            if let total = store.usage?.total {
-                Rectangle()
-                    .fill(Theme.hairline)
-                    .frame(height: 1)
-                HStack {
-                    Text(String(
-                        format: NSLocalizedString("%lld sessions · %lld messages", comment: "sidebar totals"),
-                        store.sessions.filter { !$0.isSubagent && !$0.isArchived }.count,
-                        Int(total.messages ?? 0)))
-                        .font(.system(size: 12))
-                    Spacer()
-                    if let cost = total.cost, cost > 0 {
-                        Text(String(format: "$%.2f", cost))
-                            .font(.system(size: 12, design: .monospaced))
-                    }
-                }
-                .foregroundStyle(.tertiary)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 7)
-            }
         }
         .background(Theme.sidebarFill)
+        // NSSplitView-backed panes re-apply the window safe area; opt out so
+        // this row sits flush with the titlebar like the rest of the chrome.
+        .ignoresSafeArea(.container, edges: .top)
         .sheet(item: $renamingSession) { session in
             RenameSessionView(
                 initialTitle: session.displayTitle,
@@ -177,7 +172,7 @@ struct SessionListView: View {
                         ForEach(projectGroups) { group in
                             Section {
                                 ForEach(group.sessions) { session in
-                                    row(for: session)
+                                    row(for: session, showsDirectory: false)
                                 }
                             } header: {
                                 projectSectionHeader(group)
@@ -260,7 +255,7 @@ struct SessionListView: View {
             .background(Theme.sidebarFill)
     }
 
-    private func row(for session: Session) -> some View {
+    private func row(for session: Session, showsDirectory: Bool = true) -> some View {
         let selected = session.id == store.selectedSessionID
         let hovered = hoveredSessionID == session.id
         return Button {
@@ -295,7 +290,7 @@ struct SessionListView: View {
                             SessionIndicatorBadge(indicator: indicator)
                         }
                     }
-                    if let directory = session.directory {
+                    if showsDirectory, let directory = session.directory {
                         Text((directory as NSString).lastPathComponent)
                             .font(.system(size: 12))
                             .foregroundStyle(.tertiary)

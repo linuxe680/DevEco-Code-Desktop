@@ -34,21 +34,35 @@ final class CommandPaletteTests: XCTestCase {
         XCTAssertFalse(details.argumentPreview.contains("abc123"))
     }
 
+    func testPermissionDetailsNormalizeV2Schema() {
+        let request = PermissionRequest(
+            id: "p1",
+            sessionID: "s1",
+            permission: "allow",
+            patterns: ["git status"],
+            action: "bash"
+        )
+        let details = PermissionPresentation.details(for: request, workspace: nil)
+        XCTAssertEqual(details.tool, Theme.toolName("bash"))
+        XCTAssertEqual(details.kind, "bash")
+        XCTAssertTrue(details.risk.contains("High risk"))
+    }
+
     func testWorkPanelStateIsSessionScoped() {
         let store = SessionStore()
-        store.selectedSessionID = "s1"
+        store.select("s1")
         store.workPanelOpenBySession["s1"] = true
-        store.workPanelTab = .context
+        store.setWorkPanelTab(.context)
 
-        store.selectedSessionID = "s2"
+        store.select("s2")
         XCTAssertNil(store.workPanelOpenBySession["s2"])
         XCTAssertEqual(store.workPanelTab, .context)
 
         store.workPanelOpenBySession["s2"] = true
-        store.workPanelTab = .review
-        store.selectedSessionID = "s1"
+        store.setWorkPanelTab(.review)
+        store.select("s1")
         XCTAssertTrue(store.workPanelOpenBySession["s1"] ?? false)
-        XCTAssertEqual(store.workPanelTab, .review)
+        XCTAssertEqual(store.workPanelTab, .context)
     }
 
     func testSessionsGroupByProject() throws {

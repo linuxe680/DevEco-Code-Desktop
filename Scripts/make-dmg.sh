@@ -7,6 +7,7 @@ ROOT="${0:A:h:h}"
 MIN_MACOS="${1:-12.0}"
 BUILD_DIR="$ROOT/build"
 mkdir -p "$BUILD_DIR"
+touch "$BUILD_DIR/.metadata_never_index"
 
 "$ROOT/Scripts/build-app.sh" arm64 "$MIN_MACOS"
 "$ROOT/Scripts/build-app.sh" x86_64 "$MIN_MACOS"
@@ -14,7 +15,7 @@ mkdir -p "$BUILD_DIR"
 VERSION=$(plutil -extract CFBundleShortVersionString raw "$ROOT/Resources/Info.plist")
 DMGS=()
 for ARCH in arm64 x86_64; do
-    APP="$ROOT/DevEco Code Desktop ($ARCH).app"
+    APP="$BUILD_DIR/DevEco Code Desktop ($ARCH).app"
     DMG="$BUILD_DIR/DevEco Code Desktop-$VERSION-$ARCH.dmg"
     STAGING=$(mktemp -d)
     trap 'rm -rf "$STAGING"' EXIT

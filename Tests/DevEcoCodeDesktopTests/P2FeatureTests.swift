@@ -106,6 +106,102 @@ final class P2FeatureTests: XCTestCase {
         XCTAssertEqual(store.selectedModel, "prov/A")
     }
 
+    // MARK: Stale model fallback (regression: a session pinned to a removed
+    // provider sent that id verbatim and failed with a raw provider stack)
+
+    func testResolvedModelKeepsAvailablePick() {
+        let store = SessionStore()
+        store.availableModels = ["prov/A", "prov/B"]
+        XCTAssertEqual(store.resolvedModel("prov/B"), "prov/B")
+    }
+
+    func testResolvedModelFallsBackWhenProviderRemoved() {
+        let store = SessionStore()
+        store.serverDefaultModel = "prov/live"
+        store.availableModels = ["prov/live", "prov/other"]
+        XCTAssertEqual(
+            store.resolvedModel("deveco/deveco"),
+            "prov/live",
+            "a removed provider must fall back to the server default"
+        )
+    }
+
+    func testResolvedModelPrefersAppDefaultFallback() {
+        AppSettings.defaultSessionModel = "prov/preferred"
+        defer { AppSettings.defaultSessionModel = "" }
+        let store = SessionStore()
+        store.serverDefaultModel = "prov/live"
+        store.availableModels = ["prov/live", "prov/preferred"]
+        XCTAssertEqual(store.resolvedModel("gone/gone"), "prov/preferred")
+    }
+
+    func testResolvedModelUnknownListLeavesPickAlone() {
+        let store = SessionStore()
+        store.availableModels = []
+        XCTAssertEqual(store.resolvedModel("prov/A"), "prov/A")
+        XCTAssertNil(store.resolvedModel(nil))
+        XCTAssertNil(store.resolvedModel(""))
+    }
+
+    func testRepairStaleModelSelectionUpdatesPickAndPersistence() {
+        AppSettings.sessionModels = [:]
+        defer { AppSettings.sessionModels = [:] }
+        let store = SessionStore()
+        store.serverDefaultModel = "prov/live"
+        store.availableModels = ["prov/live"]
+        store.selectedSessionID = "s1"
+        store.selectedModel = "deveco/deveco"
+
+        store.repairStaleModelSelection()
+
+        XCTAssertEqual(store.selectedModel, "prov/live")
+        XCTAssertEqual(AppSettings.sessionModels["s1"], "prov/live")
+    }
+
+    func testRepairLeavesValidPickUntouched() {
+        AppSettings.sessionModels = [:]
+        defer { AppSettings.sessionModels = [:] }
+        let store = SessionStore()
+        store.availableModels = ["prov/live"]
+        store.selectedSessionID = "s1"
+        store.selectedModel = "prov/live"
+
+        store.repairStaleModelSelection()
+
+        XCTAssertEqual(store.selectedModel, "prov/live")
+    }
+
+    // MARK: Error summarization (regression: inline bubble showed the whole
+    // JS stack plus "UnknownError: ProviderModelNotFoundError:" wrappers)
+
+    func testErrorSummaryStripsWrapperPrefixes() {
+        let raw = "UnknownError: ProviderModelNotFoundError:\n    at ensureRunning (/bunfs/root/chunk.js:38:10261)"
+        let summary = humanizedErrorSummary(raw, kind: .modelUnavailable)
+        XCTAssertFalse(summary.contains("UnknownError"))
+        XCTAssertFalse(summary.contains("ProviderModelNotFoundError"))
+        XCTAssertFalse(summary.contains("bunfs"))
+    }
+
+    func testErrorSummaryKeepsActionableText() {
+        let summary = humanizedErrorSummary("UnknownError: ProviderError: invalid api key", kind: .auth)
+        XCTAssertEqual(summary, "invalid api key")
+    }
+
+    func testErrorSummaryFallsBackToKindLabel() {
+        XCTAssertEqual(
+            humanizedErrorSummary("UnknownError:", kind: .modelUnavailable),
+            "The selected model is no longer available on the server."
+        )
+        XCTAssertEqual(humanizedErrorSummary("", kind: .network), FailureKind.network.label)
+    }
+
+    func testProviderModelNotFoundClassifiesAsModelUnavailable() {
+        XCTAssertEqual(
+            FailureKind.classify("UnknownError: ProviderModelNotFoundError: provider not found"),
+            .modelUnavailable
+        )
+    }
+
 
     private func makePNG(width: Int, height: Int, noise: Bool) -> Data {
         let rep = NSBitmapImageRep(
@@ -139,5 +235,14 @@ final class P2FeatureTests: XCTestCase {
     func testDownscaleKeepsSmallImagesUnchanged() throws {
         let png = makePNG(width: 400, height: 300, noise: false)
         XCTAssertNil(SessionStore.downscaledImage(from: png), "small images should skip compression")
+    }
+
+    func testContextMeterTapOpensContextTab() {
+        let store = SessionStore()
+        XCTAssertNotEqual(Notification.Name.openContextPanel, .openWorkPanel)
+        store.setWorkPanelTab(.review)
+        XCTAssertEqual(store.workPanelTab, .review)
+        store.setWorkPanelTab(.context)
+        XCTAssertEqual(store.workPanelTab, .context)
     }
 }

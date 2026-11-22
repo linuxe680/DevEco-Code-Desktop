@@ -20,12 +20,12 @@ enum PermissionPresentation {
     }
 
     static func details(for request: PermissionRequest, workspace: String?) -> Details {
-        let raw = (request.action ?? request.permission ?? "")
+        let raw = (request.tool ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let lowered = raw.lowercased()
         let tool = raw.isEmpty
             ? NSLocalizedString("Tool", comment: "")
-            : raw.capitalized
+            : Theme.toolName(raw)
 
         let risk: String
         let symbol: String

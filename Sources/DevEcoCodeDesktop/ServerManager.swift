@@ -101,6 +101,10 @@ final class ServerManager: ObservableObject {
     }
 
     func start() {
+        // A previous run may have been killed before `applicationWillTerminate`
+        // (pkill, crash, force quit), leaving `deveco serve` orphaned on an
+        // old port. Reap it first so ports stop climbing on every launch.
+        Self.reapOrphanedServer()
         if serverProcess != nil {
             if state == .starting {
                 // A previous boot may still be finishing; let a foreground
@@ -177,6 +181,7 @@ final class ServerManager: ObservableObject {
 
         do {
             serverProcess = try ProcessGroupLauncher.launch(config)
+            Self.writePIDFile(serverProcess?.pid)
             Log.server.info("deveco serve launched on port \(self.port) (project: \(self.projectDirectory.path, privacy: .public))")
         } catch {
             serverProcess = nil
@@ -196,7 +201,7 @@ final class ServerManager: ObservableObject {
         outputReadQueue = DispatchQueue(label: "deveco.server.output")
         outputReadQueue?.sync { [weak self] in
             guard let self else { return }
-            reader.readabilityHandler = { handle in
+            reader.readabilityHandler = { [weak self] handle in
                 let data = handle.availableData
                 guard !data.isEmpty else {
                     handle.readabilityHandler = nil
@@ -243,6 +248,7 @@ final class ServerManager: ObservableObject {
         // 终止整个进程组（deveco 启动器 + Node 服务），避免孤儿进程占端口。
         serverProcess.terminate()
         self.serverProcess = nil
+        Self.writePIDFile(nil)
         cleanUpIO()
     }
 
@@ -741,6 +747,66 @@ final class ServerManager: ObservableObject {
             }
         }
         return bound == 0
+    }
+
+    // MARK: - Orphan reaping
+
+    /// The pid (== process group id) of the server this app launched last.
+    /// Written on spawn so a crash / force-quit can be cleaned up next launch
+    /// instead of leaving a `deveco serve` behind on a stale port.
+    nonisolated private static var pidFileURL: URL {
+        applicationSupportDirectory().appendingPathComponent("server.pid")
+    }
+
+    nonisolated static func writePIDFile(_ pid: pid_t?) {
+        let url = pidFileURL
+        guard let pid else {
+            try? FileManager.default.removeItem(at: url)
+            return
+        }
+        try? String(pid).write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    /// Terminates a server group left over from a previous run that never got
+    /// a clean `applicationWillTerminate`. Skipped when the user opted to keep
+    /// the server running between launches.
+    nonisolated static func reapOrphanedServer() {
+        guard AppSettings.quitBehavior == .stopServer else { return }
+        guard let text = try? String(contentsOf: pidFileURL, encoding: .utf8),
+              let pid = pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines)),
+              pid > 1 else {
+            writePIDFile(nil)
+            return
+        }
+        writePIDFile(nil)
+        guard kill(pid, 0) == 0 || errno == EPERM else { return }
+        // Guard against pid reuse: only signal a process that is really the
+        // deveco server, never an unrelated app that inherited the number.
+        guard processLooksLikeDeveco(pid) else { return }
+        _ = kill(-pid, SIGTERM)
+        for _ in 0..<20 {
+            usleep(50_000)
+            if kill(-pid, 0) != 0 { return }
+        }
+        _ = kill(-pid, SIGKILL)
+    }
+
+    nonisolated private static func processLooksLikeDeveco(_ pid: pid_t) -> Bool {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/ps")
+        task.arguments = ["-p", String(pid), "-o", "command="]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = FileHandle.nullDevice
+        do {
+            try task.run()
+        } catch {
+            return false
+        }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        task.waitUntilExit()
+        let command = String(data: data, encoding: .utf8) ?? ""
+        return command.contains("deveco") && command.contains("serve")
     }
 
     nonisolated private static func applicationSupportDirectory() -> URL {

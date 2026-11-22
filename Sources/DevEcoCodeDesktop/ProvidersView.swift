@@ -2,12 +2,22 @@ import SwiftUI
 
 struct ProvidersView: View {
     @EnvironmentObject var providerStore: ProviderStore
+    @Binding var section: AppSection
     @State private var editingProvider: ProviderEntry?
     @State private var showEditor = false
     @State private var selectedDefault = ""
 
     var body: some View {
         VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                SectionSwitcher(selection: $section)
+                Spacer()
+                AppChromeControls()
+            }
+            .padding(.leading, 84)
+            .padding(.trailing, 14)
+            .frame(height: 52)
+
             HStack {
                 Text(NSLocalizedString("Models & Providers", comment: "")).font(.title2.weight(.semibold))
                 Spacer()
@@ -27,7 +37,8 @@ struct ProvidersView: View {
             }
             .frame(maxWidth: 980)
             .frame(maxWidth: .infinity)
-            .padding(16)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 16)
 
             Divider()
 
