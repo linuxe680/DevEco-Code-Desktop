@@ -9,6 +9,8 @@ private struct ModelGroup: Identifiable {
 }
 
 struct ChatView: View {
+    @Binding var workPanelOpen: Bool
+
     @EnvironmentObject var store: SessionStore
     @EnvironmentObject var providers: ProviderStore
     @EnvironmentObject var server: ServerManager
@@ -23,7 +25,6 @@ struct ChatView: View {
     @AppStorage(AppSettings.Keys.chatFontSize)
     private var chatFontSize = 15.0
 
-    @State private var showDiff = false
     /// False once the user scrolls away from the tail; pauses stream follow
     /// and reveals the "Back to latest" pill.
     @State private var isNearBottom = true
@@ -887,7 +888,12 @@ struct ChatView: View {
                         "rectangle.split.2x1",
                         help: NSLocalizedString("Review file changes", comment: "")
                     ) {
-                        showDiff = true
+                        workPanelOpen = true
+                        store.workPanelTab = .review
+                        if let id = store.selectedSessionID {
+                            store.workPanelOpenBySession[id] = true
+                        }
+                        Task { await store.loadDiff() }
                     }
                     headerButton(
                         "arrow.down.right.and.arrow.up.left",
@@ -1304,9 +1310,6 @@ struct ChatView: View {
             showSearch = false
             focusTrigger += 1
         }
-        .sheet(isPresented: $showDiff) {
-            DiffSheet()
-        }
     }
 }
 
@@ -1477,192 +1480,6 @@ private struct StarterPromptButton: View {
         }
         .buttonStyle(.plain)
         .onHover { hovered = $0 }
-    }
-}
-
-/// File changes made during the selected session, with unified diffs.
-struct DiffSheet: View {
-    @EnvironmentObject var store: SessionStore
-    @Environment(\.dismiss) private var dismiss
-    @State private var filterQuery = ""
-    @State private var expandedFiles: Set<String> = []
-    @State private var allExpanded = false
-
-    private var filteredDiffs: [FileDiff] {
-        let query = filterQuery.trimmingCharacters(in: .whitespaces)
-        guard !query.isEmpty else { return store.diffs }
-        return store.diffs.filter { $0.file.localizedCaseInsensitiveContains(query) }
-    }
-
-    private var totalAdditions: Int { store.diffs.reduce(0) { $0 + Int($1.additions ?? 0) } }
-    private var totalDeletions: Int { store.diffs.reduce(0) { $0 + Int($1.deletions ?? 0) } }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                Text(NSLocalizedString("Changes", comment: ""))
-                    .font(.headline)
-                Text(String(format: NSLocalizedString("Files: %lld", comment: ""), store.diffs.count))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text("+\(totalAdditions)")
-                    .font(.caption)
-                    .foregroundStyle(.green)
-                Text("-\(totalDeletions)")
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                Spacer()
-                HStack(spacing: 4) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    TextField("Filter files", text: $filterQuery)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 170)
-                }
-                Button(allExpanded ? "Collapse All" : "Expand All") {
-                    withAnimation(.easeInOut(duration: 0.15)) { setAllExpanded(!allExpanded) }
-                }
-                .controlSize(.small)
-                .disabled(store.diffs.isEmpty)
-                Button(NSLocalizedString("Done", comment: "")) { dismiss() }
-                    .keyboardShortcut(.defaultAction)
-            }
-            .padding(14)
-
-            Divider()
-
-            if store.isLoadingDiff {
-                VStack {
-                    ProgressView().controlSize(.regular)
-                    Text(NSLocalizedString("Loading diff…", comment: "")).font(.caption).foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if store.diffs.isEmpty {
-                VStack {
-                    Image(systemName: "checkmark.circle")
-                        .font(.system(size: 28))
-                        .foregroundStyle(.secondary)
-                    Text(NSLocalizedString("No file changes in this session.", comment: ""))
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if filteredDiffs.isEmpty {
-                VStack {
-                    Text(NSLocalizedString("No files match the filter.", comment: ""))
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 10) {
-                        ForEach(filteredDiffs) { diff in
-                            DiffFileRow(
-                                diff: diff,
-                                isExpanded: allExpanded || expandedFiles.contains(diff.id)
-                            ) {
-                                withAnimation(.easeInOut(duration: 0.15)) { toggle(diff.id) }
-                            }
-                        }
-                    }
-                    .padding(14)
-                }
-            }
-        }
-        .frame(width: 680, height: 520)
-        .onAppear {
-            Task { await store.loadDiff() }
-        }
-    }
-
-    private func setAllExpanded(_ value: Bool) {
-        allExpanded = value
-        expandedFiles = value ? Set(store.diffs.map(\.id)) : []
-    }
-
-    private func toggle(_ id: String) {
-        let isCurrentlyExpanded = allExpanded || expandedFiles.contains(id)
-        if isCurrentlyExpanded {
-            if allExpanded {
-                expandedFiles = Set(store.diffs.map(\.id))
-                expandedFiles.remove(id)
-                allExpanded = false
-            } else {
-                expandedFiles.remove(id)
-            }
-        } else {
-            expandedFiles.insert(id)
-        }
-    }
-}
-
-private struct DiffFileRow: View {
-    let diff: FileDiff
-    let isExpanded: Bool
-    var onToggle: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Button { onToggle() } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: statusIcon)
-                        .foregroundStyle(statusColor)
-                        .font(.caption.weight(.bold))
-                    Text((diff.file as NSString).lastPathComponent)
-                        .font(.system(size: 12, weight: .medium, design: .monospaced))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Spacer()
-                    Text("+\(Int(diff.additions ?? 0))")
-                        .font(.caption)
-                        .foregroundStyle(.green)
-                    Text("-\(Int(diff.deletions ?? 0))")
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .padding(10)
-            .help(diff.file)
-
-            if isExpanded, let patch = diff.patch, !patch.isEmpty {
-                Divider()
-                ScrollView(.horizontal, showsIndicators: false) {
-                    Text(colorizedDiff(patch))
-                        .font(.system(size: 11, design: .monospaced))
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: true, vertical: false)
-                        .padding(10)
-                }
-                .frame(maxHeight: 320)
-            }
-        }
-        .background(Theme.canvas)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(Theme.softStroke)
-        )
-    }
-
-    private var statusIcon: String {
-        switch diff.status {
-        case "added": return "A"
-        case "deleted": return "D"
-        default: return "M"
-        }
-    }
-
-    private var statusColor: Color {
-        switch diff.status {
-        case "added": return .green
-        case "deleted": return .red
-        default: return .orange
-        }
     }
 }
 

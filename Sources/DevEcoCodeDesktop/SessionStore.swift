@@ -70,6 +70,10 @@ final class SessionStore: ObservableObject {
     /// Client-side pinned sessions (the server has no pin field); ordering
     /// follows pin order, newest pin first.
     @Published private(set) var pinnedSessionIDs: [String] = AppSettings.pinnedSessionIDs
+    /// Work Panel state is per session; the visible panel follows selection
+    /// without opening/closing or leaking one session's artifacts into another.
+    @Published var workPanelOpenBySession: [String: Bool] = [:]
+    @Published var workPanelTab: WorkPanelTab = .review
     /// Durable "always allow" rules the client records itself; the deveco
     /// server only remembers them for the lifetime of one server process.
     @Published private(set) var savedPermissionRules: [String] = AppSettings.savedPermissionRules

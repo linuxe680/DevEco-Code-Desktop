@@ -18,6 +18,23 @@ final class CommandPaletteTests: XCTestCase {
         XCTAssertEqual(GlobalCommandPaletteView.filteredProjects(projects, query: "missing"), [])
     }
 
+    func testWorkPanelStateIsSessionScoped() {
+        let store = SessionStore()
+        store.selectedSessionID = "s1"
+        store.workPanelOpenBySession["s1"] = true
+        store.workPanelTab = .context
+
+        store.selectedSessionID = "s2"
+        XCTAssertNil(store.workPanelOpenBySession["s2"])
+        XCTAssertEqual(store.workPanelTab, .context)
+
+        store.workPanelOpenBySession["s2"] = true
+        store.workPanelTab = .review
+        store.selectedSessionID = "s1"
+        XCTAssertTrue(store.workPanelOpenBySession["s1"] ?? false)
+        XCTAssertEqual(store.workPanelTab, .review)
+    }
+
     func testSessionsGroupByProject() throws {
         let groups = SessionProjectGroup.groups([
             try session(id: "s1", title: "Alpha", directory: "/tmp/alpha", updated: 2),

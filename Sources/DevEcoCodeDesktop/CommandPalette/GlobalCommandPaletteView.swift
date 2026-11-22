@@ -243,6 +243,16 @@ struct CommandAction: Identifiable {
             run: { _, server in server.chooseFolder() }
         ),
         CommandAction(
+            title: NSLocalizedString("Review File Changes", comment: ""),
+            subtitle: NSLocalizedString("Open the docked review panel", comment: ""),
+            symbol: "doc.text.magnifyingglass",
+            shortcut: "⌘J",
+            keywords: ["review", "diff", "files", "changes", "work panel"],
+            run: { _, _ in
+                NotificationCenter.default.post(name: .openWorkPanel, object: nil)
+            }
+        ),
+        CommandAction(
             title: NSLocalizedString("Export Session…", comment: ""),
             subtitle: NSLocalizedString("Export the selected transcript as Markdown", comment: ""),
             symbol: "square.and.arrow.up",

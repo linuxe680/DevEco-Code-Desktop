@@ -86,3 +86,5 @@
 - 2026-11-22 兼容性与可靠性复核：恢复同意流程数据目录、SSE 日志脱敏/边界、权限键归一化、串行日志读取；修复 delta flush 并发与模型查找；移除多会话窗口避免共享选择态串窗；增加 macOS 11 兼容适配（多窗口/拖放/LabeledContent/SMAppService 降级）。`swift test` 124/124；生成 arm64 与 x86_64 两个 DMG 并通过 hdiutil/codesign 验证。注意当前 Xcode 最低只支持 macOS 12 部署目标，Mach-O minos=12.0，Info.plist 声明 11.0 仅作安装门槛；真机 macOS 11 未实机验证。
 
 - 2026-11-22 工作台结构第一阶段：新增 ⌘K 全局命令面板（命令、会话、最近项目统一搜索与跳转）；侧栏未置顶会话按项目分组，显示项目名与会话数；新增纯逻辑测试覆盖过滤/分组。`swift test` 127/127 通过。
+
+- 2026-11-22 工作台结构第二阶段：新增会话级 Work Panel（Review/Context），将原 DiffSheet 改为 dock 面板并支持 ⌘J/命令面板打开；迁移 DiffFileRow 与 diff 渲染到独立模块，补充面板状态隔离测试。`swift test` 128/128 通过。

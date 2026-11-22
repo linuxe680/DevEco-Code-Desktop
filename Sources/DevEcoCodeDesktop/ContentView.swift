@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 extension Notification.Name {
     static let openQuickSwitch = Notification.Name("com.deveco.openQuickSwitch")
     static let exportSelectedSession = Notification.Name("com.deveco.exportSelectedSession")
+    static let openWorkPanel = Notification.Name("com.deveco.openWorkPanel")
 }
 
 struct ContentView: View {
@@ -14,6 +15,7 @@ struct ContentView: View {
     @EnvironmentObject var providers: ProviderStore
     @State private var section: Section = .sessions
     @State private var showSwitcher = false
+    @State private var workPanelOpen = false
 
     enum Section: String, CaseIterable, Identifiable {
         case sessions, providers
@@ -161,8 +163,11 @@ struct ContentView: View {
                     HSplitView {
                         SessionListView()
                             .frame(minWidth: 230, idealWidth: 270, maxWidth: 330)
-                        ChatView()
+                        ChatView(workPanelOpen: $workPanelOpen)
                             .frame(minWidth: 460)
+                        if workPanelOpen {
+                            WorkPanelView(isOpen: $workPanelOpen)
+                        }
                     }
                 case .providers:
                     ProvidersView()
@@ -224,6 +229,20 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .exportSelectedSession)) { _ in
             exportSession(store.selectedSession)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openWorkPanel)) { _ in
+            workPanelOpen = true
+            store.workPanelTab = .review
+            if let id = store.selectedSessionID {
+                store.workPanelOpenBySession[id] = true
+            }
+        }
+        .onChange(of: store.selectedSessionID) { id in
+            guard let id else {
+                workPanelOpen = false
+                return
+            }
+            workPanelOpen = store.workPanelOpenBySession[id] ?? false
         }
         .sheet(isPresented: $showSwitcher) {
             GlobalCommandPaletteView()

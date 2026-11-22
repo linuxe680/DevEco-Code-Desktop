@@ -146,6 +146,10 @@ struct DevEcoCodeDesktopApp: App {
                 .keyboardShortcut("k", modifiers: .command)
                 Button(NSLocalizedString("Choose Project Folder…", comment: "")) { appDelegate.server.chooseFolder() }
                 Divider()
+                Button(NSLocalizedString("Review File Changes", comment: "")) {
+                    NotificationCenter.default.post(name: .openWorkPanel, object: nil)
+                }
+                .keyboardShortcut("j", modifiers: .command)
                 Button(NSLocalizedString("Export Session…", comment: "")) {
                     NotificationCenter.default.post(name: .exportSelectedSession, object: nil)
                 }
