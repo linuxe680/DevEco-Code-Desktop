@@ -100,7 +100,7 @@ git push origin v0.5.x    # pushes the tag → GitHub Actions builds & publishes
 swift test --disable-sandbox
 ```
 
-68 tests cover failure classification, queue hardening, session isolation, mention parsing, path filtering, image downscaling, and settings migrations.
+127 tests cover failure classification, queue hardening, session isolation, mention parsing, path filtering, image downscaling, and settings migrations.
 
 ## Localization
 
@@ -193,7 +193,7 @@ git push origin v0.5.x    # 推送标签 → GitHub Actions 自动构建并发�
 swift test --disable-sandbox
 ```
 
-68 项测试覆盖失败分类、队列加固、会话隔离、@ 解析、路径过滤、图片压缩与设置迁移。
+127 项测试覆盖失败分类、队列加固、会话隔离、@ 解析、路径过滤、图片压缩与设置迁移。
 
 ## 本地化
 

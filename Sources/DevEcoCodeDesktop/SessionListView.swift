@@ -20,6 +20,12 @@ struct SessionListView: View {
         store.sessions.filter { $0.isArchived && !$0.isSubagent }
     }
 
+    private var projectGroups: [SessionProjectGroup] {
+        SessionProjectGroup.groups(
+            activeSessions.filter { !store.pinnedSessionIDs.contains($0.id) }
+        )
+    }
+
     private var pinnedSessions: [Session] {
         // Pin order first (newest pin first), then anything pinned that fell
         // out of the stored list keeps its recency position.
@@ -168,13 +174,13 @@ struct SessionListView: View {
                                 sectionHeader(NSLocalizedString("Pinned", comment: "session group"))
                             }
                         }
-                        ForEach(timeGroups(unpinnedActiveSessions.filter(matches)), id: \.label) { group in
+                        ForEach(projectGroups) { group in
                             Section {
-                                ForEach(group.items) { session in
+                                ForEach(group.sessions) { session in
                                     row(for: session)
                                 }
                             } header: {
-                                sectionHeader(group.label)
+                                projectSectionHeader(group)
                             }
                         }
                         if !archivedSessions.filter(matches).isEmpty {
@@ -218,6 +224,28 @@ struct SessionListView: View {
                 }
             }
         }
+    }
+
+    private func projectSectionHeader(_ group: SessionProjectGroup) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "folder")
+                .font(.system(size: 10))
+            Text(group.name)
+                .lineLimit(1)
+            if !group.path.isEmpty {
+                Text("• \(group.sessions.count)")
+                    .foregroundStyle(.quaternary)
+            }
+            Spacer()
+        }
+        .font(.system(size: 12, weight: .semibold))
+        .foregroundStyle(.tertiary)
+        .textCase(.uppercase)
+        .padding(.horizontal, 10)
+        .padding(.top, 12)
+        .padding(.bottom, 4)
+        .background(Theme.sidebarFill)
+        .help(group.path)
     }
 
     private func sectionHeader(_ title: String) -> some View {
@@ -493,5 +521,38 @@ private struct RenameSessionView: View {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         onSave(trimmed)
+    }
+}
+
+/// Pure grouping helper so project sections can be unit-tested without SwiftUI.
+struct SessionProjectGroup: Identifiable {
+    let id: String
+    let name: String
+    let path: String
+    var sessions: [Session]
+
+    static func groups(_ sessions: [Session]) -> [SessionProjectGroup] {
+        var groups: [String: SessionProjectGroup] = [:]
+        for session in sessions {
+            let path = session.directory ?? ""
+            let name = path.isEmpty
+                ? NSLocalizedString("No project", comment: "session group")
+                : (path as NSString).lastPathComponent
+            var group = groups[path] ?? SessionProjectGroup(id: path, name: name, path: path, sessions: [])
+            group.sessions.append(session)
+            groups[path] = group
+        }
+        return groups.values
+            .map { group in
+                var copy = group
+                copy.sessions.sort { ($0.updatedAt ?? .distantPast) > ($1.updatedAt ?? .distantPast) }
+                return copy
+            }
+            .sorted { lhs, rhs in
+                let lhsUpdated = lhs.sessions.first?.updatedAt ?? .distantPast
+                let rhsUpdated = rhs.sessions.first?.updatedAt ?? .distantPast
+                if lhsUpdated == rhsUpdated { return lhs.name < rhs.name }
+                return lhsUpdated > rhsUpdated
+            }
     }
 }

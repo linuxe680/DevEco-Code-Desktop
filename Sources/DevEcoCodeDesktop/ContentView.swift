@@ -226,7 +226,7 @@ struct ContentView: View {
             exportSession(store.selectedSession)
         }
         .sheet(isPresented: $showSwitcher) {
-            QuickSwitchView()
+            GlobalCommandPaletteView()
         }
         .onChange(of: store.pendingPermissions.count) { _ in
             updateDockBadge()
@@ -437,93 +437,6 @@ private struct ConnectionStatusStrip: View {
         .background(server.state == .failed ? Theme.bannerError : Theme.bannerInfo)
         .animation(.easeInOut(duration: 0.15), value: server.state)
         .animation(.easeInOut(duration: 0.15), value: store.isReconnecting)
-    }
-}
-
-/// ⌘K palette: type-to-filter active sessions, Enter opens the top hit.
-struct QuickSwitchView: View {
-    @EnvironmentObject var store: SessionStore
-    @Environment(\.dismiss) private var dismiss
-
-    @State private var query = ""
-    @FocusState private var fieldFocused: Bool
-
-    private var results: [Session] {
-        let active = store.sessions.filter { !$0.isArchived }
-        if query.isEmpty {
-            return active.sorted { ($0.updatedAt ?? .distantPast) > ($1.updatedAt ?? .distantPast) }
-        }
-        return active.filter {
-            $0.displayTitle.localizedCaseInsensitiveContains(query)
-                || ($0.directory ?? "").localizedCaseInsensitiveContains(query)
-        }
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
-                TextField("Switch to session…", text: $query)
-                    .textFieldStyle(.plain)
-                    .font(.title3)
-                    .focused($fieldFocused)
-                    .onSubmit {
-                        if let first = results.first {
-                            commit(first)
-                        }
-                    }
-            }
-            .padding(16)
-
-            Divider()
-
-            if results.isEmpty {
-                VStack {
-                    Text(NSLocalizedString("No matching sessions", comment: ""))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                List(results) { session in
-                    Button { commit(session) } label: {
-                        HStack(alignment: .firstTextBaseline) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(session.displayTitle)
-                                    .font(.system(size: 13, weight: .medium))
-                                    .lineLimit(1)
-                                if let directory = session.directory {
-                                    Text((directory as NSString).lastPathComponent)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                            Spacer()
-                            if let indicator = store.indicator(for: session.id) {
-                                SessionIndicatorBadge(indicator: indicator)
-                            }
-                            if session.id == store.selectedSessionID {
-                                Image(systemName: "checkmark")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
-                .listStyle(.plain)
-            }
-        }
-        .frame(width: 480, height: 400)
-        .background(Theme.chromeFill)
-        .onAppear { fieldFocused = true }
-    }
-
-    private func commit(_ session: Session) {
-        store.select(session.id)
-        dismiss()
     }
 }
 
