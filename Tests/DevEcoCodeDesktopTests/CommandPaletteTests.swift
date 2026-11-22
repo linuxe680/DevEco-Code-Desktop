@@ -18,6 +18,22 @@ final class CommandPaletteTests: XCTestCase {
         XCTAssertEqual(GlobalCommandPaletteView.filteredProjects(projects, query: "missing"), [])
     }
 
+    func testPermissionDetailsRedactArgumentsAndClassifyRisk() {
+        let request = PermissionRequest(
+            id: "p1",
+            sessionID: "s1",
+            permission: "bash",
+            patterns: ["curl -H 'Authorization: Bearer abc123' https://example.com"],
+            action: nil
+        )
+        let details = PermissionPresentation.details(for: request, workspace: "/tmp/project")
+        XCTAssertEqual(details.tool, "Bash")
+        XCTAssertTrue(details.risk.contains("High risk"))
+        XCTAssertEqual(details.workspace, "/tmp/project")
+        XCTAssertTrue(details.argumentPreview.contains("REDACTED"))
+        XCTAssertFalse(details.argumentPreview.contains("abc123"))
+    }
+
     func testWorkPanelStateIsSessionScoped() {
         let store = SessionStore()
         store.selectedSessionID = "s1"

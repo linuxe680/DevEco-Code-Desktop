@@ -931,7 +931,7 @@ struct ChatView: View {
             if !store.pendingPermissions.isEmpty || !store.pendingQuestions.isEmpty {
                 VStack(spacing: 8) {
                     if let request = store.pendingPermissions.first(where: { $0.sessionID == store.selectedSessionID }) {
-                        PermissionBanner(request: request, pendingCount: store.pendingPermissions.count)
+                        PermissionCardView(request: request, pendingCount: store.pendingPermissions.count)
                     }
                     if let request = store.pendingQuestions.first(where: { $0.sessionID == store.selectedSessionID }) {
                         QuestionBanner(request: request)
@@ -3429,78 +3429,6 @@ func colorizedDiff(_ patch: String) -> AttributedString {
         result += segment
     }
     return result
-}
-
-private struct PermissionBanner: View {
-    @EnvironmentObject var store: SessionStore
-    let request: PermissionRequest
-    var pendingCount: Int = 1
-
-    @AppStorage(AppSettings.Keys.chatFontSize)
-    private var chatFontSize = 15.0
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "lock.shield")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.orange)
-                .frame(width: 22, height: 22)
-                .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
-
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(NSLocalizedString("Permission required", comment: ""))
-                        .font(.system(size: ChatTypography.meta(chatFontSize), weight: .semibold))
-                        .fixedSize()
-                    Text("·")
-                        .foregroundStyle(.tertiary)
-                    Text(request.title)
-                        .font(.system(size: ChatTypography.meta(chatFontSize)))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    if pendingCount > 1 {
-                        Text("(\(pendingCount))")
-                            .font(.system(size: ChatTypography.micro(chatFontSize)))
-                            .foregroundStyle(.tertiary)
-                            .fixedSize()
-                    }
-                }
-                if !request.detail.isEmpty {
-                    Text(request.detail)
-                        .font(.system(size: ChatTypography.micro(chatFontSize), design: .monospaced))
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-            }
-
-            Spacer(minLength: 8)
-
-            HStack(spacing: 6) {
-                Button(NSLocalizedString("Allow once", comment: "")) {
-                    store.reply(to: request, reply: "once")
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                Button(NSLocalizedString("Always allow", comment: "")) {
-                    store.reply(to: request, reply: "always")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                Button(NSLocalizedString("Reject", comment: ""), role: .destructive) {
-                    store.reply(to: request, reply: "reject")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-            }
-            .fixedSize()
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .background(Theme.chromeFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(Theme.softStroke))
-    }
 }
 
 /// Slash-command suggestions floating above the input; click completes the
