@@ -12,6 +12,8 @@ pkill -f 'DevEcoCodeDesktop' 2>/dev/null || true
 tar -C "$SRC" --exclude='.build' --exclude='*.app' --exclude='.DS_Store' -cf - . | tar -C "$DST" -xf -
 cd "$DST"
 chmod +x Scripts/build-app.sh
-./Scripts/build-app.sh
-open "DevEco Code Desktop.app"
+ARCH="$(uname -m)"
+MIN_MACOS="${MIN_MACOS:-12.0}"
+./Scripts/build-app.sh "$ARCH" "$MIN_MACOS"
+open "DevEco Code Desktop ($ARCH).app"
 echo "Installed and launched $DST"

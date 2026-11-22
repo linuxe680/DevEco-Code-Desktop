@@ -105,23 +105,6 @@ private struct ServerCommands: Commands {
     }
 }
 
-/// Extra session windows share the same store; the selected session is
-/// restored from the window's `value` when it opens.
-private struct SessionWindowCommands: Commands {
-    @Environment(\.openWindow) private var openWindow
-    @ObservedObject var store: SessionStore
-
-    var body: some Commands {
-        CommandGroup(after: .newItem) {
-            Button(NSLocalizedString("Open Session in New Window", comment: "")) {
-                guard let id = store.selectedSessionID else { return }
-                openWindow(id: "session", value: id)
-            }
-            .keyboardShortcut("n", modifiers: [.command, .option])
-        }
-    }
-}
-
 @main
 struct DevEcoCodeDesktopApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
@@ -147,21 +130,11 @@ struct DevEcoCodeDesktopApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView(initialSessionID: nil)
+            ContentView()
                 .environmentObject(appDelegate.server)
                 .environmentObject(store)
                 .environmentObject(providers)
                 .frame(minWidth: 940, minHeight: 620)
-        }
-        WindowGroup(id: "session", for: String.self) { sessionID in
-            ContentView(initialSessionID: sessionID.wrappedValue)
-                .environmentObject(appDelegate.server)
-                .environmentObject(store)
-                .environmentObject(providers)
-                .frame(minWidth: 940, minHeight: 620)
-        }
-        .commands {
-            SessionWindowCommands(store: store)
         }
         .commands {
             CommandGroup(after: .newItem) {

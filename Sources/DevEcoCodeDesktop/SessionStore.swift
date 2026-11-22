@@ -357,6 +357,7 @@ final class SessionStore: ObservableObject {
     private var messageLoadTasks: [String: Task<Void, Never>] = [:]
     private var pendingDeltas: [String: String] = [:]
     private var lastDeltaFlush = Date.distantPast
+    private var deltaFlushTask: Task<Void, Never>?
 
     private static let cacheSessionsKey = "cachedSessions"
     private static let cacheSelectedKey = "cachedSelectedSession"
@@ -465,14 +466,18 @@ final class SessionStore: ObservableObject {
         messageLoadTasks = [:]
         pendingDeltas = [:]
         lastDeltaFlush = .distantPast
+        deltaFlushTask?.cancel()
+        deltaFlushTask = nil
         lastStreamActivity = Date()
         notifiedPermissionIDs.removeAll()
         activeSessionIDs = []
         abortingSessionIDs = []
         draft = ""
+        attachments = []
         queuedPrompts = []
         draftsBySession = [:]
         queuesBySession = [:]
+        attachmentsBySession = [:]
         sessionStatuses = [:]
         lastSentPromptBySession = [:]
         autoRetryCountBySession = [:]
@@ -651,6 +656,24 @@ final class SessionStore: ObservableObject {
         guard let id = selectedSessionID else { return }
         variantsBySession[id] = selectedVariant ?? ""
         AppSettings.sessionVariants = variantsBySession
+    }
+
+    private func setModel(_ model: String?, for sessionID: String) {
+        guard sessionID == selectedSessionID else { return }
+        if selectedModel != model {
+            selectedModel = model
+        } else {
+            stashModelForSelectedSession()
+        }
+    }
+
+    private func setVariant(_ variant: String?, for sessionID: String) {
+        guard sessionID == selectedSessionID else { return }
+        if selectedVariant != variant {
+            selectedVariant = variant
+        } else {
+            stashVariantForSelectedSession()
+        }
     }
 
     func loadTodos() async {
@@ -925,8 +948,12 @@ final class SessionStore: ObservableObject {
     func editQueued(_ prompt: QueuedPrompt) {
         guard let id = selectedSessionID else { return }
         var state = composerState(for: id)
-        state.editQueued(prompt, model: selectedModel, variant: selectedVariant)
+        let restoredModel = prompt.model
+        let restoredVariant = prompt.prompt.variant
+        state.editQueued(prompt, model: restoredModel, variant: restoredVariant)
         applyComposerState(state, for: id)
+        setModel(restoredModel, for: id)
+        setVariant(restoredVariant, for: id)
     }
 
     /// Aborts the current generation (keeping the rest of the queue) and
@@ -938,6 +965,9 @@ final class SessionStore: ObservableObject {
         state.removeQueued(id: prompt.id)
         setQueue(state.queue, for: id)
         await performAbort(sessionID: id, clearQueue: false, flushAfter: false)
+        guard selectedSessionID == id, queue(for: id).contains(where: { $0.id == prompt.id }) == false else {
+            return
+        }
         if !performSend(prompt.prompt, sessionID: id) {
             enqueue(prompt, for: id, atFront: true)
         }
@@ -1450,8 +1480,16 @@ final class SessionStore: ObservableObject {
         }
     }
 
+    /// 服务端 /api/permission/saved 用 action/resource；事件里的
+    /// PermissionRequest 把同类值放在 permission/action。统一为 action|resource。
+    private func permissionKind(_ request: PermissionRequest) -> String {
+        let value = request.action ?? request.permission ?? ""
+        return value == "allow" ? (request.permission ?? value) : value
+    }
+
     private func matchesSavedPermission(_ request: PermissionRequest) -> Bool {
-        let kind = request.permission ?? ""
+        let kind = permissionKind(request)
+        guard !kind.isEmpty else { return false }
         let patterns = request.patterns ?? []
         if patterns.isEmpty {
             return savedPermissionRules.contains("\(kind)|")
@@ -1462,7 +1500,8 @@ final class SessionStore: ObservableObject {
     }
 
     private func savePermissionRule(from request: PermissionRequest) {
-        let kind = request.permission ?? ""
+        let kind = permissionKind(request)
+        guard !kind.isEmpty else { return }
         let patterns = request.patterns ?? []
         let newRules = patterns.isEmpty
             ? ["\(kind)|"]
@@ -1921,6 +1960,24 @@ final class SessionStore: ObservableObject {
         let buffered = pendingDeltas[partID]?.count ?? 0
         if Date().timeIntervalSince(lastDeltaFlush) >= 0.03 || buffered > 8_192 {
             flushDeltas()
+        }
+        scheduleDeltaFlush()
+    }
+
+    /// The 30ms batching timer was meant to drain the tail of a stream; it
+    /// was scheduled nowhere, so a final short delta stayed buffered until
+    /// the next event arrived. One coalesced timer per active burst.
+    private func scheduleDeltaFlush() {
+        guard !pendingDeltas.isEmpty, deltaFlushTask == nil else { return }
+        deltaFlushTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 30_000_000)
+            guard let self, self.deltaFlushTask != nil else { return }
+            if !self.pendingDeltas.isEmpty { self.flushDeltas() }
+            // 只有当前注册的任务可以清理/续约；被 disconnect 取消或替换的
+            // 旧任务醒来执行时不会清掉新任务的引用。
+            guard self.deltaFlushTask != nil else { return }
+            self.deltaFlushTask = nil
+            if !self.pendingDeltas.isEmpty { self.scheduleDeltaFlush() }
         }
     }
 

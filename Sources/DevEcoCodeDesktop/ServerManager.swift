@@ -36,6 +36,8 @@ final class ServerManager: ObservableObject {
     private var serverProcess: ProcessGroupLauncher.Launched?
     private var monitorTask: Task<Void, Never>?
     private var outputPipe: Pipe?
+    private var outputReader: FileHandle?
+    private var outputReadQueue: DispatchQueue?
     private var logHandle: FileHandle?
     private var healthTask: Task<Void, Never>?
     private var startupActivity: NSObjectProtocol?
@@ -187,21 +189,25 @@ final class ServerManager: ObservableObject {
             return // 不再启动健康检查
         }
 
-        // NEVER call `availableData` here: it blocks until the child writes,
-        // and this Task inherits @MainActor from ServerManager — that is the
-        // "enable server → app freezes" bug. A readabilityHandler is invoked
-        // by Foundation on a background queue only when bytes are available.
+        // NEVER call `availableData` on the main actor: it blocks until the
+        // child writes. A dedicated serial queue owns the readability handler
+        // and FileHandle; cleanUpIO removes the handler there before closing.
         let reader = output.fileHandleForReading
-        reader.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            guard !data.isEmpty else {
-                handle.readabilityHandler = nil
-                return
+        outputReadQueue = DispatchQueue(label: "deveco.server.output")
+        outputReadQueue?.sync { [weak self] in
+            guard let self else { return }
+            reader.readabilityHandler = { handle in
+                let data = handle.availableData
+                guard !data.isEmpty else {
+                    handle.readabilityHandler = nil
+                    return
+                }
+                let text = String(data: data, encoding: .utf8)
+                    ?? String(decoding: data, as: UTF8.self)
+                Task { @MainActor [weak self] in self?.appendLog(text) }
             }
-            let text = String(data: data, encoding: .utf8)
-                ?? String(decoding: data, as: UTF8.self)
-            Task { @MainActor in self?.appendLog(text) }
         }
+        outputReader = reader
 
         // 监控子进程退出
         let launchedPID = serverProcess!.pid
@@ -389,9 +395,13 @@ final class ServerManager: ObservableObject {
     }
 
     private func cleanUpIO() {
-        outputPipe?.fileHandleForReading.readabilityHandler = nil
+        let reader = outputReader
+        let queue = outputReadQueue
+        queue?.sync { reader?.readabilityHandler = nil }
         outputPipe?.fileHandleForWriting.closeFile()
-        outputPipe?.fileHandleForReading.closeFile()
+        reader?.closeFile()
+        outputReader = nil
+        outputReadQueue = nil
         outputPipe = nil
         try? logHandle?.close()
         logHandle = nil
@@ -688,14 +698,13 @@ final class ServerManager: ObservableObject {
         let task = Process()
         task.executableURL = executable
         task.arguments = ["auth", "consent", "--accept"]
-        var environment = ProcessInfo.processInfo.environment
-        var pathPrefix = [executable.deletingLastPathComponent().path]
-        if let nodeDir = resolveNodeDirectory() {
-            pathPrefix.append(nodeDir)
-        }
-        environment["PATH"] = pathPrefix.joined(separator: ":")
-            + ":" + (environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin")
-        task.environment = environment
+        // 必须与 deveco serve 使用同一个数据目录；否则接受状态写进默认
+        // XDG 路径，服务端仍报告未同意。
+        task.environment = serverEnvironment(
+            dataDirectory: dataDirectory,
+            executable: executable,
+            projectDirectory: URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        )
         task.standardOutput = FileHandle.nullDevice
         task.standardError = FileHandle.nullDevice
         do {
@@ -710,6 +719,7 @@ final class ServerManager: ObservableObject {
     // MARK: - Port selection
 
     static func firstFreePort(from start: UInt16) -> UInt16? {
+        guard start <= 65_535 else { return nil }
         for candidate in start...65_535 {
             if isPortFree(candidate) { return candidate }
         }

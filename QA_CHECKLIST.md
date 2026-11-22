@@ -21,6 +21,7 @@
 - 一次性系统清理（本轮）：把文件选择器、备份/恢复、导出、服务启动失败、工具名、会话列表/标题等剩余硬编码英文统一收口；中文表 `New session` 补齐，并在 `Session.displayTitle` 层把服务端历史英文占位标题显示为“新建会话”。补早期语言覆盖，避免 SwiftUI `App.init()` 太晚导致 Bundle 仍取英文资源。
 - CUA 实机复验（本轮）：最新安装版重启后自动避让历史占用端口并连接 `127.0.0.1:4100`；新建会话、输入框粘贴/发送、发送后清空、首条 prompt 自动标题均为中文且正常；侧栏中文标题、启动提示词、模型与强度选择器显示正常。曾在模型中看到 `Recalled ...` 英文，这是服务端记忆工具返回的正文，不是客户端界面文案。
 - 验证：中文 `plutil -lint` 通过，`swift test` 116/116，release 构建成功，已安装最新版到 `/Applications` 并通过 `codesign --verify --deep --strict`。
+- 2026-11-22 本轮复核：修复排队消息编辑时的模型/强度丢失；断连时清空附件状态；补齐流式 delta 尾部定时 flush（最后一个 delta 不再滞留）；消息查找改为后缀字典；复制操作栏改为消息下方右对齐，不再覆盖正文或发送按钮；新建窗口命令与标题/导出改为跟随当前窗口会话；README 的 PATH 描述与 `/bin/sh -c` 实现对齐。`swift test` 123/123，release 构建、安装和签名校验通过。
 
 ## 1. 启动与服务
 
@@ -81,3 +82,5 @@
 - [ ] `codesign --verify --deep --strict` 通过。
 - [ ] 本地安装最新版后重新走一遍第 2-6 节。
 - [ ] 未经用户同意，不 push、不打 tag、不上传 GitHub、不发布 Release。
+
+- 2026-11-22 兼容性与可靠性复核：恢复同意流程数据目录、SSE 日志脱敏/边界、权限键归一化、串行日志读取；修复 delta flush 并发与模型查找；移除多会话窗口避免共享选择态串窗；增加 macOS 11 兼容适配（多窗口/拖放/LabeledContent/SMAppService 降级）。`swift test` 124/124；生成 arm64 与 x86_64 两个 DMG 并通过 hdiutil/codesign 验证。注意当前 Xcode 最低只支持 macOS 12 部署目标，Mach-O minos=12.0，Info.plist 声明 11.0 仅作安装门槛；真机 macOS 11 未实机验证。

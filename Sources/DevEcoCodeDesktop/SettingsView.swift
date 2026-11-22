@@ -1,6 +1,5 @@
 import SwiftUI
 import AppKit
-import ServiceManagement
 import UniformTypeIdentifiers
 import UserNotifications
 
@@ -34,7 +33,7 @@ private struct GeneralSettingsPane: View {
     @AppStorage(AppSettings.Keys.appAppearance)
     private var appAppearanceRaw = AppAppearance.dark.rawValue
 
-    @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+    @State private var launchAtLogin = LoginItemManager.isEnabled
     @State private var launchError: String?
 
     var body: some View {
@@ -77,14 +76,10 @@ private struct GeneralSettingsPane: View {
             Toggle(NSLocalizedString("Launch at login", comment: ""), isOn: $launchAtLogin)
                 .onChange(of: launchAtLogin) { enabled in
                     do {
-                        if enabled {
-                            try SMAppService.mainApp.register()
-                        } else {
-                            try SMAppService.mainApp.unregister()
-                        }
+                        try LoginItemManager.setEnabled(enabled)
                         launchError = nil
                     } catch {
-                        launchAtLogin = SMAppService.mainApp.status == .enabled
+                        launchAtLogin = LoginItemManager.isEnabled
                         launchError = error.localizedDescription
                     }
                 }
@@ -169,12 +164,12 @@ private struct ServerSettingsPane: View {
 
             Divider()
 
-            LabeledContent {
+            HStack {
+                Text(NSLocalizedString("Starting port", comment: ""))
+                Spacer()
                 TextField("Port", value: $basePort, format: .number.grouping(.never))
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 90)
-            } label: {
-                Text(NSLocalizedString("Starting port", comment: ""))
             }
             Text(NSLocalizedString("The first port tried (default 4096). If it is busy the app picks the next free one.", comment: ""))
                 .font(.caption)
@@ -388,7 +383,9 @@ private struct ChatSettingsPane: View {
                 }
             Toggle(NSLocalizedString("Play a sound when a generation completes", comment: ""), isOn: $playSoundOnComplete)
 
-            LabeledContent {
+            HStack {
+                Text(NSLocalizedString("Chat text size", comment: ""))
+                Spacer()
                 Stepper(
                     "\(Int(chatFontSize)) pt",
                     value: $chatFontSize,
@@ -396,8 +393,6 @@ private struct ChatSettingsPane: View {
                     step: 1
                 )
                 .fixedSize()
-            } label: {
-                Text(NSLocalizedString("Chat text size", comment: ""))
             }
             VStack(alignment: .leading, spacing: 5) {
                 Text(NSLocalizedString("Preview", comment: ""))
@@ -416,7 +411,9 @@ private struct ChatSettingsPane: View {
 
             Divider()
 
-            LabeledContent {
+            HStack {
+                Text(NSLocalizedString("Default model for new sessions", comment: ""))
+                Spacer()
                 Picker("", selection: $defaultSessionModel) {
                     Text(NSLocalizedString("Server default", comment: "")).tag("")
                     ForEach(providers.allModelChoices) { choice in
@@ -425,8 +422,6 @@ private struct ChatSettingsPane: View {
                 }
                 .labelsHidden()
                 .frame(maxWidth: 240)
-            } label: {
-                Text(NSLocalizedString("Default model for new sessions", comment: ""))
             }
             Text(NSLocalizedString("Preselected in the chat header. The server-configured default (Models & Providers) is used when left unset.", comment: ""))
                 .font(.caption)

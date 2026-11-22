@@ -8,15 +8,15 @@ A native macOS GUI for the locally installed `deveco` CLI. The app manages a loc
 
 ## Requirements
 
-- macOS 13+
+- macOS 11+（提供 Apple Silicon / Intel 两个安装包）
 - Xcode command line tools (Swift 5.9)
 - `deveco` CLI installed locally (`npm i -g deveco`) and Node.js on PATH
 
 ## Build & Run
 
 ```bash
-./Scripts/build-app.sh     # build the .app bundle
-open "DevEco Code Desktop.app"
+./Scripts/make-dmg.sh      # build arm64 + Intel .app bundles and DMGs
+open "DevEco Code Desktop (arm64).app"   # or (x86_64).app on Intel
 ```
 
 The build script signs with a persistent self-signed certificate (created once in `~/Library/Application Support/DevEcoCodeDesktop/signing`). A stable signing identity keeps TCC grants (folder access, etc.) across rebuilds; ad-hoc signing would reset them every build. If the identity is unavailable the script falls back to ad-hoc with a warning.
@@ -53,7 +53,7 @@ The build script signs with a persistent self-signed certificate (created once i
 
 **Server & data**
 
-- Starts `deveco serve` on a free local port (from `127.0.0.1:4096`, configurable); resolves the binary from common npm/homebrew paths or the login-shell PATH. Quit behavior configurable (stop vs. keep the server).
+- Starts `deveco serve` on a free local port (from `127.0.0.1:4096`, configurable); resolves the binary from common npm/homebrew paths or a minimal `/bin/sh -c` PATH probe that does not load shell profiles. Quit behavior configurable (stop vs. keep the server).
 - Backup/restore the deveco data directory (zip); live server log viewer; update-available banner; project usage totals and git branch in the UI.
 
 ## Harness / account boundary
@@ -86,7 +86,7 @@ Scripts/release.sh        # bumps version, builds, packages, verifies, tags v<x.
 git push origin v0.5.x    # pushes the tag → GitHub Actions builds & publishes the Release
 ```
 
-`release.sh` produces `build/DevEco Code Desktop-<version>.dmg` + `.sha256` + release notes (see [RELEASE.md](RELEASE.md)). Pushing a `v*` tag triggers [.github/workflows/release.yml](.github/workflows/release.yml): tests run, the DMG is built on a clean macOS runner (ad-hoc signed), and a GitHub Release is created with the DMG and checksum attached. The DMG is **not notarized** — on other Macs, right-click → Open or `xattr -dr com.apple.quarantine`.
+`release.sh` produces `build/DevEco Code Desktop-<version>-arm64.dmg` and `-x86_64.dmg`, each with `.sha256`, plus release notes (see [RELEASE.md](RELEASE.md)). Pushing a `v*` tag triggers [.github/workflows/release.yml](.github/workflows/release.yml): tests run, the DMG is built on a clean macOS runner (ad-hoc signed), and a GitHub Release is created with the DMG and checksum attached. The DMG is **not notarized** — on other Macs, right-click → Open or `xattr -dr com.apple.quarantine`.
 
 ## Design notes
 
@@ -118,15 +118,15 @@ DevEco Code Desktop 是本机 `deveco` CLI 的原生 macOS 图形客户端。应
 
 ## 环境要求
 
-- macOS 13+
+- macOS 11+（提供 Apple Silicon / Intel 两个安装包）
 - Xcode 命令行工具（Swift 5.9）
 - 本机已安装 `deveco` CLI（`npm i -g deveco`）且 Node.js 在 PATH 中
 
 ## 构建与运行
 
 ```bash
-./Scripts/build-app.sh     # 构建 .app
-open "DevEco Code Desktop.app"
+./Scripts/make-dmg.sh      # 构建 arm64 与 Intel 的 .app 和 DMG
+open "DevEco Code Desktop (arm64).app"   # Intel Mac 使用 (x86_64).app
 ```
 
 构建脚本使用持久自签名证书签名（首次自动创建于 `~/Library/Application Support/DevEcoCodeDesktop/signing`）。签名身份稳定可保留 macOS 已授予的权限（如文件夹访问）；ad-hoc 签名每次构建 CDHash 都会变化导致权限重置。找不到证书时自动回退 ad-hoc 并警告。
@@ -163,7 +163,7 @@ open "DevEco Code Desktop.app"
 
 **服务器与数据**
 
-- 在空闲本地端口启动 `deveco serve`（起始 `127.0.0.1:4096`，可配置）；自动解析 deveco 二进制（常见 npm/homebrew 路径、登录 shell PATH），也可在设置中指定。退出行为可配置（停止/保留服务进程）。
+- 在空闲本地端口启动 `deveco serve`（起始 `127.0.0.1:4096`，可配置）；自动解析 deveco 二进制（常见 npm/homebrew 路径、不加载 shell 配置的最小 `/bin/sh -c` PATH 探测），也可在设置中指定。退出行为可配置（停止/保留服务进程）。
 - 备份与恢复 deveco 数据目录（zip）；实时服务器日志查看器；新版本横幅；侧栏显示项目用量统计与 git 分支。
 
 **Harness 与账号边界**
@@ -179,7 +179,7 @@ Scripts/release.sh        # 递增版本、构建、打包、校验、打 v<x.y.
 git push origin v0.5.x    # 推送标签 → GitHub Actions 自动构建并发布 Release
 ```
 
-`release.sh` 产出 `build/DevEco Code Desktop-<version>.dmg` + `.sha256` + 发布说明（详见 [RELEASE.md](RELEASE.md)）。推送 `v*` 标签触发 [.github/workflows/release.yml](.github/workflows/release.yml)：干净 macOS runner 上先跑测试再构建 DMG（ad-hoc 签名），自动创建 GitHub Release 并附 DMG 与校验和。DMG **未做公证**——在其他 Mac 上首次打开请右键 → 打开，或执行 `xattr -dr com.apple.quarantine`。
+`release.sh` 产出 `build/DevEco Code Desktop-<version>-arm64.dmg` 与 `-x86_64.dmg`（各含 `.sha256`）+ 发布说明（详见 [RELEASE.md](RELEASE.md)）。推送 `v*` 标签触发 [.github/workflows/release.yml](.github/workflows/release.yml)：干净 macOS runner 上先跑测试再构建 DMG（ad-hoc 签名），自动创建 GitHub Release 并附 DMG 与校验和。DMG **未做公证**——在其他 Mac 上首次打开请右键 → 打开，或执行 `xattr -dr com.apple.quarantine`。
 
 ## 设计说明
 

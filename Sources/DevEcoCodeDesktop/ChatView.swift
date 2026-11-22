@@ -1044,7 +1044,7 @@ struct ChatView: View {
                                 ForEach(visibleMessages) { message in
                                     MessageBubble(
                                         message: message,
-                                        isStreaming: store.isSending && message.id == visibleMessages.last?.id,
+                                        isStreaming: store.isSending && message.id == store.messages.last?.id,
                                         searchQuery: searchQuery
                                     )
                                     .id(message.id)
@@ -1146,15 +1146,28 @@ struct ChatView: View {
                             .buttonStyle(.plain)
                             .help(NSLocalizedString("Remove queued prompt", comment: ""))
                         }
-                        // Drag one queued chip onto another to reorder.
-                        .draggable(queued.id.uuidString)
-                        .dropDestination(for: String.self) { items, _ in
-                            guard let dragged = items.first,
-                                  let id = UUID(uuidString: dragged),
-                                  id != queued.id,
-                                  store.queuedPrompts.contains(where: { $0.id == id }) else { return false }
-                            store.moveQueued(id, before: queued.id)
-                            return true
+                        // Reorder controls work on every supported macOS
+                        // version; SwiftUI drag/drop requires macOS 13.
+                        HStack(spacing: 4) {
+                            Button {
+                                guard let index = store.queuedPrompts.firstIndex(where: { $0.id == queued.id }),
+                                      index > 0 else { return }
+                                store.moveQueued(queued.id, before: store.queuedPrompts[index - 1].id)
+                            } label: {
+                                Image(systemName: "chevron.up")
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(store.queuedPrompts.first?.id == queued.id)
+                            Button {
+                                guard let index = store.queuedPrompts.firstIndex(where: { $0.id == queued.id }),
+                                      index + 1 < store.queuedPrompts.count else { return }
+                                let target = store.queuedPrompts[index + 2 < store.queuedPrompts.count ? index + 2 : index + 1]
+                                store.moveQueued(queued.id, before: target.id)
+                            } label: {
+                                Image(systemName: "chevron.down")
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(store.queuedPrompts.last?.id == queued.id)
                         }
                     }
                 }
@@ -2049,6 +2062,9 @@ private struct MessageBubble: View {
         .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
         .animation(.easeInOut(duration: 0.12), value: hovered)
         .onHover { hovered = $0 }
+        .overlay(alignment: .bottomTrailing) {
+            trailingActionBar
+        }
         .contextMenu {
             if isUser {
                 Button(NSLocalizedString("Edit & resend…", comment: "")) {
@@ -2089,12 +2105,6 @@ private struct MessageBubble: View {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .stroke(Theme.userBubbleStroke)
             )
-            .overlay(alignment: .topTrailing) {
-                if hovered && !isStreamingThis {
-                    hoverActionBar
-                        .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .topTrailing)))
-                }
-            }
         }
     }
 
@@ -2131,11 +2141,18 @@ private struct MessageBubble: View {
         .font(.system(size: ChatTypography.body(chatFontSize)))
         .lineSpacing(ChatTypography.lineSpacing(chatFontSize))
         .padding(.vertical, 3)
-        .overlay(alignment: .topTrailing) {
-            if hovered && !isStreamingThis {
+    }
+
+    /// Codex keeps transcript actions below the message, right-aligned, so
+    /// they never float over text or obscure the send button.
+    @ViewBuilder
+    private var trailingActionBar: some View {
+        if hovered && !isStreamingThis {
+            HStack {
+                Spacer(minLength: 0)
                 hoverActionBar
-                    .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .topTrailing)))
             }
+            .transition(.opacity)
         }
     }
 
@@ -2321,28 +2338,133 @@ private struct TodoPanel: View {
     }
 }
 
-/// Streaming assistant text. SessionStore now flushes deltas every ~30ms, so
-/// rendering the target directly tracks the network output smoothly; an extra
-/// typewriter backlog only made text arrive in visible stairs. Formatting is
-/// applied by PartView once the run finishes.
+/// Reveals assistant text at a comfortable reading speed even when the
+/// server delivers the whole reply in one burst. Follows live deltas closely
+/// when they arrive gradually; when `isStreaming` flips false after a burst,
+/// it keeps draining the remaining backlog instead of snapping to the end.
 private struct StreamingTextView: View {
     let target: String
     let useMarkdown: Bool
+    var isStreaming: Bool = false
     let searchQuery: String
 
     @AppStorage(AppSettings.Keys.chatFontSize)
     private var chatFontSize = 15.0
+    @StateObject private var reveal = StreamingReveal()
+
+    /// True while the server is actually appending to the transcript. The
+    /// `isStreaming` flag alone flips false the moment the network run ends,
+    /// which made cached large replies snap to their final glyph instead of
+    /// finishing the typewriter pass.
+    private var revealIsStreaming: Bool {
+        isStreaming || (reveal.activated && !reveal.finished)
+    }
+
+    /// Historical messages (never streaming) render the full text instantly.
+    /// Only bubbles that actually went through a live run use the typewriter.
+    private var isTypewriterActive: Bool {
+        reveal.activated && !reveal.finished
+    }
+
+    private var shown: String {
+        if !reveal.activated {
+            return target
+        }
+        return reveal.text
+    }
 
     private var content: String {
-        guard !target.isEmpty else { return "▍" }
-        return target + " ▍"
+        guard isTypewriterActive else {
+            return split.hasLiveTail ? split.liveTail : ""
+        }
+        guard !split.hasLiveTail else { return "▍" }
+        return split.liveTail + "▍"
+    }
+
+    private var split: StreamRenderText.Split {
+        StreamRenderText.split(shown)
     }
 
     var body: some View {
-        Text(content)
-            .font(.system(size: ChatTypography.body(chatFontSize)))
-            .lineSpacing(ChatTypography.lineSpacing(chatFontSize))
-            .textSelection(.enabled)
+        VStack(alignment: .leading, spacing: 0) {
+            if split.hasStablePrefix {
+                MarkdownContentView(content: split.stablePrefix, searchQuery: searchQuery)
+            }
+            Text(content)
+                .font(.system(size: ChatTypography.body(chatFontSize)))
+                .lineSpacing(ChatTypography.lineSpacing(chatFontSize))
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .onAppear { reveal.update(target: target, isStreaming: revealIsStreaming) }
+        .onChange(of: target) { newTarget in reveal.update(target: newTarget, isStreaming: revealIsStreaming) }
+        .onChange(of: revealIsStreaming) { newValue in reveal.update(target: target, isStreaming: newValue) }
+    }
+}
+
+/// One timer per streaming bubble, on the main run loop, publishing at most
+/// every 24ms. Grapheme clusters are honored so Chinese and emoji are never
+/// cut in half.
+@MainActor
+private final class StreamingReveal: ObservableObject {
+    @Published private(set) var text = ""
+
+    private var target = ""
+    private var streaming = false
+    private var displayedUnits = 0
+    private var lastTick = Date.distantPast
+    /// Set only when the bubble has actually been in a live streaming state.
+    private(set) var activated = false
+    var finished: Bool { displayedUnits >= target.count }
+
+    /// ~62 glyphs/second: fast enough for short answers, slow enough that a
+    /// one-shot 300-glyph burst visibly types over a few seconds.
+    private static let glyphsPerSecond = 62.0
+    private static let minInterval = 0.024
+
+    func update(target newTarget: String, isStreaming newStreaming: Bool) {
+        if newStreaming {
+            if !activated {
+                activated = true
+                lastTick = Date()
+            }
+        }
+        if newTarget.count < displayedUnits {
+            displayedUnits = 0
+            text = ""
+        }
+        target = newTarget
+        streaming = newStreaming
+        guard activated else { return }
+        if newStreaming && displayedUnits == 0 && !newTarget.isEmpty {
+            displayedUnits = min(6, newTarget.count)
+            text = String(newTarget.prefix(displayedUnits))
+        }
+        if !newStreaming && displayedUnits == 0 {
+            displayedUnits = newTarget.count
+            text = newTarget
+            return
+        }
+        ensureTicking()
+    }
+
+    private func ensureTicking() {
+        guard displayedUnits < target.count else {
+            text = target
+            return
+        }
+        let now = Date()
+        let elapsed = now.timeIntervalSince(lastTick)
+        guard elapsed >= Self.minInterval else { return }
+        let step = max(1, min(3, Int(Self.glyphsPerSecond * elapsed)))
+        lastTick = now
+        displayedUnits = min(target.count, displayedUnits + step)
+        text = String(target.prefix(displayedUnits))
+        if displayedUnits < target.count {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.minInterval) { [weak self] in
+                self?.ensureTicking()
+            }
+        }
     }
 }
 
@@ -2369,28 +2491,12 @@ private struct PartView: View {
     var body: some View {
         switch part.type {
         case "text":
-            if isStreaming {
-                StreamingTextView(
-                    target: part.text ?? "",
-                    useMarkdown: useMarkdown,
-                    searchQuery: searchQuery
-                )
-            } else {
-                let content = part.text ?? ""
-                if useMarkdown {
-                    MarkdownContentView(content: content, searchQuery: searchQuery)
-                } else if !searchQuery.isEmpty, let attributed = highlightedAttributedString(content, query: searchQuery) {
-                    Text(attributed)
-                        .font(.system(size: ChatTypography.body(chatFontSize)))
-                        .lineSpacing(ChatTypography.lineSpacing(chatFontSize))
-                        .textSelection(.enabled)
-                } else {
-                    Text(content)
-                        .font(.system(size: ChatTypography.body(chatFontSize)))
-                        .lineSpacing(ChatTypography.lineSpacing(chatFontSize))
-                        .textSelection(.enabled)
-                }
-            }
+            StreamingTextView(
+                target: part.text ?? "",
+                useMarkdown: useMarkdown,
+                isStreaming: isStreaming,
+                searchQuery: searchQuery
+            )
         case "reasoning":
             DisclosureGroup(isExpanded: $thinkingExpanded) {
                 Text(part.text ?? "")

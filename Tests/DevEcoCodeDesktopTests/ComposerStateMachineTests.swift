@@ -85,4 +85,13 @@ final class ComposerStateMachineTests: XCTestCase {
         XCTAssertEqual(state.attachments.map(\.filename), ["queued.txt"])
         XCTAssertTrue(state.queue.isEmpty)
     }
+
+    func testEditQueuedPreservesQueuedVariant() {
+        var state = ComposerState()
+        let queued = QueuedPrompt(text: "queued", model: "p/high-effort", variant: "high")
+        state.enqueue(queued)
+        state.editQueued(queued, model: "p/current", variant: "low")
+
+        XCTAssertEqual(state.draft, "queued")
+    }
 }

@@ -27,6 +27,18 @@ final class ReliabilityFixTests: XCTestCase {
         XCTAssertEqual(types, ["a", "b"])
     }
 
+    func testSSEAlternatingLFCRFrameTerminator() {
+        let stream = EventStream()
+        var types: [String] = []
+        stream.onEvent = { types.append($0.type) }
+        let chunk = Data((
+            "data: {\"type\":\"a\"}\n\r\n" +
+            "data: {\"type\":\"b\"}\n\n"
+        ).utf8)
+        stream.ingest(chunk)
+        XCTAssertEqual(types, ["a", "b"])
+    }
+
     func testSSESplitFrameStillWorks() {
         let stream = EventStream()
         var types: [String] = []

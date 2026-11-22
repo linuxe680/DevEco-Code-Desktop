@@ -110,7 +110,26 @@ final class SessionIsolationTests: XCTestCase {
         XCTAssertEqual(store.draft, "queued question")
         XCTAssertEqual(store.queuedPrompts.first?.text, "work in progress")
         XCTAssertEqual(store.attachments.map(\.filename), ["queued.txt"])
-        XCTAssertEqual(store.queuedPrompts.first?.model, "provider/B")
+        XCTAssertEqual(store.queuedPrompts.first?.model, "provider/A")
+        XCTAssertEqual(store.queuedPrompts.first?.prompt.variant, "high")
+    }
+
+    func testEditQueuedRestoresQueuedModelVariant() {
+        let store = SessionStore()
+        store.selectedSessionID = "ses_edit_model"
+        store.selectedModel = "provider/current"
+        store.selectedVariant = "low"
+        let queued = SessionStore.QueuedPrompt(
+            text: "queued with model",
+            model: "provider/original",
+            variant: "high"
+        )
+
+        store.editQueued(queued)
+
+        XCTAssertEqual(store.draft, "queued with model")
+        XCTAssertEqual(store.selectedModel, "provider/original")
+        XCTAssertEqual(store.selectedVariant, "high")
     }
 
     func testPermissionAndQuestionIndicatorsAreSessionScoped() throws {

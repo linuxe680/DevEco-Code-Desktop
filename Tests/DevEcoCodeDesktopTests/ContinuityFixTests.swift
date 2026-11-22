@@ -39,6 +39,28 @@ final class ContinuityFixTests: XCTestCase {
         XCTAssertFalse(AppSettings.manuallyRenamedSessionIDs.contains("ses_delete"))
     }
 
+    func testTrailingDeltaFlushesWithoutAnotherEvent() throws {
+        let store = SessionStore()
+        store.selectedSessionID = "ses_delta_tail"
+        store.messages = [MessageRecord(
+            info: MessageInfo(id: "msg_delta_tail", role: "assistant", modelID: nil, providerID: nil),
+            parts: [Part(id: "prt_delta_tail", type: "text", text: "")]
+        )]
+        let event = try JSONDecoder.deveco.decode(
+            DevEvent.self,
+            from: Data(#"{"type":"message.part.delta","properties":{"sessionID":"ses_delta_tail","messageID":"msg_delta_tail","partID":"prt_delta_tail","field":"text","delta":"尾字"}}"#.utf8)
+        )
+
+        store.handle(event)
+
+        let expectation = expectation(description: "trailing delta flushed")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+            XCTAssertEqual(store.messages[0].parts[0].text, "尾字")
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 1.0)
+    }
+
     func testManualRenameDropsClientTitleAuthority() throws {
         let store = SessionStore()
         let session = Session(id: "ses_manual", title: "旧标题", directory: nil, time: nil, revert: nil)

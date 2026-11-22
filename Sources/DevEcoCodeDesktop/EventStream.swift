@@ -130,7 +130,7 @@ final class EventStream: NSObject, URLSessionDataDelegate {
         // Scan raw bytes in place: `[UInt8](buffer)` copied the whole buffer
         // for every chunk, which becomes expensive for long tool output.
         var found: (frameEnd: Int, consumeEnd: Int)?
-        buffer.withUnsafeBytes { rawBuffer in
+        buffer.withUnsafeMutableBytes { rawBuffer in
             guard let base = rawBuffer.baseAddress else { return }
             let bytes = base.assumingMemoryBound(to: UInt8.self)
             let count = rawBuffer.count
@@ -146,6 +146,10 @@ final class EventStream: NSObject, URLSessionDataDelegate {
                         // "\r\n\r\n"
                         found = (i - 1, i + 3)
                     }
+                } else if bytes[i] == 0x0D, // 兼容 "\n\r\n"
+                          i > 0, bytes[i - 1] == 0x0A,
+                          i + 1 < count, bytes[i + 1] == 0x0A {
+                    found = (i - 1, i + 2)
                 }
                 i += 1
             }
@@ -171,10 +175,11 @@ final class EventStream: NSObject, URLSessionDataDelegate {
         guard let json = payload.data(using: .utf8),
               let event = try? JSONDecoder.deveco.decode(DevEvent.self, from: json) else {
             consecutiveDecodeFailures += 1
+            let summary = ServerManager.redact(String(payload.prefix(120)))
             if consecutiveDecodeFailures == Self.failureWarningThreshold {
-                Log.stream.warning("Dropped \(self.consecutiveDecodeFailures) consecutive SSE frames; server event schema may have changed. Last payload: \(payload.prefix(120), privacy: .public)")
+                Log.stream.warning("Dropped \(self.consecutiveDecodeFailures) consecutive SSE frames; server event schema may have changed. Payload prefix: \(summary, privacy: .public)")
             } else {
-                Log.stream.debug("dropped undecodable SSE frame (\(payload.prefix(120), privacy: .public))")
+                Log.stream.debug("dropped undecodable SSE frame (\(summary, privacy: .public))")
             }
             return
         }

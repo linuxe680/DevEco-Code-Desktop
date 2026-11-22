@@ -39,8 +39,7 @@ echo "version: $version (build $build) → $new_version (build $new_build)"
 # --- 2. build + package ------------------------------------------------------
 "$ROOT/Scripts/make-dmg.sh"   # runs build-app.sh itself
 
-DMG="$ROOT/build/DevEco Code Desktop-$new_version.dmg"
-[[ -f "$DMG" ]] || { echo "DMG not found: $DMG"; exit 1; }
+DMG="$ROOT/build/DevEco Code Desktop-$new_version-arm64.dmg"
 
 # --- 3. release notes --------------------------------------------------------
 BUILD_DIR="$ROOT/build"
@@ -63,7 +62,7 @@ NOTES="$BUILD_DIR/ReleaseNotes-$new_version.md"
     echo
     echo "## Install"
     echo
-    echo "Open the DMG and drag the app to Applications. Signed with a local"
+    echo "Open the arm64 or x86_64 DMG matching your Mac and drag the app to Applications. Signed with a local"
     echo "development certificate (not notarized): if Gatekeeper blocks the"
     echo "first launch, right-click the app → Open, or run"
     echo "\`xattr -dr com.apple.quarantine '/Applications/DevEco Code Desktop.app'\`."
@@ -73,19 +72,24 @@ NOTES="$BUILD_DIR/ReleaseNotes-$new_version.md"
 echo "notes:   $NOTES"
 
 # --- 4. SHA-256 ---------------------------------------------------------------
-SHA=$(shasum -a 256 "$DMG" | awk '{print $1}')
-printf 'SHA256=%s  %s\n' "$SHA" "$(basename "$DMG")" > "$DMG.sha256"
-echo "sha256:  $DMG.sha256"
-echo "         $SHA"
+for ARCH in arm64 x86_64; do
+    DMG="$ROOT/build/DevEco Code Desktop-$new_version-$ARCH.dmg"
+    SHA=$(shasum -a 256 "$DMG" | awk '{print $1}')
+    printf 'SHA256=%s  %s\n' "$SHA" "$(basename "$DMG")" > "$DMG.sha256"
+    echo "sha256:  $DMG.sha256"
+    echo "         $SHA"
+done
 
 # --- 5. verification ----------------------------------------------------------
-APP="$ROOT/DevEco Code Desktop.app"
-codesign --verify --deep --strict "$APP" && echo "codesign: OK"
-hdiutil verify "$DMG" >/dev/null && echo "hdiutil:  OK"
-
-# Info.plist in the built app must match the bumped version.
-app_version=$(plutil -extract CFBundleShortVersionString raw "$APP/Contents/Info.plist")
-[[ "$app_version" == "$new_version" ]] || { echo "version mismatch in built app: $app_version"; exit 1; }
+for ARCH in arm64 x86_64; do
+    APP="$ROOT/DevEco Code Desktop ($ARCH).app"
+    ARCH_DMG="$ROOT/build/DevEco Code Desktop-$new_version-$ARCH.dmg"
+    [[ -f "$ARCH_DMG" ]] || { echo "DMG not found: $ARCH_DMG"; exit 1; }
+    codesign --verify --deep --strict "$APP" && echo "codesign ($ARCH): OK"
+    hdiutil verify "$ARCH_DMG" >/dev/null && echo "hdiutil ($ARCH):  OK"
+    app_version=$(plutil -extract CFBundleShortVersionString raw "$APP/Contents/Info.plist")
+    [[ "$app_version" == "$new_version" ]] || { echo "version mismatch in built app ($ARCH): $app_version"; exit 1; }
+done
 
 echo
 echo "RELEASE READY: $DMG"

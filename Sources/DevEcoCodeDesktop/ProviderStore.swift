@@ -24,6 +24,7 @@ final class ProviderStore: ObservableObject {
     @Published private(set) var allModelChoices: [ModelChoice] = []
     /// O(1) display-name lookup for message metadata (rebuilt on load).
     private var modelChoicesByID: [String: ModelChoice] = [:]
+    private var modelNameBySuffix: [String: String] = [:]
 
     private func rebuildModelLookup() {
         var lookup: [String: ModelChoice] = [:]
@@ -52,15 +53,22 @@ final class ProviderStore: ObservableObject {
             lookup[choice.id] = choice
         }
         modelChoicesByID = lookup
+        var namesBySuffix: [String: String] = [:]
+        for choice in sorted {
+            // choice.id 形如 "providerID/modelID"；按 modelID 建索引，
+            // 不能用展示名，展示名常与 ID 不同。
+            guard let slash = choice.id.firstIndex(of: "/") else { continue }
+            let modelID = String(choice.id[choice.id.index(after: slash)...])
+            if namesBySuffix[modelID] == nil { namesBySuffix[modelID] = choice.name }
+        }
+        modelNameBySuffix = namesBySuffix
     }
 
     /// Display name for a "providerID/modelID" identifier; falls back to a
     /// fuzzy match on the bare model id. Hot path during streaming.
     func modelDisplayName(for identifier: String, fuzzyModel: String) -> String? {
         if let choice = modelChoicesByID[identifier] { return choice.name }
-        if let exact = modelChoicesByID.first(where: { $0.key.hasSuffix("/\(fuzzyModel)") })?.value.name {
-            return exact
-        }
+        if let exact = modelNameBySuffix[fuzzyModel] { return exact }
         return modelChoicesByID.values
             .first { $0.name.localizedCaseInsensitiveContains(fuzzyModel) }?.name
     }

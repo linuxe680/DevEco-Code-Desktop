@@ -8,8 +8,6 @@ extension Notification.Name {
 }
 
 struct ContentView: View {
-    /// Set by the extra `session` window scene to open a specific conversation.
-    let initialSessionID: String?
 
     @EnvironmentObject var server: ServerManager
     @EnvironmentObject var store: SessionStore
@@ -214,15 +212,8 @@ struct ContentView: View {
             if server.state == .stopped && AppSettings.autoStartServer {
                 server.start()
             }
-            if let initialSessionID, !initialSessionID.isEmpty {
-                store.select(initialSessionID)
-            }
             store.serverDefaultModel = providers.defaultModel
             applyServerDefaultModelIfNeeded()
-        }
-        .onChange(of: initialSessionID) { newValue in
-            guard let newValue, !newValue.isEmpty else { return }
-            store.select(newValue)
         }
         .onChange(of: providers.defaultModel) { _ in
             store.serverDefaultModel = providers.defaultModel
@@ -357,13 +348,15 @@ struct ContentView: View {
 private struct WindowChromeConfigurator: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let view = NSView(frame: .zero)
-        DispatchQueue.main.async { configure(view.window) }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { configure(view.window) }
+        DispatchQueue.main.async { [weak view] in self.configure(view?.window) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak view] in
+            self.configure(view?.window)
+        }
         return view
     }
 
     func updateNSView(_ view: NSView, context: Context) {
-        DispatchQueue.main.async { configure(view.window) }
+        DispatchQueue.main.async { [weak view] in self.configure(view?.window) }
     }
 
     private func configure(_ window: NSWindow?) {
@@ -371,6 +364,12 @@ private struct WindowChromeConfigurator: NSViewRepresentable {
         window.titlebarAppearsTransparent = true
         window.backgroundColor = Theme.windowChromeNSColor
         window.titlebarSeparatorStyle = .none
+        // Codex has no redundant title label above its toolbar: the session
+        // title lives in the sidebar/toolbar only. Hide the AppKit title
+        // entirely so long prompts never repeat in this dead strip.
+        window.titleVisibility = .hidden
+        window.isMovableByWindowBackground = true
+        window.toolbar?.displayMode = .iconOnly
     }
 }
 
