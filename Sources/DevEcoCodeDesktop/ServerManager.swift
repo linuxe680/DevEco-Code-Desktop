@@ -41,6 +41,9 @@ final class ServerManager: ObservableObject {
     private var logHandle: FileHandle?
     private var healthTask: Task<Void, Never>?
     private var startupActivity: NSObjectProtocol?
+    /// Incremented on every start/stop so a cancelled health task can tell it
+    /// no longer owns the current launch's state.
+    private var launchGeneration = 0
 
     var candidateURL: URL {
         URL(string: "http://127.0.0.1:\(port)")!
@@ -121,6 +124,8 @@ final class ServerManager: ObservableObject {
             }
         }
         beginStartupActivity()
+        launchGeneration += 1
+        let generation = launchGeneration
         state = .starting
         errorMessage = nil
         failureReason = nil
@@ -220,7 +225,7 @@ final class ServerManager: ObservableObject {
             while !Task.isCancelled {
                 let status = waitpid(launchedPID, nil, WNOHANG)
                 if status == launchedPID || (status == -1 && errno == ECHILD) {
-                    await MainActor.run { self?.handleTermination() }
+                    await MainActor.run { self?.handleTermination(expectedPID: launchedPID) }
                     return
                 }
                 try? await Task.sleep(nanoseconds: 500_000_000)
@@ -228,11 +233,39 @@ final class ServerManager: ObservableObject {
         }
 
         healthTask = Task { [weak self] in
-            await self?.waitForHealth()
+            await self?.waitForHealth(generation: generation)
         }
     }
 
     func stop() {
+        guard let launched = teardown() else { return }
+        // 终止整个进程组（deveco 启动器 + Node 服务），避免孤儿进程占端口。
+        launched.terminate()
+        // The monitor task is cancelled above, so reap the direct child here;
+        // otherwise repeated stop/start cycles accumulate zombies.
+        Task.detached(priority: .utility) {
+            launched.waitUntilExit(timeout: 3)
+        }
+    }
+
+    /// Stops the server and waits until its whole process group has exited.
+    /// Restoring data must not race a still-running server that holds the
+    /// data directory open.
+    func stopAndWait(timeout: TimeInterval = 5) async {
+        guard let launched = teardown() else { return }
+        launched.terminate()
+        let exited = await Task.detached(priority: .userInitiated) {
+            launched.waitUntilExit(timeout: timeout)
+        }.value
+        if !exited {
+            _ = kill(-launched.pid, SIGKILL)
+        }
+    }
+
+    /// Cancels monitors and clears app state, returning the process group that
+    /// still needs to be signalled.
+    private func teardown() -> ProcessGroupLauncher.Launched? {
+        launchGeneration += 1
         healthTask?.cancel()
         healthTask = nil
         monitorTask?.cancel()
@@ -241,23 +274,23 @@ final class ServerManager: ObservableObject {
         state = .stopped
         errorMessage = nil
         failureReason = nil
-        guard let serverProcess else {
+        guard let launched = serverProcess else {
             cleanUpIO()
-            return
+            return nil
         }
-        // 终止整个进程组（deveco 启动器 + Node 服务），避免孤儿进程占端口。
-        serverProcess.terminate()
         self.serverProcess = nil
         Self.writePIDFile(nil)
         cleanUpIO()
+        return launched
     }
 
     private func isServerAlive(_ launched: ProcessGroupLauncher.Launched) -> Bool {
         kill(launched.pid, 0) == 0 || errno == EPERM
     }
 
-    private func waitForHealth() async {
+    private func waitForHealth(generation: Int) async {
         for _ in 0..<80 {
+            guard generation == launchGeneration else { return }
             if Task.isCancelled {
                 endStartupActivity()
                 return
@@ -267,13 +300,18 @@ final class ServerManager: ObservableObject {
                 endStartupActivity()
                 return
             }
-            if await probeHealth(), isServerAlive(launched) {
+            let healthy = await probeHealth()
+            // The probe can outlive a stop/start; only the process it was
+            // started for may transition to running.
+            guard generation == launchGeneration, !Task.isCancelled,
+                  serverProcess?.pid == launched.pid else { return }
+            if healthy, isServerAlive(launched) {
                 markRunning()
                 return
             }
             try? await Task.sleep(nanoseconds: 250_000_000)
         }
-        guard state == .starting else { return }
+        guard generation == launchGeneration, state == .starting else { return }
         state = .failed
         failureReason = .unhealthy
         errorMessage = String(
@@ -308,6 +346,9 @@ final class ServerManager: ObservableObject {
             guard let self else { return }
             let healthy = await self.probeHealth()
             guard healthy, self.state == .starting || self.state == .failed else { return }
+            // A stop/start while the probe was in flight must not mark the
+            // replacement process as running.
+            guard self.serverProcess?.pid == launched.pid else { return }
             self.markRunning()
         }
     }
@@ -337,9 +378,12 @@ final class ServerManager: ObservableObject {
         self.startupActivity = nil
     }
 
-    private func handleTermination() {
+    private func handleTermination(expectedPID: pid_t) {
         // 只有我们主动终止时才跳过错误提示；monitorTask 感知到退出后调用。
         guard state != .stopped else { return }
+        // A monitor from a previous run can wake up after stop()/start() and
+        // would otherwise mark the freshly launched server as failed.
+        guard serverProcess?.pid == expectedPID else { return }
         serverProcess = nil
         monitorTask?.cancel()
         monitorTask = nil
@@ -449,6 +493,18 @@ final class ServerManager: ObservableObject {
         // leaving it untouched can make tools run in a stale directory even
         // though posix_spawn already chdir'd correctly.
         environment["PWD"] = projectDirectory.path
+        return cliEnvironment(base: environment, executable: executable)
+    }
+
+    /// Environment for running the deveco CLI itself (version probe, upgrade).
+    /// `deveco` is a `#!/usr/bin/env node` script, so the Node.js directory and
+    /// the CLI's own directory must be on PATH even when the app was started
+    /// by Finder with launchd's minimal environment.
+    nonisolated static func cliEnvironment(
+        base: [String: String] = ProcessInfo.processInfo.environment,
+        executable: URL
+    ) -> [String: String] {
+        var environment = base
         var pathPrefix: [String] = [executable.deletingLastPathComponent().path]
         if let nodeDir = Self.resolveNodeDirectory() {
             pathPrefix.append(nodeDir)
@@ -526,7 +582,7 @@ final class ServerManager: ObservableObject {
 
     /// Replaces the deveco data directory with the contents of a backup zip.
     /// Stops the server first, then restarts it with the restored data.
-    nonisolated func restoreData(from archive: URL) throws {
+    nonisolated static func restoreData(from archive: URL) throws {
         let support = Self.applicationSupportDirectory()
         let dataDir = support.appendingPathComponent("deveco-data", isDirectory: true)
         let staging = support.appendingPathComponent("restore-\(UUID().uuidString)", isDirectory: true)
@@ -600,8 +656,14 @@ final class ServerManager: ObservableObject {
             return URL(fileURLWithPath: override)
         }
 
-        // The resolved path is cached in the same key the override uses, so
-        // "Auto-detect" in Settings just clears the key and calls this again.
+        // Keep auto-detection in its own key. Writing it into the override key
+        // made the Settings field look manually configured and silently
+        // replace a stale user choice.
+        if let detected = UserDefaults.standard.string(forKey: AppSettings.Keys.devecoPathDetected),
+           FileManager.default.isExecutableFile(atPath: detected) {
+            return URL(fileURLWithPath: detected)
+        }
+
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let candidates = [
             "\(home)/.npm-global/bin/deveco",
@@ -612,7 +674,7 @@ final class ServerManager: ObservableObject {
             "/usr/bin/deveco",
         ]
         if let match = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) {
-            AppSettings.devecoPath = match
+            UserDefaults.standard.set(match, forKey: AppSettings.Keys.devecoPathDetected)
             return URL(fileURLWithPath: match)
         }
 
@@ -635,20 +697,21 @@ final class ServerManager: ObservableObject {
             .trimmingCharacters(in: .whitespacesAndNewlines),
             !path.isEmpty, !path.contains("\n"),
             FileManager.default.isExecutableFile(atPath: path) else { return nil }
-        AppSettings.devecoPath = path
+        UserDefaults.standard.set(path, forKey: AppSettings.Keys.devecoPathDetected)
         return URL(fileURLWithPath: path)
     }
 
     /// Directory containing the Node.js runtime deveco needs at runtime.
-    /// Cached like the deveco path; an override lives in the same key.
+    /// A manual override and the auto-detected result use separate keys.
     nonisolated static func resolveNodeDirectory() -> String? {
-        let key = "nodeExecutablePath"
-        let override = UserDefaults.standard.string(forKey: key) ?? ""
-        if !override.isEmpty {
-            let dir = (override as NSString).deletingLastPathComponent
-            if FileManager.default.isExecutableFile(atPath: override) {
-                return dir
-            }
+        let defaults = UserDefaults.standard
+        let override = defaults.string(forKey: AppSettings.Keys.nodePath) ?? ""
+        if !override.isEmpty, FileManager.default.isExecutableFile(atPath: override) {
+            return (override as NSString).deletingLastPathComponent
+        }
+        if let detected = defaults.string(forKey: AppSettings.Keys.nodePathDetected),
+           FileManager.default.isExecutableFile(atPath: detected) {
+            return (detected as NSString).deletingLastPathComponent
         }
 
         let home = FileManager.default.homeDirectoryForCurrentUser.path
@@ -670,7 +733,7 @@ final class ServerManager: ObservableObject {
             "/usr/bin/node",
         ])
         if let match = candidateFiles.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) {
-            UserDefaults.standard.set(match, forKey: key)
+            defaults.set(match, forKey: AppSettings.Keys.nodePathDetected)
             return (match as NSString).deletingLastPathComponent
         }
 
@@ -692,7 +755,7 @@ final class ServerManager: ObservableObject {
             .trimmingCharacters(in: .whitespacesAndNewlines),
             !path.isEmpty, !path.contains("\n"),
             FileManager.default.isExecutableFile(atPath: path) else { return nil }
-        UserDefaults.standard.set(path, forKey: key)
+        defaults.set(path, forKey: AppSettings.Keys.nodePathDetected)
         return (path as NSString).deletingLastPathComponent
     }
 

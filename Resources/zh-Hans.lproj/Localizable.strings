@@ -118,6 +118,7 @@
 "Keep server running" = "保持服务运行";
 "Keeping the server running lets the next launch skip the boot wait, but the deveco process stays alive in the background." = "保持服务运行可让下次启动跳过等待，但 deveco 进程会驻留后台。";
 "Launch at login" = "登录时启动";
+"Launch at login requires macOS 13 or later." = "登录时启动需要 macOS 13 或更高版本。";
 
 /* 设置：服务 */
 "deveco CLI path" = "deveco 命令行路径";
@@ -127,7 +128,7 @@
 "Auto-detect" = "自动探测";
 "In use: %@" = "使用中：%@";
 "Not found — install deveco or set a path above." = "未找到 — 请安装 deveco 或在上方设置路径。";
-"Leave empty to auto-detect (common install paths, then your login shell's PATH)." = "留空则自动探测（常用安装路径，然后是登录 shell 的 PATH）。";
+"Leave empty to auto-detect (common install paths, then the app's PATH)." = "留空则自动探测（常用安装路径，然后是 App 的 PATH）。";
 "Starting port" = "起始端口";
 "Port" = "端口";
 "The first port tried (default 4096). If it is busy the app picks the next free one." = "首先尝试的端口（默认 4096）。若被占用会自动顺延。";
@@ -156,7 +157,7 @@
 /* 引导 */
 "Set up the deveco CLI" = "配置 deveco 命令行";
 "The app manages a local deveco server but couldn't find the CLI on this Mac." = "本应用管理本地 deveco 服务，但这台 Mac 上没有找到 deveco 命令行。";
-"Install it globally, e.g. npm i -g deveco" = "全局安装，例如 npm i -g deveco";
+"Install it globally, e.g. npm i -g @deveco/deveco-code@stable" = "全局安装，例如 npm i -g @deveco/deveco-code@stable";
 "Or point the app at an existing binary below" = "或在下方指定已有的二进制文件";
 "Then pick a project folder and start chatting" = "然后选择项目文件夹即可开始对话";
 "Choose Binary…" = "选择二进制文件…";
@@ -599,3 +600,13 @@
 "Context window usage — click for details" = "上下文窗口用量 — 点击查看详细信息";
 "Free space" = "可用空间";
 "Context window usage — click for breakdown" = "上下文窗口用量 — 点击查看详情";
+"Update CLI" = "更新 CLI";
+"Updating…" = "更新中…";
+"Updated" = "已更新";
+"Update failed. Run `deveco upgrade` in Terminal for details." = "更新失败。请在终端运行 `deveco upgrade` 查看详情。";
+"Update failed: %@" = "更新失败：%@";
+"deveco CLI not found." = "未找到 deveco 命令行。";
+"deveco CLI version: %@" = "deveco CLI 版本：%@";
+"Appearance" = "外观";
+"%lld chars" = "%lld 个字符";
+"Logs: %@" = "日志：%@";

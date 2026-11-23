@@ -33,6 +33,9 @@ enum AppAppearance: String, CaseIterable, Identifiable {
 enum AppSettings {
     enum Keys {
         static let devecoPath = "devecoExecutablePath"
+        static let devecoPathDetected = "devecoExecutablePathDetected"
+        static let nodePath = "nodeExecutablePath"
+        static let nodePathDetected = "nodeExecutablePathDetected"
         static let autoStartServer = "autoStartServer"
         static let basePort = "basePort"
         static let quitBehavior = "quitBehavior"

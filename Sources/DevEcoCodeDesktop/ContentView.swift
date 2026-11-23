@@ -179,8 +179,12 @@ struct ContentView: View {
 
     static func openSettings() {
         // The Settings scene adds a menu item automatically; this opens it
-        // from the toolbar gear on every supported macOS version.
-        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        // from the toolbar gear on every supported macOS version. macOS 11/12
+        // only responds to the older preferences selector.
+        if NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) {
+            return
+        }
+        NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
     }
 
     private func exportSession(_ session: Session?) {
@@ -353,7 +357,7 @@ private struct SetupCard: View {
                 .font(.callout)
 
             VStack(alignment: .leading, spacing: 8) {
-                step(1, "Install it globally, e.g. npm i -g deveco")
+                step(1, NSLocalizedString("Install it globally, e.g. npm i -g @deveco/deveco-code@stable", comment: ""))
                 step(2, "Or point the app at an existing binary below")
                 step(3, "Then pick a project folder and start chatting")
             }

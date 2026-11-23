@@ -314,7 +314,7 @@ struct CommandAction: Identifiable {
             shortcut: "⌘,",
             keywords: ["settings", "preferences", "providers", "permissions"],
             run: { _, _ in
-                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                ContentView.openSettings()
             }
         ),
     ]

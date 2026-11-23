@@ -40,6 +40,29 @@ enum ProcessGroupLauncher {
                 }
             }
         }
+
+        /// Blocks the calling thread until every process in the group is gone.
+        /// Returns false when the group is still alive after `timeout`.
+        @discardableResult
+        func waitUntilExit(timeout: TimeInterval = 5) -> Bool {
+            let group = pid
+            guard group > 0 else { return true }
+            let deadline = Date().addingTimeInterval(timeout)
+            var leaderReaped = false
+            while Date() < deadline {
+                if !leaderReaped {
+                    var status: Int32 = 0
+                    let result = waitpid(group, &status, WNOHANG)
+                    // The leader is this process's direct child, so it must be
+                    // reaped here: a zombie would keep `kill(-pgid, 0)`
+                    // succeeding forever.
+                    leaderReaped = result == group || (result == -1 && errno == ECHILD)
+                }
+                if leaderReaped, kill(-group, 0) != 0, errno == ESRCH { return true }
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+            return leaderReaped && kill(-group, 0) != 0 && errno == ESRCH
+        }
     }
 
     static func launch(_ config: Configuration) throws -> Launched {

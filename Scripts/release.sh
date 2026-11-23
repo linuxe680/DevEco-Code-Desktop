@@ -67,7 +67,7 @@ NOTES="$BUILD_DIR/ReleaseNotes-$new_version.md"
     echo "first launch, right-click the app → Open, or run"
     echo "\`xattr -dr com.apple.quarantine '/Applications/DevEco Code Desktop.app'\`."
     echo
-    echo "Requires the deveco CLI (\`npm i -g deveco\`) and Node.js on PATH."
+    echo "Requires the deveco CLI (\`npm i -g @deveco/deveco-code@stable\`) and Node.js on PATH."
 } > "$NOTES"
 echo "notes:   $NOTES"
 

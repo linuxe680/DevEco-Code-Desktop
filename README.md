@@ -10,7 +10,7 @@ A native macOS GUI for the locally installed `deveco` CLI. The app manages a loc
 
 - macOS 11+（提供 Apple Silicon / Intel 两个安装包）
 - Xcode command line tools (Swift 5.9)
-- `deveco` CLI installed locally (`npm i -g deveco`) and Node.js on PATH
+- `deveco` CLI installed locally (`npm i -g @deveco/deveco-code@stable`) and Node.js on PATH
 
 ## Build & Run
 
@@ -122,7 +122,7 @@ DevEco Code Desktop 是本机 `deveco` CLI 的原生 macOS 图形客户端。应
 
 - macOS 11+（提供 Apple Silicon / Intel 两个安装包）
 - Xcode 命令行工具（Swift 5.9）
-- 本机已安装 `deveco` CLI（`npm i -g deveco`）且 Node.js 在 PATH 中
+- 本机已安装 `deveco` CLI（`npm i -g @deveco/deveco-code@stable`）且 Node.js 在 PATH 中
 
 ## 构建与运行
 

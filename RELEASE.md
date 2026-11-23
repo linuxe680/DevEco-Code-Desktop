@@ -37,7 +37,7 @@ RELEASE_NOTES="摘要..." Scripts/release.sh --version 1.0.0
 
 - **无需任何 TCC 特权**：项目目录由用户在 App 内主动选择（NSOpenPanel），服务数据与日志都写入 App 容器（`~/Library/Application Support/DevEcoCodeDesktop/`），不触碰 Documents/Desktop 等。
 - 服务只绑定 `127.0.0.1`，无密码监听本机回环；停 App 即停服务（可在设置中改）。
-- 依赖：deveco CLI（`npm i -g deveco`）与 Node.js 在 PATH；缺失时出现引导卡片，可在设置里手动指定二进制路径。
+- 依赖：deveco CLI（`npm i -g @deveco/deveco-code@stable`）与 Node.js 在 PATH；缺失时出现引导卡片，可在设置里手动指定二进制路径。
 - 产品协议：deveco 首次模型调用前要求同意，App 会在检测到 consent 拦截时自动执行 `deveco auth consent --accept` 并引导确认。
 
 ## 已知限制

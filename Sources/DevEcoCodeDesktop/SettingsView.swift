@@ -20,6 +20,7 @@ struct SettingsView: View {
                 .tabItem { Label(NSLocalizedString("About", comment: ""), systemImage: "info.circle") }
         }
         .frame(width: 520)
+        .frame(minHeight: 600)
     }
 }
 
@@ -37,59 +38,65 @@ private struct GeneralSettingsPane: View {
     @State private var launchError: String?
 
     var body: some View {
-        Form {
-            Picker("外观", selection: $appAppearanceRaw) {
-                ForEach(AppAppearance.allCases) { appearance in
-                    Text(appearance.label).tag(appearance.rawValue)
-                }
-            }
-            .onChange(of: appAppearanceRaw) { _ in
-                AppSettings.applyAppearanceOverride()
-            }
-
-            Divider()
-
-            Picker(NSLocalizedString("Language", comment: ""), selection: $appLanguageRaw) {
-                Text(NSLocalizedString("Follow system", comment: "")).tag("system")
-                Text("简体中文").tag("zh-Hans")
-                Text("English").tag("en")
-            }
-            Text(NSLocalizedString("Takes effect after relaunch.", comment: ""))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.leading, 4)
-
-            Divider()
-
-            Picker(NSLocalizedString("When app quits:", comment: ""), selection: $quitBehaviorRaw) {
-                Text(NSLocalizedString("Stop server", comment: "")).tag(QuitBehavior.stopServer.rawValue)
-                Text(NSLocalizedString("Keep server running", comment: "")).tag(QuitBehavior.keepRunning.rawValue)
-            }
-            .pickerStyle(.radioGroup)
-            Text(NSLocalizedString("Keeping the server running lets the next launch skip the boot wait, but the deveco process stays alive in the background.", comment: ""))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.leading, 4)
-
-            Divider()
-
-            Toggle(NSLocalizedString("Launch at login", comment: ""), isOn: $launchAtLogin)
-                .onChange(of: launchAtLogin) { enabled in
-                    do {
-                        try LoginItemManager.setEnabled(enabled)
-                        launchError = nil
-                    } catch {
-                        launchAtLogin = LoginItemManager.isEnabled
-                        launchError = error.localizedDescription
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                Picker(NSLocalizedString("Appearance", comment: ""), selection: $appAppearanceRaw) {
+                    ForEach(AppAppearance.allCases) { appearance in
+                        Text(appearance.label).tag(appearance.rawValue)
                     }
                 }
-            if let launchError {
-                Text(launchError)
+                .onChange(of: appAppearanceRaw) { _ in
+                    AppSettings.applyAppearanceOverride()
+                }
+
+                Divider()
+
+                Picker(NSLocalizedString("Language", comment: ""), selection: $appLanguageRaw) {
+                    Text(NSLocalizedString("Follow system", comment: "")).tag("system")
+                    Text("简体中文").tag("zh-Hans")
+                    Text("English").tag("en")
+                }
+                Text(NSLocalizedString("Takes effect after relaunch.", comment: ""))
                     .font(.caption)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 4)
+
+                Divider()
+
+                Picker(NSLocalizedString("When app quits:", comment: ""), selection: $quitBehaviorRaw) {
+                    Text(NSLocalizedString("Stop server", comment: "")).tag(QuitBehavior.stopServer.rawValue)
+                    Text(NSLocalizedString("Keep server running", comment: "")).tag(QuitBehavior.keepRunning.rawValue)
+                }
+                .pickerStyle(.radioGroup)
+                Text(NSLocalizedString("Keeping the server running lets the next launch skip the boot wait, but the deveco process stays alive in the background.", comment: ""))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 4)
+
+                if LoginItemManager.isSupported {
+                    Divider()
+
+                    Toggle(NSLocalizedString("Launch at login", comment: ""), isOn: $launchAtLogin)
+                        .onChange(of: launchAtLogin) { enabled in
+                            do {
+                                try LoginItemManager.setEnabled(enabled)
+                                launchError = nil
+                            } catch {
+                                launchAtLogin = LoginItemManager.isEnabled
+                                launchError = error.localizedDescription
+                            }
+                        }
+                    if let launchError {
+                        Text(launchError)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(20)
         }
-        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 
@@ -105,7 +112,12 @@ private struct ServerSettingsPane: View {
     private var autoStartServer = true
 
     @State private var resolvedPath = ""
-    @AppStorage("nodeExecutablePath")
+    @State private var cliVersion = ""
+    @State private var cliProbeID = 0
+    @State private var updatingCLI = false
+    @State private var updateStatus: String?
+    @State private var updateFailed = false
+    @AppStorage(AppSettings.Keys.nodePath)
     private var nodePath = ""
     @State private var resolvedNodePath = ""
     @State private var backupStatus: String?
@@ -114,116 +126,139 @@ private struct ServerSettingsPane: View {
     @State private var diagnosticsCopied = false
 
     var body: some View {
-        Form {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(NSLocalizedString("deveco CLI path", comment: ""))
-                HStack {
-                    TextField("/path/to/deveco", text: $devecoPath)
-                        .textFieldStyle(.roundedBorder)
-                        .onSubmit { refreshResolved() }
-                    Button(NSLocalizedString("Browse…", comment: "")) { browse() }
-                    Button(NSLocalizedString("Auto-detect", comment: "")) {
-                        devecoPath = ""
-                        refreshResolved()
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(NSLocalizedString("deveco CLI path", comment: ""))
+                    HStack {
+                        TextField("/path/to/deveco", text: $devecoPath)
+                            .textFieldStyle(.roundedBorder)
+                            .onSubmit { refreshResolved() }
+                        Button(NSLocalizedString("Browse…", comment: "")) { browse() }
+                        Button(NSLocalizedString("Auto-detect", comment: "")) { autoDetectDeveco() }
                     }
-                }
-                Text(resolvedDisplay)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .truncationMode(.middle)
-                    .textSelection(.enabled)
-                Text(NSLocalizedString("Leave empty to auto-detect (common install paths, then your login shell's PATH).", comment: ""))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.bottom, 8)
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text(NSLocalizedString("Node.js path (optional)", comment: ""))
-                HStack {
-                    TextField("/path/to/node", text: $nodePath)
-                        .textFieldStyle(.roundedBorder)
-                        .onSubmit { refreshResolved() }
-                    Button(NSLocalizedString("Auto-detect", comment: "")) {
-                        UserDefaults.standard.removeObject(forKey: "nodeExecutablePath")
-                        refreshResolved()
-                    }
-                }
-                Text(resolvedNodeDisplay)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .truncationMode(.middle)
-                    .textSelection(.enabled)
-                Text(NSLocalizedString("deveco runs on Node.js. Leave empty to auto-detect; the detected folder is added to the server's PATH.", comment: ""))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.bottom, 8)
-
-            Divider()
-
-            HStack {
-                Text(NSLocalizedString("Starting port", comment: ""))
-                Spacer()
-                TextField("Port", value: $basePort, format: .number.grouping(.never))
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 90)
-            }
-            Text(NSLocalizedString("The first port tried (default 4096). If it is busy the app picks the next free one.", comment: ""))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            Toggle(NSLocalizedString("Start server automatically on launch", comment: ""), isOn: $autoStartServer)
-
-            Divider()
-
-            HStack {
-                Button(NSLocalizedString("Reveal Log Folder", comment: "")) { reveal(ServerManager.logFileURL) }
-                Button(NSLocalizedString("Reveal Data Folder", comment: "")) { reveal(ServerManager.dataDirectory) }
-                Button(NSLocalizedString("View Log…", comment: "")) { showLogViewer = true }
-                Spacer()
-            }
-
-            HStack {
-                Button(NSLocalizedString("Copy Diagnostics", comment: "")) {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(server.diagnosticsReport(), forType: .string)
-                    diagnosticsCopied = true
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
-                        diagnosticsCopied = false
-                    }
-                }
-                if diagnosticsCopied {
-                    Label(NSLocalizedString("Copied", comment: ""), systemImage: "checkmark")
+                    Text(resolvedDisplay)
                         .font(.caption)
-                        .foregroundStyle(.green)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                    HStack(spacing: 8) {
+                        Text(String(format: NSLocalizedString("deveco CLI version: %@", comment: ""),
+                                    cliVersion.isEmpty ? "—" : cliVersion))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                        Button {
+                            updateCLI()
+                        } label: {
+                            if updatingCLI {
+                                ProgressView().controlSize(.mini)
+                            } else {
+                                Text(NSLocalizedString("Update CLI", comment: ""))
+                            }
+                        }
+                        .controlSize(.small)
+                        .disabled(updatingCLI)
+                        Spacer()
+                    }
+                    if let status = updateStatus {
+                        Text(status)
+                            .font(.caption)
+                            .foregroundStyle(updateFailed ? .red : .secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Text(NSLocalizedString("Leave empty to auto-detect (common install paths, then the app's PATH).", comment: ""))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-                Spacer()
-            }
+                .padding(.bottom, 8)
 
-            Divider()
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(NSLocalizedString("Node.js path (optional)", comment: ""))
+                    HStack {
+                        TextField("/path/to/node", text: $nodePath)
+                            .textFieldStyle(.roundedBorder)
+                            .onSubmit { refreshResolved() }
+                        Button(NSLocalizedString("Auto-detect", comment: "")) { autoDetectNode() }
+                    }
+                    Text(resolvedNodeDisplay)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                    Text(NSLocalizedString("deveco runs on Node.js. Leave empty to auto-detect; the detected folder is added to the server's PATH.", comment: ""))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.bottom, 8)
 
-            VStack(alignment: .leading, spacing: 8) {
-                Text(NSLocalizedString("Backup", comment: ""))
-                    .font(.headline)
-                Text(NSLocalizedString("Archive the deveco data directory (sessions, logs) as a zip. Restoring replaces the current data and restarts the server.", comment: ""))
+                Divider()
+
+                HStack {
+                    Text(NSLocalizedString("Starting port", comment: ""))
+                    Spacer()
+                    TextField(NSLocalizedString("Port", comment: ""), value: $basePort, format: .number.grouping(.never))
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 90)
+                }
+                Text(NSLocalizedString("The first port tried (default 4096). If it is busy the app picks the next free one.", comment: ""))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                Toggle(NSLocalizedString("Start server automatically on launch", comment: ""), isOn: $autoStartServer)
+
+                Divider()
+
                 HStack {
-                    Button(NSLocalizedString("Backup Now…", comment: "")) { backupPanel() }
-                    Button(NSLocalizedString("Restore from Backup…", comment: "")) { restorePanel() }
+                    Button(NSLocalizedString("Reveal Log Folder", comment: "")) { reveal(ServerManager.logFileURL) }
+                    Button(NSLocalizedString("Reveal Data Folder", comment: "")) { reveal(ServerManager.dataDirectory) }
+                    Button(NSLocalizedString("View Log…", comment: "")) { showLogViewer = true }
                     Spacer()
                 }
-                if let status = backupStatus {
-                    Text(status)
+
+                HStack {
+                    Button(NSLocalizedString("Copy Diagnostics", comment: "")) {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(server.diagnosticsReport(), forType: .string)
+                        diagnosticsCopied = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
+                            diagnosticsCopied = false
+                        }
+                    }
+                    if diagnosticsCopied {
+                        Label(NSLocalizedString("Copied", comment: ""), systemImage: "checkmark")
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                    }
+                    Spacer()
+                }
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(NSLocalizedString("Backup", comment: ""))
+                        .font(.headline)
+                    Text(NSLocalizedString("Archive the deveco data directory (sessions, logs) as a zip. Restoring replaces the current data and restarts the server.", comment: ""))
                         .font(.caption)
-                        .foregroundStyle(backupFailed ? .red : .secondary)
+                        .foregroundStyle(.secondary)
+                    HStack {
+                        Button(NSLocalizedString("Backup Now…", comment: "")) { backupPanel() }
+                        Button(NSLocalizedString("Restore from Backup…", comment: "")) { restorePanel() }
+                        Spacer()
+                    }
+                    if let status = backupStatus {
+                        Text(status)
+                            .font(.caption)
+                            .foregroundStyle(backupFailed ? .red : .secondary)
+                    }
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(20)
         }
-        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onAppear(perform: refreshResolved)
         .sheet(isPresented: $showLogViewer) {
             LogViewerSheet()
@@ -245,10 +280,195 @@ private struct ServerSettingsPane: View {
     }
 
     private func refreshResolved() {
+        resolvePaths()
+        readCLIVersion(resolvedPath)
+    }
+
+    private func resolvePaths() {
         let devecoPath = ServerManager.resolveDevecoExecutable()?.path ?? ""
         let nodePath = ServerManager.resolveNodeDirectory() ?? ""
         resolvedPath = devecoPath
         resolvedNodePath = nodePath
+    }
+
+    private func autoDetectDeveco() {
+        devecoPath = ""
+        UserDefaults.standard.removeObject(forKey: AppSettings.Keys.devecoPathDetected)
+        refreshResolved()
+    }
+
+    private func autoDetectNode() {
+        nodePath = ""
+        UserDefaults.standard.removeObject(forKey: AppSettings.Keys.nodePathDetected)
+        refreshResolved()
+    }
+
+    /// Runs `deveco --version` off the main thread so the settings window
+    /// never freezes while the CLI (a Node script) starts up.
+    private func readCLIVersion(_ executablePath: String) {
+        cliProbeID += 1
+        let probeID = cliProbeID
+        cliVersion = ""
+        guard !executablePath.isEmpty else { return }
+        Task.detached(priority: .utility) {
+            let output = Self.runCLI(executablePath, arguments: ["--version"])
+            // Only the newest probe may publish; an older CLI invocation can
+            // finish last when the user switches paths quickly.
+            await MainActor.run {
+                guard cliProbeID == probeID else { return }
+                cliVersion = output
+            }
+        }
+    }
+
+    private func updateCLI() {
+        guard !updatingCLI else { return }
+        // Prefer what is currently typed: the user may have changed the path
+        // without pressing Return yet, and acting on the stale path would
+        // upgrade the wrong CLI.
+        let typed = devecoPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let executablePath: String
+        if !typed.isEmpty {
+            // Never silently fall back to the auto-detected CLI when the user
+            // typed a path that is not executable.
+            guard FileManager.default.isExecutableFile(atPath: typed) else {
+                updateFailed = true
+                updateStatus = NSLocalizedString("deveco CLI not found.", comment: "")
+                return
+            }
+            executablePath = typed
+        } else {
+            resolvePaths()
+            executablePath = resolvedPath
+        }
+        guard !executablePath.isEmpty else {
+            updateFailed = true
+            updateStatus = NSLocalizedString("deveco CLI not found.", comment: "")
+            return
+        }
+        updatingCLI = true
+        updateFailed = false
+        updateStatus = NSLocalizedString("Updating…", comment: "")
+        cliProbeID += 1
+        let probeID = cliProbeID
+        Task.detached(priority: .utility) {
+            let result = Self.updateDevecoCLI(executablePath)
+            let version = result.succeeded
+                ? Self.runCLI(executablePath, arguments: ["--version"])
+                : ""
+            await MainActor.run {
+                updatingCLI = false
+                if result.succeeded {
+                    updateFailed = false
+                    updateStatus = NSLocalizedString("Updated", comment: "")
+                } else if result.detail.isEmpty {
+                    updateFailed = true
+                    updateStatus = NSLocalizedString("Update failed. Run `deveco upgrade` in Terminal for details.", comment: "")
+                } else {
+                    updateFailed = true
+                    updateStatus = String(
+                        format: NSLocalizedString("Update failed: %@", comment: ""),
+                        result.detail
+                    )
+                }
+                if !version.isEmpty, cliProbeID == probeID {
+                    cliVersion = version
+                } else if cliProbeID == probeID {
+                    readCLIVersion(executablePath)
+                }
+            }
+        }
+    }
+
+    /// `deveco upgrade` picks the right package manager itself. If an older
+    /// CLI does not know the command, fall back to the published stable tag —
+    /// never `@latest`, which currently points at an older release.
+    nonisolated private static func updateDevecoCLI(_ executablePath: String) -> (succeeded: Bool, detail: String) {
+        let executable = URL(fileURLWithPath: executablePath)
+        let environment = ServerManager.cliEnvironment(executable: executable)
+        var detail = ""
+        let upgrade = runProcess(executablePath, arguments: ["upgrade"],
+                                 environment: environment, timeout: 240)
+        if let upgrade {
+            if upgrade.status == 0 { return (true, "") }
+            detail = firstLine(upgrade.stderr) ?? firstLine(upgrade.stdout) ?? ""
+            if !detail.lowercased().contains("unknown command") {
+                return (false, detail)
+            }
+        }
+        let npm = runProcess("/usr/bin/env",
+                             arguments: ["npm", "install", "-g", "@deveco/deveco-code@stable"],
+                             environment: environment, timeout: 240)
+        if let npm {
+            if npm.status == 0 { return (true, "") }
+            detail = firstLine(npm.stderr) ?? firstLine(npm.stdout) ?? detail
+        }
+        return (false, detail)
+    }
+
+    nonisolated private static func runCLI(_ executable: String, arguments: [String]) -> String {
+        let environment = ServerManager.cliEnvironment(
+            executable: URL(fileURLWithPath: executable)
+        )
+        guard let result = runProcess(executable, arguments: arguments,
+                                      environment: environment, timeout: 20),
+              result.status == 0 else { return "" }
+        return result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    nonisolated private static func firstLine(_ text: String) -> String? {
+        text.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .first(where: { !$0.isEmpty })
+            .map { String($0.prefix(180)) }
+    }
+
+    /// Runs a CLI helper with a hard timeout and file-backed output, so a
+    /// chatty updater cannot fill a pipe buffer and block the wait.
+    nonisolated private static func runProcess(
+        _ executable: String,
+        arguments: [String],
+        environment: [String: String]?,
+        timeout: TimeInterval
+    ) -> (status: Int32, stdout: String, stderr: String)? {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: executable)
+        task.arguments = arguments
+        if let environment { task.environment = environment }
+
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("deveco-cli-\(UUID().uuidString).out")
+        let errorURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("deveco-cli-\(UUID().uuidString).err")
+        FileManager.default.createFile(atPath: outputURL.path, contents: nil)
+        FileManager.default.createFile(atPath: errorURL.path, contents: nil)
+        defer {
+            try? FileManager.default.removeItem(at: outputURL)
+            try? FileManager.default.removeItem(at: errorURL)
+        }
+        guard let outputHandle = try? FileHandle(forWritingTo: outputURL),
+              let errorHandle = try? FileHandle(forWritingTo: errorURL) else { return nil }
+        task.standardOutput = outputHandle
+        task.standardError = errorHandle
+        defer {
+            try? outputHandle.close()
+            try? errorHandle.close()
+        }
+
+        guard (try? task.run()) != nil else { return nil }
+        let deadline = Date().addingTimeInterval(timeout)
+        while task.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if task.isRunning {
+            task.terminate()
+            Thread.sleep(forTimeInterval: 0.2)
+            if task.isRunning { kill(task.processIdentifier, SIGKILL) }
+            return (124, "", "Timed out after \(Int(timeout))s")
+        }
+        let stdout = (try? String(contentsOf: outputURL, encoding: .utf8)) ?? ""
+        let stderr = (try? String(contentsOf: errorURL, encoding: .utf8)) ?? ""
+        return (task.terminationStatus, stdout, stderr)
     }
 
     private func browse() {
@@ -316,10 +536,14 @@ private struct ServerSettingsPane: View {
 
         backupStatus = NSLocalizedString("Restoring…", comment: "")
         let server = server
-        Task.detached(priority: .userInitiated) {
+        Task {
+            // Wait for the old server group to actually exit before swapping
+            // the data directory; a live server may still hold its files.
+            await server.stopAndWait()
             do {
-                await MainActor.run { server.stop() }
-                try server.restoreData(from: url)
+                try await Task.detached(priority: .userInitiated) {
+                    try ServerManager.restoreData(from: url)
+                }.value
                 await MainActor.run {
                     backupFailed = false
                     backupStatus = String(
@@ -335,6 +559,7 @@ private struct ServerSettingsPane: View {
                         format: NSLocalizedString("Restore failed: %@", comment: ""),
                         error.localizedDescription
                     )
+                    server.start()
                 }
             }
         }
@@ -370,64 +595,68 @@ private struct ChatSettingsPane: View {
     private var playSoundOnComplete = false
 
     var body: some View {
-        Form {
-            Toggle(NSLocalizedString("Enter sends message (Shift+Enter inserts newline)", comment: ""), isOn: $sendOnEnter)
-            Toggle(NSLocalizedString("Follow streaming output while generating", comment: ""), isOn: $autoScroll)
-            Toggle(NSLocalizedString("Expand Thinking sections by default", comment: ""), isOn: $expandThinking)
-            Toggle(NSLocalizedString("Notify when a generation completes", comment: ""), isOn: $notifyOnComplete)
-                .onChange(of: notifyOnComplete) { enabled in
-                    if enabled {
-                        UNUserNotificationCenter.current()
-                            .requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                Toggle(NSLocalizedString("Enter sends message (Shift+Enter inserts newline)", comment: ""), isOn: $sendOnEnter)
+                Toggle(NSLocalizedString("Follow streaming output while generating", comment: ""), isOn: $autoScroll)
+                Toggle(NSLocalizedString("Expand Thinking sections by default", comment: ""), isOn: $expandThinking)
+                Toggle(NSLocalizedString("Notify when a generation completes", comment: ""), isOn: $notifyOnComplete)
+                    .onChange(of: notifyOnComplete) { enabled in
+                        if enabled {
+                            UNUserNotificationCenter.current()
+                                .requestAuthorization(options: [.alert, .sound]) { _, _ in }
+                        }
                     }
-                }
-            Toggle(NSLocalizedString("Play a sound when a generation completes", comment: ""), isOn: $playSoundOnComplete)
+                Toggle(NSLocalizedString("Play a sound when a generation completes", comment: ""), isOn: $playSoundOnComplete)
 
-            HStack {
-                Text(NSLocalizedString("Chat text size", comment: ""))
-                Spacer()
-                Stepper(
-                    "\(Int(chatFontSize)) pt",
-                    value: $chatFontSize,
-                    in: ChatTypography.minFontSize...ChatTypography.maxFontSize,
-                    step: 1
-                )
-                .fixedSize()
-            }
-            VStack(alignment: .leading, spacing: 5) {
-                Text(NSLocalizedString("Preview", comment: ""))
-                    .font(.caption2.weight(.semibold))
+                HStack {
+                    Text(NSLocalizedString("Chat text size", comment: ""))
+                    Spacer()
+                    Stepper(
+                        "\(Int(chatFontSize)) pt",
+                        value: $chatFontSize,
+                        in: ChatTypography.minFontSize...ChatTypography.maxFontSize,
+                        step: 1
+                    )
+                    .fixedSize()
+                }
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(NSLocalizedString("Preview", comment: ""))
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text(NSLocalizedString("Readable replies, clear code blocks, and comfortable tool output.", comment: ""))
+                        .font(.system(size: ChatTypography.body(chatFontSize)))
+                        .lineSpacing(ChatTypography.lineSpacing(chatFontSize))
+                    Text(NSLocalizedString("let answer = 42", comment: ""))
+                        .font(.system(size: ChatTypography.code(chatFontSize), design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Theme.subtleFill, in: RoundedRectangle(cornerRadius: 8))
+
+                Divider()
+
+                HStack {
+                    Text(NSLocalizedString("Default model for new sessions", comment: ""))
+                    Spacer()
+                    Picker("", selection: $defaultSessionModel) {
+                        Text(NSLocalizedString("Server default", comment: "")).tag("")
+                        ForEach(providers.allModelChoices) { choice in
+                            Text("\(choice.provider) · \(choice.name)").tag(choice.id)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: 240)
+                }
+                Text(NSLocalizedString("Preselected in the chat header. The server-configured default (Models & Providers) is used when left unset.", comment: ""))
+                    .font(.caption)
                     .foregroundStyle(.secondary)
-                Text(NSLocalizedString("Readable replies, clear code blocks, and comfortable tool output.", comment: ""))
-                    .font(.system(size: ChatTypography.body(chatFontSize)))
-                    .lineSpacing(ChatTypography.lineSpacing(chatFontSize))
-                Text(NSLocalizedString("let answer = 42", comment: ""))
-                    .font(.system(size: ChatTypography.code(chatFontSize), design: .monospaced))
-                    .foregroundStyle(.secondary)
             }
-            .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Theme.subtleFill, in: RoundedRectangle(cornerRadius: 8))
-
-            Divider()
-
-            HStack {
-                Text(NSLocalizedString("Default model for new sessions", comment: ""))
-                Spacer()
-                Picker("", selection: $defaultSessionModel) {
-                    Text(NSLocalizedString("Server default", comment: "")).tag("")
-                    ForEach(providers.allModelChoices) { choice in
-                        Text("\(choice.provider) · \(choice.name)").tag(choice.id)
-                    }
-                }
-                .labelsHidden()
-                .frame(maxWidth: 240)
-            }
-            Text(NSLocalizedString("Preselected in the chat header. The server-configured default (Models & Providers) is used when left unset.", comment: ""))
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            .padding(20)
         }
-        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 
@@ -438,45 +667,53 @@ private struct PermissionsSettingsPane: View {
     @EnvironmentObject var providers: ProviderStore
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(NSLocalizedString("Saved permission rules", comment: ""))
-                .font(.headline)
-            Text(NSLocalizedString("These were granted with “Always allow” on permission cards. Tools matching them run without asking — revoke any you no longer trust.", comment: ""))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            if providers.savedPermissions.isEmpty {
-                Text(NSLocalizedString("No saved permission rules.", comment: ""))
+        ScrollView {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(NSLocalizedString("Saved permission rules", comment: ""))
+                    .font(.headline)
+                Text(NSLocalizedString("These were granted with “Always allow” on permission cards. Tools matching them run without asking — revoke any you no longer trust.", comment: ""))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.vertical, 16)
-            } else {
-                List {
-                    ForEach(providers.savedPermissions) { saved in
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(saved.resource ?? saved.id)
-                                    .font(.system(size: 12, design: .monospaced))
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                                Text(saved.action ?? "")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
+
+                if providers.savedPermissions.isEmpty {
+                    Text(NSLocalizedString("No saved permission rules.", comment: ""))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.vertical, 16)
+                } else {
+                    LazyVStack(spacing: 0) {
+                        ForEach(providers.savedPermissions) { saved in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(saved.resource ?? saved.id)
+                                        .font(.system(size: 12, design: .monospaced))
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                    Text(saved.action ?? "")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Button(NSLocalizedString("Revoke", comment: "")) {
+                                    Task { await providers.deleteSavedPermission(saved) }
+                                }
+                                .controlSize(.small)
                             }
-                            Spacer()
-                            Button(NSLocalizedString("Revoke", comment: "")) {
-                                Task { await providers.deleteSavedPermission(saved) }
+                            .padding(.vertical, 8)
+                            .padding(.horizontal, 10)
+                            if saved.id != providers.savedPermissions.last?.id {
+                                Divider()
                             }
-                            .controlSize(.small)
                         }
                     }
+                    .background(Theme.subtleFill, in: RoundedRectangle(cornerRadius: 8))
                 }
-                .listStyle(.inset)
-                .frame(minHeight: 220)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(20)
         }
-        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onAppear {
             Task { await providers.loadSavedPermissions() }
         }
@@ -489,47 +726,58 @@ private struct UsageSettingsPane: View {
     @EnvironmentObject var store: SessionStore
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(NSLocalizedString("Project usage", comment: ""))
-                .font(.headline)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(NSLocalizedString("Project usage", comment: ""))
+                    .font(.headline)
 
-            if let total = store.usage?.total {
-                HStack(spacing: 20) {
-                    statItem("\(Int(total.sessions ?? 0))", "Sessions")
-                    statItem("\(Int(total.messages ?? 0))", "Messages")
-                    statItem(String(format: "$%.2f", total.cost ?? 0), "Cost")
+                if let total = store.usage?.total {
+                    HStack(spacing: 20) {
+                        statItem("\(Int(total.sessions ?? 0))", NSLocalizedString("Sessions", comment: ""))
+                        statItem("\(Int(total.messages ?? 0))", NSLocalizedString("Messages", comment: ""))
+                        statItem(String(format: "$%.2f", total.cost ?? 0), NSLocalizedString("Cost", comment: ""))
+                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.primary.opacity(0.05))
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
                 }
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.primary.opacity(0.05))
-                .clipShape(RoundedRectangle(cornerRadius: 10))
-            }
 
-            if let models = store.usage?.models, !models.isEmpty {
-                Text(NSLocalizedString("By model", comment: ""))
-                    .font(.subheadline.weight(.semibold))
-                List {
-                    ForEach(models) { model in
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("\(model.providerID ?? "?") · \(model.modelID ?? "?")")
-                                    .font(.system(size: 12, weight: .medium))
-                                    .lineLimit(1)
-                                Text("\(Int(model.messages ?? 0)) messages")
+                if let models = store.usage?.models, !models.isEmpty {
+                    Text(NSLocalizedString("By model", comment: ""))
+                        .font(.subheadline.weight(.semibold))
+                    LazyVStack(spacing: 0) {
+                        ForEach(models) { model in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("\(model.providerID ?? "?") · \(model.modelID ?? "?")")
+                                        .font(.system(size: 12, weight: .medium))
+                                        .lineLimit(1)
+                                    Text(String(
+                                        format: NSLocalizedString("%lld messages", comment: ""),
+                                        Int64(model.messages ?? 0)
+                                    ))
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Text(String(format: "$%.2f", model.cost ?? 0))
+                                    .font(.callout.weight(.medium))
                             }
-                            Spacer()
-                            Text(String(format: "$%.2f", model.cost ?? 0))
-                                .font(.callout.weight(.medium))
+                            .padding(.vertical, 8)
+                            .padding(.horizontal, 10)
+                            if model.id != models.last?.id {
+                                Divider()
+                            }
                         }
                     }
+                    .background(Theme.subtleFill, in: RoundedRectangle(cornerRadius: 8))
                 }
-                .listStyle(.inset)
-                .frame(minHeight: 220)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(20)
         }
-        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onAppear {
             Task { await store.loadUsage() }
         }
@@ -550,36 +798,46 @@ private struct UsageSettingsPane: View {
 
 private struct AboutSettingsPane: View {
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 12) {
-                Image(nsImage: NSApp.applicationIconImage)
-                    .resizable()
-                    .frame(width: 64, height: 64)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(NSLocalizedString("DevEco Code Desktop", comment: ""))
-                        .font(.title3.weight(.semibold))
-                    Text("Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?") (\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"))")
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 12) {
+                    Image(nsImage: NSApp.applicationIconImage)
+                        .resizable()
+                        .frame(width: 64, height: 64)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(NSLocalizedString("DevEco Code Desktop", comment: ""))
+                            .font(.title3.weight(.semibold))
+                        Text(String(
+                            format: NSLocalizedString("Version %@ (%@)", comment: ""),
+                            Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?",
+                            Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+                        ))
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    }
                 }
-            }
 
-            Divider()
+                Divider()
 
-            Text(NSLocalizedString("A native macOS client for the local deveco CLI — sessions, streaming, approvals, diffs, and model management.", comment: ""))
-                .font(.callout)
-            Text(NSLocalizedString("Protocol and UX reference: opencode (MIT) and OpenAI Codex (Apache-2.0). Design learned from their public sources; all code here is original Swift.", comment: ""))
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                Text(NSLocalizedString("A native macOS client for the local deveco CLI — sessions, streaming, approvals, diffs, and model management.", comment: ""))
+                    .font(.callout)
+                Text(NSLocalizedString("Protocol and UX reference: opencode (MIT) and OpenAI Codex (Apache-2.0). Design learned from their public sources; all code here is original Swift.", comment: ""))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
 
-            Divider()
+                Divider()
 
-            Text("Logs: `log stream --predicate 'subsystem == \"com.local.deveco-codesktop\"'`")
+                Text(String(
+                    format: NSLocalizedString("Logs: %@", comment: ""),
+                    "`log stream --predicate 'subsystem == \"com.local.deveco-codesktop\"'`"
+                ))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(20)
         }
-        .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
@@ -596,7 +854,10 @@ private struct LogViewerSheet: View {
             HStack {
                 Text(NSLocalizedString("Server log", comment: ""))
                     .font(.headline)
-                Text("\(server.logTail.count) chars")
+                Text(String(
+                    format: NSLocalizedString("%lld chars", comment: ""),
+                    Int64(server.logTail.count)
+                ))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()

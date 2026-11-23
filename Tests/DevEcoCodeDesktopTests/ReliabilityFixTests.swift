@@ -78,6 +78,34 @@ final class ReliabilityFixTests: XCTestCase {
         XCTAssertEqual(environment["PWD"], project.path)
     }
 
+    func testCLIEnvironmentPutsExecutableDirectoryFirst() {
+        let executable = URL(fileURLWithPath: "/tmp/deveco-test/bin/deveco")
+        let environment = ServerManager.cliEnvironment(
+            base: ["PATH": "/usr/bin:/bin"],
+            executable: executable
+        )
+        let path = environment["PATH"] ?? ""
+        XCTAssertTrue(path.hasPrefix("/tmp/deveco-test/bin:"))
+        XCTAssertTrue(path.hasSuffix("/usr/bin:/bin"))
+    }
+
+    func testWaitUntilExitReapsFinishedProcessGroup() throws {
+        let pipe = Pipe()
+        let config = ProcessGroupLauncher.Configuration(
+            executable: URL(fileURLWithPath: "/bin/sh"),
+            arguments: ["-c", "exit 0"],
+            environment: [:],
+            workingDirectory: FileManager.default.temporaryDirectory,
+            stdout: pipe.fileHandleForWriting,
+            stderr: pipe.fileHandleForWriting
+        )
+        let launched = try ProcessGroupLauncher.launch(config)
+        try pipe.fileHandleForWriting.close()
+        let started = Date()
+        XCTAssertTrue(launched.waitUntilExit(timeout: 3))
+        XCTAssertLessThan(Date().timeIntervalSince(started), 3)
+    }
+
     @MainActor
     func testFirstFreePortDoesNotWrapAround() {
         let port = ServerManager.firstFreePort(from: 65_530)

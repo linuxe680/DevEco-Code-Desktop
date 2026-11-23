@@ -1941,6 +1941,9 @@ private struct MessageBubble: View {
     private var chatFontSize = 15.0
 
     @State private var hovered = false
+    @State private var actionBarHovered = false
+    @State private var actionsVisible = false
+    @State private var hideActionsWorkItem: DispatchWorkItem?
     @State private var copied = false
 
     private var isStreamingThis: Bool { isStreaming }
@@ -2042,40 +2045,48 @@ private struct MessageBubble: View {
                 .disabled(isStreamingThis)
             }
         }
+        .onChange(of: isStreamingThis) { streaming in
+            if streaming {
+                hideActionsImmediately()
+            } else {
+                updateActionVisibility()
+            }
+        }
+        .onDisappear {
+            hideActionsWorkItem?.cancel()
+        }
     }
 
     private var userMessage: some View {
         HStack(alignment: .top, spacing: 8) {
             Spacer(minLength: 80)
-            VStack(alignment: .trailing, spacing: 6) {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(message.parts) { part in
-                        PartView(
-                            part: part,
-                            useMarkdown: false,
-                            isStreaming: isStreamingThis,
-                            searchQuery: searchQuery
-                        )
-                    }
+            userBubble
+                .overlay(alignment: .bottomTrailing) {
+                    hoverActionOverlay
                 }
-                .font(.system(size: ChatTypography.body(chatFontSize)))
-                .lineSpacing(ChatTypography.lineSpacing(chatFontSize))
-                .padding(.horizontal, 14)
-                .padding(.vertical, 9)
-                .background(Theme.userBubble, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                // Only reserve space while actually hovered: an invisible
-                // action strip used to add ~30pt of dead air under every
-                // bubble, which read as oversized message spacing.
-                if hovered && !isStreamingThis {
-                    HStack {
-                        Spacer(minLength: 0)
-                        hoverActionBar
-                    }
-                    .transition(.opacity)
+                .onHover { inside in
+                    hovered = inside
+                    updateActionVisibility()
                 }
-            }
-            .onHover { hovered = $0 }
         }
+    }
+
+    private var userBubble: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(message.parts) { part in
+                PartView(
+                    part: part,
+                    useMarkdown: false,
+                    isStreaming: isStreamingThis,
+                    searchQuery: searchQuery
+                )
+            }
+        }
+        .font(.system(size: ChatTypography.body(chatFontSize)))
+        .lineSpacing(ChatTypography.lineSpacing(chatFontSize))
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .background(Theme.userBubble, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     private var assistantMessage: some View {
@@ -2103,18 +2114,72 @@ private struct MessageBubble: View {
                         .lineLimit(1)
                         .truncationMode(.tail)
                 }
-                if hovered {
-                    Spacer(minLength: 0)
-                    hoverActionBar
-                        .transition(.opacity)
-                }
             }
-            .animation(.easeInOut(duration: 0.12), value: hovered)
         }
         .font(.system(size: ChatTypography.body(chatFontSize)))
         .lineSpacing(ChatTypography.lineSpacing(chatFontSize))
         .padding(.vertical, 3)
-        .onHover { hovered = $0 }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(alignment: .bottomTrailing) {
+            hoverActionOverlay
+        }
+        .onHover { inside in
+            hovered = inside
+            updateActionVisibility()
+        }
+    }
+
+    /// The strip floats in the LazyVStack's inter-message gap instead of
+    /// taking part in layout. Inserting it used to change the row height while
+    /// the pointer was over the message, moving the hover target under the
+    /// cursor and making the transcript flicker.
+    private var hoverActionOverlay: some View {
+        hoverActionBar
+            .contentShape(RoundedRectangle(cornerRadius: 7))
+            .onHover { inside in
+                actionBarHovered = inside
+                updateActionVisibility()
+            }
+            .offset(y: 24)
+            .opacity(actionsVisible ? 1 : 0)
+            .allowsHitTesting(actionsVisible)
+            .disabled(!actionsVisible)
+            .accessibilityHidden(!actionsVisible)
+            .animation(.easeOut(duration: 0.12), value: actionsVisible)
+    }
+
+    private func updateActionVisibility() {
+        guard !isStreamingThis else {
+            hideActionsImmediately()
+            return
+        }
+        if hovered || actionBarHovered {
+            hideActionsWorkItem?.cancel()
+            hideActionsWorkItem = nil
+            actionsVisible = true
+        } else {
+            scheduleActionHide()
+        }
+    }
+
+    /// A short grace period covers the gap between the bubble and the strip,
+    /// and the hand-off between their two hover tracking areas.
+    private func scheduleActionHide() {
+        hideActionsWorkItem?.cancel()
+        let item = DispatchWorkItem {
+            guard !hovered, !actionBarHovered, !isStreamingThis else { return }
+            hideActionsWorkItem = nil
+            actionsVisible = false
+        }
+        hideActionsWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: item)
+    }
+
+    private func hideActionsImmediately() {
+        hideActionsWorkItem?.cancel()
+        hideActionsWorkItem = nil
+        actionBarHovered = false
+        actionsVisible = false
     }
 
     /// Hover action strip: copy, edit & resend (user messages), revert.
@@ -2168,7 +2233,7 @@ private struct MessageBubble: View {
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 7))
         .overlay(RoundedRectangle(cornerRadius: 7).stroke(Theme.softStroke))
         .shadow(color: .black.opacity(0.12), radius: 4, y: 1)
-        .padding(6)
+        .padding(.horizontal, 6)
     }
 
     private func actionButton(_ systemImage: String, help: String, tint: Color = .secondary, action: @escaping () -> Void) -> some View {

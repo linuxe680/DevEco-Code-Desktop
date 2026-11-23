@@ -3,6 +3,14 @@ import ServiceManagement
 
 /// macOS 11 没有 SMAppService；用 LaunchServices 的兼容 API 管理登录项。
 enum LoginItemManager {
+    /// macOS 12 and earlier require a bundled login helper in
+    /// Contents/Library/LoginItems, which this app does not ship. Hide the
+    /// toggle there instead of failing every time it is flipped.
+    static var isSupported: Bool {
+        if #available(macOS 13.0, *) { return true }
+        return false
+    }
+
     static var isEnabled: Bool {
         if #available(macOS 13.0, *) {
             return SMAppService.mainApp.status == .enabled
@@ -20,12 +28,13 @@ enum LoginItemManager {
             }
             return
         }
-        guard SMLoginItemSetEnabled("com.local.deveco-codesktop.loginhelper" as CFString, enabled) else {
-            throw NSError(
-                domain: "LoginItemManager",
-                code: 1,
-                userInfo: [NSLocalizedDescriptionKey: NSLocalizedString("Could not change login item.", comment: "")]
-            )
-        }
+        throw NSError(
+            domain: "LoginItemManager",
+            code: 2,
+            userInfo: [NSLocalizedDescriptionKey: NSLocalizedString(
+                "Launch at login requires macOS 13 or later.",
+                comment: ""
+            )]
+        )
     }
 }
