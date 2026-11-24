@@ -47,6 +47,16 @@ final class P3ReliabilityTests: XCTestCase {
         XCTAssertEqual(FailureKind.classify("Tool execution aborted", statusCode: nil), .aborted)
     }
 
+    func testTransportAbortStaysVisibleAsNetworkFailure() {
+        // A dropped socket must not be mistaken for the user pressing Stop:
+        // the old substring match swallowed this error and showed nothing.
+        XCTAssertEqual(FailureKind.classify("connection was aborted", statusCode: nil), .network)
+        XCTAssertEqual(
+            FailureKind.classify("NSURLErrorDomain Code=-1005 the network connection was aborted", statusCode: nil),
+            .network
+        )
+    }
+
     // MARK: Diagnostics report
 
     @MainActor

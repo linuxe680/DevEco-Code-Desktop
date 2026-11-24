@@ -36,6 +36,25 @@ final class StreamingRevealTests: XCTestCase {
     }
 
     @MainActor
+    func testShrinkingTargetDoesNotReplayFromSeed() async throws {
+        let reveal = StreamingReveal()
+        let long = String(repeating: "先显示很长的一段内容。", count: 6)
+        let shorter = "服务端改写了这一段。"
+
+        reveal.update(target: long, isStreaming: true)
+        try await waitUntilFinished(reveal, timeout: 3)
+        XCTAssertEqual(reveal.text, long)
+
+        // A shorter rewrite must clamp in place; rewinding to the seed made
+        // the visible answer flash and re-type from the beginning.
+        reveal.update(target: shorter, isStreaming: true)
+        XCTAssertEqual(reveal.text, shorter)
+        reveal.update(target: shorter, isStreaming: false)
+        try await waitUntilFinished(reveal, timeout: 3)
+        XCTAssertEqual(reveal.text, shorter)
+    }
+
+    @MainActor
     private func waitUntilFinished(
         _ reveal: StreamingReveal,
         timeout: TimeInterval

@@ -20,6 +20,9 @@ final class EventStream: NSObject, URLSessionDataDelegate {
     /// but never sends a single byte must still trip the stall guard.
     private var connectedAt: Date?
     private var stalledCheck: DispatchSourceTimer?
+    /// Set when the server answers the SSE request with something other than a
+    /// 200 event-stream (401/404, an HTML error page, a proxy interstitial).
+    private(set) var lastHTTPStatus: Int?
 
     /// 连续解码失败计数。服务端事件格式变更或密钥轮换时，
     /// 静默丢帧会让 UI 永远停在旧状态——需要显式告警。
@@ -90,6 +93,7 @@ final class EventStream: NSObject, URLSessionDataDelegate {
         lastReceiveDate = nil
         connectedAt = nil
         isReceivingHeartbeats = false
+        lastHTTPStatus = nil
         consecutiveDecodeFailures = 0
         stalledCheck?.cancel()
         stalledCheck = nil
@@ -99,6 +103,34 @@ final class EventStream: NSObject, URLSessionDataDelegate {
         lastReceiveDate = Date()
         isReceivingHeartbeats = true
         ingest(data)
+    }
+
+    /// Reject non-SSE responses up front. Previously a 401/404 (or an HTML
+    /// error page) was consumed as an empty stream and reconnected forever,
+    /// leaving the UI stuck on "reconnecting" with no diagnosis.
+    func urlSession(
+        _ session: URLSession,
+        dataTask: URLSessionDataTask,
+        didReceive response: URLResponse,
+        completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
+    ) {
+        guard let http = response as? HTTPURLResponse else {
+            completionHandler(.allow)
+            return
+        }
+        lastHTTPStatus = http.statusCode
+        let contentType = (http.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
+        // Missing Content-Type is tolerated for older builds; an explicit
+        // non-event-stream type (usually text/html) is a hard failure.
+        let isEventStream = contentType.isEmpty || contentType.contains("text/event-stream")
+        if http.statusCode != 200 || !isEventStream {
+            Log.stream.warning(
+                "SSE rejected: HTTP \(http.statusCode, privacy: .public) \(contentType, privacy: .public)"
+            )
+            completionHandler(.cancel)
+            return
+        }
+        completionHandler(.allow)
     }
 
     /// A socket with no bytes for longer than `timeout` is likely dead. DevEco

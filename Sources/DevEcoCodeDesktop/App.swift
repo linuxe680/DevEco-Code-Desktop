@@ -27,7 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Don't leave the deveco serve child process orphaned, unless the
         // user opted to keep it running for the next launch.
         if AppSettings.quitBehavior == .stopServer {
-            server.stop()
+            server.stopForTermination()
         }
     }
 

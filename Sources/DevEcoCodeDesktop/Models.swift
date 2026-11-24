@@ -973,8 +973,13 @@ enum FailureKind: String, Equatable {
 
         // An abort is the normal outcome of pressing Stop / Esc. The server
         // reports it as `MessageAbortedError: Aborted`; it must never be
-        // surfaced as a failure or retried automatically.
-        if contains(["messageabortederror", "message aborted", "aborted"]) {
+        // surfaced as a failure or retried automatically. Match the abort
+        // shapes specifically — a bare "aborted" also matches transport
+        // errors such as "connection was aborted", which are real network
+        // failures that must stay visible (and retryable).
+        if contains(["messageabortederror", "message aborted", "user aborted",
+                     "request aborted", "tool execution aborted",
+                     "operation aborted", "aborted by user"]) {
             return .aborted
         }
 

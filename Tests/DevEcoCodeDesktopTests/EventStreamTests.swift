@@ -68,6 +68,44 @@ final class EventStreamTests: XCTestCase {
         XCTAssertEqual(events[0].type, "e")
     }
 
+    func testNonEventStreamResponseIsRejected() {
+        let url = URL(string: "http://127.0.0.1:4096/event")!
+        let task = URLSession.shared.dataTask(with: url)
+        let response = HTTPURLResponse(
+            url: url,
+            statusCode: 401,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"]
+        )!
+
+        var disposition: URLSession.ResponseDisposition?
+        stream.urlSession(URLSession.shared, dataTask: task, didReceive: response) {
+            disposition = $0
+        }
+
+        XCTAssertEqual(stream.lastHTTPStatus, 401)
+        XCTAssertEqual(disposition, .cancel, "a 401 must not be consumed as an empty SSE stream")
+    }
+
+    func testEventStreamResponseIsAccepted() {
+        let url = URL(string: "http://127.0.0.1:4096/event")!
+        let task = URLSession.shared.dataTask(with: url)
+        let response = HTTPURLResponse(
+            url: url,
+            statusCode: 200,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "text/event-stream; charset=utf-8"]
+        )!
+
+        var disposition: URLSession.ResponseDisposition?
+        stream.urlSession(URLSession.shared, dataTask: task, didReceive: response) {
+            disposition = $0
+        }
+
+        XCTAssertEqual(stream.lastHTTPStatus, 200)
+        XCTAssertEqual(disposition, .allow)
+    }
+
     func testPartialFrameIsBuffered() {
         stream.ingest(Data("data: {\"type\":\"par".utf8))
         XCTAssertTrue(events.isEmpty)

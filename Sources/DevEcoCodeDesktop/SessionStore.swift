@@ -363,11 +363,21 @@ final class SessionStore: ObservableObject {
     /// Automatic retry counter for network-class failures, per session; reset
     /// when the user sends again so a broken network can't loop forever.
     private var autoRetryCountBySession: [String: Int] = [:]
+    /// Pending 2s auto-retry tasks per session. Without a handle, pressing
+    /// Stop cleared `abortingSessionIDs` (via finishRun) before the timer
+    /// woke up, and the retry happily sent the prompt again — Stop looked
+    /// ignored. Abort/disconnect/deletion must cancel these explicitly.
+    private var autoRetryTasksBySession: [String: Task<Void, Never>] = [:]
     /// Streaming deltas buffered between flushes (~120ms batches).
     /// Guard so repeated snapshot flushes cannot stack up: `loadMessages()`
     /// is called from SSE, fallback polling, and connect refresh at once.
     private var messageLoadTasks: [String: Task<Void, Never>] = [:]
     private var pendingDeltas: [String: String] = [:]
+    /// How many flush cycles each buffered part has gone unresolved. A delta
+    /// for a part the snapshot never creates used to be re-queued forever,
+    /// keeping the 30ms timer alive for the lifetime of the app.
+    private var pendingDeltaAttempts: [String: Int] = [:]
+    private static let maxPendingDeltaAttempts = 4
     private var lastDeltaFlush = Date.distantPast
     private var deltaFlushTask: Task<Void, Never>?
     /// Bumped whenever a flush timer is scheduled or cancelled so a stale
@@ -424,6 +434,10 @@ final class SessionStore: ObservableObject {
 
     func connect(baseURL: URL) {
         if let api, api.baseURL == baseURL, eventStream.isConnected { return }
+        // A pending reconnect from the previous server must not wake up later
+        // and tear down this freshly connected stream.
+        retryTask?.cancel()
+        retryTask = nil
         api = APIClient(baseURL: baseURL)
         reconnectAttempts = 0
         isReconnecting = false
@@ -483,6 +497,7 @@ final class SessionStore: ObservableObject {
         messageLoadTasks.values.forEach { $0.cancel() }
         messageLoadTasks = [:]
         pendingDeltas = [:]
+        pendingDeltaAttempts = [:]
         lastDeltaFlush = .distantPast
         deltaFlushGeneration &+= 1
         deltaFlushTask?.cancel()
@@ -500,6 +515,8 @@ final class SessionStore: ObservableObject {
         sessionStatuses = [:]
         lastSentPromptBySession = [:]
         autoRetryCountBySession = [:]
+        autoRetryTasksBySession.values.forEach { $0.cancel() }
+        autoRetryTasksBySession = [:]
         messagesCacheBySession = [:]
         sessions = []
         messages = []
@@ -644,6 +661,7 @@ final class SessionStore: ObservableObject {
         todos = []
         diffs = []
         pendingDeltas.removeAll()
+        pendingDeltaAttempts.removeAll()
         draft = draftsBySession[id] ?? ""
         if draft != oldDraft { draftToken = UUID() }
         queuedPrompts = queuesBySession[id] ?? []
@@ -955,6 +973,7 @@ final class SessionStore: ObservableObject {
             // already included in `fetched`. Keeping it would append the same
             // text twice (the fallback poll runs every 2s mid-stream).
             pendingDeltas.removeAll()
+            pendingDeltaAttempts.removeAll()
             autoTitleFromFirstMessageIfNeeded()
         } catch {
             guard isExplicit else { return }
@@ -1522,6 +1541,7 @@ final class SessionStore: ObservableObject {
         unreadSessionIDs.remove(id)
         stopPolling(for: id)
         autoRetryCountBySession.removeValue(forKey: id)
+        autoRetryTasksBySession.removeValue(forKey: id)?.cancel()
         clientAutoTitlesBySession.removeValue(forKey: id)
         manuallyRenamedSessionIDs.remove(id)
         AppSettings.clientAutoTitles = clientAutoTitlesBySession
@@ -1554,6 +1574,10 @@ final class SessionStore: ObservableObject {
     /// Abort sequence the caller can wait for, so a follow-up prompt_async
     /// (e.g. "send queued prompt now") is not racing the server-side abort.
     private func performAbort(sessionID id: String, clearQueue: Bool, flushAfter: Bool = true) async {
+        // Cancel the pending auto-retry before inserting the abort flag: the
+        // timer wakes on a 2s delay, and finishRun clears the flag below, so
+        // without this the retry would resend the prompt after Stop.
+        autoRetryTasksBySession.removeValue(forKey: id)?.cancel()
         abortingSessionIDs.insert(id)
         retryInfoBySession.removeValue(forKey: id)
         if clearQueue {
@@ -1691,6 +1715,7 @@ final class SessionStore: ObservableObject {
         activeSessionIDs.remove(sessionID)
         abortingSessionIDs.remove(sessionID)
         retryInfoBySession.removeValue(forKey: sessionID)
+        autoRetryTasksBySession.removeValue(forKey: sessionID)?.cancel()
         stopPolling(for: sessionID)
     }
 
@@ -1743,17 +1768,23 @@ final class SessionStore: ObservableObject {
         retryInfoBySession[sessionID] = NSLocalizedString(
             "Network error — retrying…", comment: ""
         )
-        Task { [weak self] in
+        autoRetryTasksBySession.removeValue(forKey: sessionID)?.cancel()
+        let task = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             guard let self, !Task.isCancelled else { return }
+            self.autoRetryTasksBySession.removeValue(forKey: sessionID)
             self.retryInfoBySession.removeValue(forKey: sessionID)
+            // Stop may have landed while the timer was waking up.
+            guard !self.abortingSessionIDs.contains(sessionID) else { return }
             guard let prompt = self.lastSentPromptBySession[sessionID],
-                  !self.abortingSessionIDs.contains(sessionID),
                   self.performSend(prompt, sessionID: sessionID, isAutoRetry: true) else {
-                self.recordSessionFailure(sessionID, message: message, kind: kind)
+                if !self.abortingSessionIDs.contains(sessionID) {
+                    self.recordSessionFailure(sessionID, message: message, kind: kind)
+                }
                 return
             }
         }
+        autoRetryTasksBySession[sessionID] = task
     }
 
     private func scheduleReconnect() {
@@ -1796,6 +1827,10 @@ final class SessionStore: ObservableObject {
     func handle(_ event: DevEvent) {
         switch event.type {
         case "server.connected":
+            // A scheduled reconnect must not fire after the stream is healthy
+            // again; it would disconnect the live socket.
+            retryTask?.cancel()
+            retryTask = nil
             reconnectAttempts = 0
             isReconnecting = false
             Task { await refresh() }
@@ -1911,6 +1946,7 @@ final class SessionStore: ObservableObject {
                   let messageID = partObject["messageID"]?.displayText else { return }
             // The server's part supersedes any buffered deltas for it.
             pendingDeltas.removeValue(forKey: part.id)
+            pendingDeltaAttempts.removeValue(forKey: part.id)
             lastStreamActivity = Date()
             upsert(part, messageID: messageID, in: sessionID)
         case "message.part.delta":
@@ -2176,6 +2212,9 @@ final class SessionStore: ObservableObject {
         guard sessionID == selectedSessionID else { return }
         lastStreamActivity = Date()
         pendingDeltas[partID, default: ""] += delta
+        // A fresh delta means the part may have just been created; retry from
+        // a clean slate instead of inheriting the previous budget.
+        pendingDeltaAttempts[partID] = 0
         let buffered = pendingDeltas[partID]?.count ?? 0
         if Date().timeIntervalSince(lastDeltaFlush) >= 0.03 || buffered > 8_192 {
             flushDeltas()
@@ -2212,10 +2251,20 @@ final class SessionStore: ObservableObject {
             if let messageIndex = messages.firstIndex(where: { $0.parts.contains { $0.id == partID } }),
                let partIndex = messages[messageIndex].parts.firstIndex(where: { $0.id == partID }) {
                 messages[messageIndex].parts[partIndex].text = (messages[messageIndex].parts[partIndex].text ?? "") + delta
+                pendingDeltaAttempts.removeValue(forKey: partID)
                 mutated = true
             } else {
-                // The part hasn't been created yet; keep its deltas buffered.
-                unresolved[partID] = (unresolved[partID] ?? "") + delta
+                // The part hasn't been created yet; keep its deltas buffered
+                // for a few flush cycles. A delta whose part never appears
+                // (e.g. from a session we stopped following) used to be
+                // requeued forever, keeping the 30ms timer awake.
+                let attempts = (pendingDeltaAttempts[partID] ?? 0) + 1
+                if attempts >= Self.maxPendingDeltaAttempts {
+                    pendingDeltaAttempts.removeValue(forKey: partID)
+                } else {
+                    pendingDeltaAttempts[partID] = attempts
+                    unresolved[partID] = (unresolved[partID] ?? "") + delta
+                }
             }
         }
         pendingDeltas = unresolved

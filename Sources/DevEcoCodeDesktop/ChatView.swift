@@ -992,6 +992,12 @@ struct ChatView: View {
                     }
                     if let request = store.pendingQuestions.first(where: { $0.sessionID == store.selectedSessionID }) {
                         QuestionBanner(request: request)
+                            // A new ask must not inherit the previous card's
+                            // picks: `selections` is keyed by question index,
+                            // so without a fresh identity the next request
+                            // looked pre-answered and could be submitted with
+                            // stale choices.
+                            .id(request.id)
                     }
                 }
                 .padding(.horizontal, 22)
@@ -1052,7 +1058,10 @@ struct ChatView: View {
                         } else if store.messages.isEmpty && searchQuery.isEmpty {
                             newConversationState
                         } else {
-                            LazyVStack(alignment: .leading, spacing: 34) {
+                            // The hover strip now lives inside each message
+                            // row, so the inter-message gap is reduced by the
+                            // strip's height to keep the visual rhythm.
+                            LazyVStack(alignment: .leading, spacing: 8) {
                                 ForEach(visibleMessages) { message in
                                     MessageBubble(
                                         message: message,
@@ -1929,6 +1938,13 @@ private final class ChatTextView: NSTextView {
     }
 
     override func keyDown(with event: NSEvent) {
+        // A marked-text session means an IME candidate window is open. Esc
+        // must close the candidates (not abort the run), and arrow keys must
+        // move the candidate selection instead of recalling prompt history.
+        if hasMarkedText() {
+            super.keyDown(with: event)
+            return
+        }
         let hasOption = event.modifierFlags.contains(.option)
         let isUp = event.specialKey == .upArrow || event.keyCode == 126
         let isDown = event.specialKey == .downArrow || event.keyCode == 125
@@ -2084,10 +2100,11 @@ private struct MessageBubble: View {
     private var userMessage: some View {
         HStack(alignment: .top, spacing: 8) {
             Spacer(minLength: 80)
-            userBubble
-                .overlay(alignment: .bottomTrailing) {
-                    hoverActionOverlay
-                }
+            VStack(alignment: .trailing, spacing: 2) {
+                userBubble
+                hoverActionRow
+            }
+                .contentShape(Rectangle())
                 .onHover { inside in
                     hovered = inside
                     updateActionVisibility()
@@ -2114,62 +2131,69 @@ private struct MessageBubble: View {
     }
 
     private var assistantMessage: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ForEach(message.parts) { part in
-                PartView(
-                    part: part,
-                    useMarkdown: true,
-                    isStreaming: isStreamingThis,
-                    searchQuery: searchQuery
-                )
-            }
+        VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(message.parts) { part in
+                    PartView(
+                        part: part,
+                        useMarkdown: true,
+                        isStreaming: isStreamingThis,
+                        searchQuery: searchQuery
+                    )
+                }
 
-            HStack(spacing: 6) {
-                if let elapsed = message.info.elapsedDuration {
-                    Text(elapsed)
-                        .font(.system(size: microSize))
-                        .foregroundStyle(.tertiary)
-                        .monospacedDigit()
-                }
-                if let metadata = assistantFooterMetadata {
-                    Text(metadata)
-                        .font(.system(size: microSize))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
+                HStack(spacing: 6) {
+                    if let elapsed = message.info.elapsedDuration {
+                        Text(elapsed)
+                            .font(.system(size: microSize))
+                            .foregroundStyle(.tertiary)
+                            .monospacedDigit()
+                    }
+                    if let metadata = assistantFooterMetadata {
+                        Text(metadata)
+                            .font(.system(size: microSize))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
                 }
             }
+            .font(.system(size: ChatTypography.body(chatFontSize)))
+            .lineSpacing(ChatTypography.lineSpacing(chatFontSize))
+            .padding(.vertical, 3)
+
+            hoverActionRow
         }
-        .font(.system(size: ChatTypography.body(chatFontSize)))
-        .lineSpacing(ChatTypography.lineSpacing(chatFontSize))
-        .padding(.vertical, 3)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .overlay(alignment: .bottomTrailing) {
-            hoverActionOverlay
-        }
+        .contentShape(Rectangle())
         .onHover { inside in
             hovered = inside
             updateActionVisibility()
         }
     }
 
-    /// The strip floats in the LazyVStack's inter-message gap instead of
-    /// taking part in layout. Inserting it used to change the row height while
-    /// the pointer was over the message, moving the hover target under the
-    /// cursor and making the transcript flicker.
-    private var hoverActionOverlay: some View {
-        hoverActionBar
-            .contentShape(RoundedRectangle(cornerRadius: 7))
+    /// The strip keeps a fixed-height slot in the message row. It used to be
+    /// an overlay hanging below the bubble: the pointer had to cross an
+    /// untracked gap to reach it, so the strip appeared/disappeared and the
+    /// scroll view repainted on every crossing (the reported flicker).
+    /// Reserving the slot means hover never changes layout and the strip's
+    /// hit area is continuous with the bubble. No material and no animation:
+    /// both forced a translucent backdrop re-render while scrolling.
+    private var hoverActionRow: some View {
+        HStack(spacing: 0) {
+            Spacer(minLength: 0)
+            hoverActionBar
+                .opacity(actionsVisible ? 1 : 0)
+                .allowsHitTesting(actionsVisible)
+                .accessibilityHidden(!actionsVisible)
+        }
+            // 24pt + the 2pt inner gap + the 8pt stack gap keeps the
+            // inter-message rhythm at the previous 34pt.
+            .frame(height: 24)
             .onHover { inside in
                 actionBarHovered = inside
                 updateActionVisibility()
             }
-            .offset(y: 24)
-            .opacity(actionsVisible ? 1 : 0)
-            .allowsHitTesting(actionsVisible)
-            .disabled(!actionsVisible)
-            .accessibilityHidden(!actionsVisible)
-            .animation(.easeOut(duration: 0.12), value: actionsVisible)
     }
 
     private func updateActionVisibility() {
@@ -2254,9 +2278,8 @@ private struct MessageBubble: View {
         }
         .padding(.horizontal, 5)
         .padding(.vertical, 3)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 7))
+        .background(Theme.chromeFill, in: RoundedRectangle(cornerRadius: 7))
         .overlay(RoundedRectangle(cornerRadius: 7).stroke(Theme.softStroke))
-        .shadow(color: .black.opacity(0.12), radius: 4, y: 1)
         .padding(.horizontal, 6)
     }
 
@@ -2475,8 +2498,12 @@ final class StreamingReveal: ObservableObject {
             }
         }
         if newTarget.count < displayedUnits {
-            displayedUnits = 0
-            text = ""
+            // The server can rewrite a streaming part (a reverted tail, a
+            // normalized prefix). Clamp to the new length instead of rewinding
+            // to zero: the old code fell back to the 6-glyph seed and replayed
+            // the whole visible answer, which read as a flash.
+            displayedUnits = newTarget.count
+            text = newTarget
         }
         target = newTarget
         guard activated else { return }
@@ -4027,7 +4054,6 @@ private struct QuestionBanner: View {
                     Task { await store.answer(request, answers: answers) }
                 }
                 .buttonStyle(.bordered)
-                .keyboardShortcut(.defaultAction)
                 .controlSize(.regular)
                 .disabled(!isComplete)
             }

@@ -41,6 +41,11 @@ final class ServerManager: ObservableObject {
     private var logHandle: FileHandle?
     private var healthTask: Task<Void, Never>?
     private var startupActivity: NSObjectProtocol?
+    /// Guards against two concurrent boot/restart sequences (e.g. switching
+    /// projects while a failed boot is being replaced). Without it the old
+    /// Node process could still be alive when the replacement starts, leaving
+    /// two servers sharing one data directory and the port climbing.
+    private var restartInFlight = false
     /// Incremented on every start/stop so a cancelled health task can tell it
     /// no longer owns the current launch's state.
     private var launchGeneration = 0
@@ -88,8 +93,14 @@ final class ServerManager: ObservableObject {
         UserDefaults.standard.set(url.path, forKey: Self.directoryKey)
         rememberRecent(url)
         if state != .stopped {
-            stop()
-            Task { @MainActor [weak self] in self?.start() }
+            guard !restartInFlight else { return }
+            restartInFlight = true
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.stopAndWait()
+                self.restartInFlight = false
+                self.start()
+            }
         }
     }
 
@@ -104,10 +115,6 @@ final class ServerManager: ObservableObject {
     }
 
     func start() {
-        // A previous run may have been killed before `applicationWillTerminate`
-        // (pkill, crash, force quit), leaving `deveco serve` orphaned on an
-        // old port. Reap it first so ports stop climbing on every launch.
-        Self.reapOrphanedServer()
         if serverProcess != nil {
             if state == .starting {
                 // A previous boot may still be finishing; let a foreground
@@ -118,11 +125,20 @@ final class ServerManager: ObservableObject {
             if state == .failed {
                 // A failed/unhealthy boot can leave a live child behind.
                 // Retry means "replace it", not "do nothing".
-                stop()
+                guard !restartInFlight else { return }
+                restartInFlight = true
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    await self.stopAndWait()
+                    self.restartInFlight = false
+                    self.start()
+                }
             } else {
                 return
             }
+            return
         }
+        guard !restartInFlight else { return }
         beginStartupActivity()
         launchGeneration += 1
         let generation = launchGeneration
@@ -130,7 +146,24 @@ final class ServerManager: ObservableObject {
         errorMessage = nil
         failureReason = nil
         logTail = ""
+        restartInFlight = true
+        // A previous run may have been killed before `applicationWillTerminate`
+        // (pkill, crash, force quit), leaving `deveco serve` orphaned on an
+        // old port. Reap it off the main thread: `ps` + the SIGTERM grace
+        // loop used to freeze the UI for up to a second on every launch.
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await Task.detached(priority: .utility) {
+                ServerManager.reapOrphanedServer()
+            }.value
+            guard generation == self.launchGeneration else { return }
+            self.restartInFlight = false
+            self.launchServer(generation: generation)
+        }
+    }
 
+    private func launchServer(generation: Int) {
+        guard generation == launchGeneration, state == .starting else { return }
         // GUI apps are launched by launchd with a minimal PATH, so `env deveco`
         // does not work; resolve the binary explicitly instead.
         guard let executable = Self.resolveDevecoExecutable() else {
@@ -253,19 +286,40 @@ final class ServerManager: ObservableObject {
     /// data directory open.
     func stopAndWait(timeout: TimeInterval = 5) async {
         guard let launched = teardown() else { return }
-        launched.terminate()
+        launched.terminate(gracePeriod: 0)
         let exited = await Task.detached(priority: .userInitiated) {
             launched.waitUntilExit(timeout: timeout)
         }.value
         if !exited {
             _ = kill(-launched.pid, SIGKILL)
+            _ = await Task.detached(priority: .userInitiated) {
+                launched.waitUntilExit(timeout: 1)
+            }.value
+        }
+    }
+
+    /// Synchronous shutdown for `applicationWillTerminate`. The old `stop()`
+    /// only scheduled a SIGKILL 1.5s later on a global queue; that closure
+    /// died with the app, and the PID file was already deleted, so the next
+    /// launch could not reap the surviving `deveco serve`.
+    func stopForTermination(timeout: TimeInterval = 2) {
+        guard let launched = teardown(clearPIDFile: false) else { return }
+        launched.terminate(gracePeriod: 0)
+        var exited = launched.waitUntilExit(timeout: timeout)
+        if !exited {
+            _ = kill(-launched.pid, SIGKILL)
+            exited = launched.waitUntilExit(timeout: 1)
+        }
+        if exited {
+            Self.writePIDFile(nil)
         }
     }
 
     /// Cancels monitors and clears app state, returning the process group that
     /// still needs to be signalled.
-    private func teardown() -> ProcessGroupLauncher.Launched? {
+    private func teardown(clearPIDFile: Bool = true) -> ProcessGroupLauncher.Launched? {
         launchGeneration += 1
+        restartInFlight = false
         healthTask?.cancel()
         healthTask = nil
         monitorTask?.cancel()
@@ -279,7 +333,9 @@ final class ServerManager: ObservableObject {
             return nil
         }
         self.serverProcess = nil
-        Self.writePIDFile(nil)
+        if clearPIDFile {
+            Self.writePIDFile(nil)
+        }
         cleanUpIO()
         return launched
     }
