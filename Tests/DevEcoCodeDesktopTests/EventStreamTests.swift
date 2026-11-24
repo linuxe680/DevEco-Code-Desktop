@@ -89,6 +89,16 @@ final class EventStreamTests: XCTestCase {
         XCTAssertFalse(stream.isReceivingHeartbeats)
     }
 
+    func testConnectedSocketWithoutAnyBytesEventuallyLooksStale() {
+        stream.connect(baseURL: URL(string: "http://127.0.0.1:1")!)
+        defer { stream.disconnect() }
+        XCTAssertFalse(stream.isReceivingHeartbeats)
+        XCTAssertTrue(
+            stream.heartbeatIsStale(timeout: 0),
+            "a socket that never delivers a byte must not look healthy forever"
+        )
+    }
+
     func testLongFrameIsNotCorruptedByChunkedBytes() {
         let payload = #"{"type":"long","properties":{"text":""# + String(repeating: "中文代码 abc ", count: 400) + #""}}"#
         let frame = Data("data: \(payload)\n\n".utf8)

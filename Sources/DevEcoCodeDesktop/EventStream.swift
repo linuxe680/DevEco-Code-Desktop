@@ -16,6 +16,9 @@ final class EventStream: NSObject, URLSessionDataDelegate {
     private var task: URLSessionDataTask?
     private var buffer = Data()
     private var lastReceiveDate: Date?
+    /// When the current socket opened. A server that accepts the connection
+    /// but never sends a single byte must still trip the stall guard.
+    private var connectedAt: Date?
     private var stalledCheck: DispatchSourceTimer?
 
     /// 连续解码失败计数。服务端事件格式变更或密钥轮换时，
@@ -72,6 +75,7 @@ final class EventStream: NSObject, URLSessionDataDelegate {
         let request = URLRequest(url: baseURL.appendingPathComponent("event"))
         task = session?.dataTask(with: request)
         task?.resume()
+        connectedAt = Date()
         Log.stream.info("SSE connecting to \(baseURL.absoluteString, privacy: .public)")
     }
 
@@ -84,6 +88,7 @@ final class EventStream: NSObject, URLSessionDataDelegate {
         session = nil
         buffer = Data()
         lastReceiveDate = nil
+        connectedAt = nil
         isReceivingHeartbeats = false
         consecutiveDecodeFailures = 0
         stalledCheck?.cancel()
@@ -99,8 +104,8 @@ final class EventStream: NSObject, URLSessionDataDelegate {
     /// A socket with no bytes for longer than `timeout` is likely dead. DevEco
     /// normally sends periodic SSE comments, so 15s is a conservative guard.
     func heartbeatIsStale(timeout: TimeInterval = 15) -> Bool {
-        guard let lastReceiveDate else { return false }
-        let elapsed = Date().timeIntervalSince(lastReceiveDate)
+        guard let reference = lastReceiveDate ?? connectedAt else { return false }
+        let elapsed = Date().timeIntervalSince(reference)
         return elapsed >= max(0, timeout)
     }
 

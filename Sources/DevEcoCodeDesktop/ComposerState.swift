@@ -61,6 +61,24 @@ struct ComposerState {
         queue.insert(item, at: insertAt)
     }
 
+    /// Swaps the item one slot toward the tail. Expressed as an explicit
+    /// operation because `moveQueued(id:before:)` cannot move the
+    /// second-to-last item past the last one (there is no item after it to
+    /// insert before).
+    mutating func moveQueuedDown(id: UUID) {
+        guard let from = queue.firstIndex(where: { $0.id == id }),
+              from + 1 < queue.count else { return }
+        let item = queue.remove(at: from)
+        queue.insert(item, at: min(from + 1, queue.count))
+    }
+
+    /// Swaps the item one slot toward the head.
+    mutating func moveQueuedUp(id: UUID) {
+        guard let from = queue.firstIndex(where: { $0.id == id }), from > 0 else { return }
+        let item = queue.remove(at: from)
+        queue.insert(item, at: from - 1)
+    }
+
     /// Pulls a queued prompt back into the composer. Any in-progress draft is
     /// re-queued ahead of the rest so neither text is lost.
     mutating func editQueued(

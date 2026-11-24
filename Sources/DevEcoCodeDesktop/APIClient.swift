@@ -2,8 +2,11 @@ import Foundation
 import os
 
 extension JSONDecoder {
-    /// Shared decoder; creating one per call is wasteful for the hot SSE path.
-    static let deveco = JSONDecoder()
+    /// A fresh decoder per call: `JSONDecoder` is a class with mutable decode
+    /// state and is not thread-safe. The SSE reader decodes on the main
+    /// thread while `APIClient`/`ProviderStore` decode concurrently on task
+    /// threads, so a shared instance can corrupt in-flight parses.
+    static var deveco: JSONDecoder { JSONDecoder() }
 }
 
 final class APIClient {

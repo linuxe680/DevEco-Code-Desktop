@@ -55,6 +55,36 @@ final class ComposerStateMachineTests: XCTestCase {
         XCTAssertEqual(state.queue.map(\.text), ["third", "second"])
     }
 
+    func testMoveQueuedDownMovesSecondToLastItem() {
+        var state = ComposerState()
+        let first = QueuedPrompt(text: "first", model: nil)
+        let second = QueuedPrompt(text: "second", model: nil)
+        let third = QueuedPrompt(text: "third", model: nil)
+        state.enqueue(first)
+        state.enqueue(second)
+        state.enqueue(third)
+
+        state.moveQueuedDown(id: second.id)
+        XCTAssertEqual(state.queue.map(\.text), ["first", "third", "second"])
+
+        state.moveQueuedDown(id: second.id)
+        XCTAssertEqual(state.queue.map(\.text), ["first", "third", "second"])
+    }
+
+    func testMoveQueuedUpStopsAtHead() {
+        var state = ComposerState()
+        let first = QueuedPrompt(text: "first", model: nil)
+        let second = QueuedPrompt(text: "second", model: nil)
+        state.enqueue(first)
+        state.enqueue(second)
+
+        state.moveQueuedUp(id: second.id)
+        XCTAssertEqual(state.queue.map(\.text), ["second", "first"])
+
+        state.moveQueuedUp(id: second.id)
+        XCTAssertEqual(state.queue.map(\.text), ["second", "first"])
+    }
+
     func testEditQueuedRequeuesCurrentDraftWithoutLoss() {
         var state = ComposerState()
         let queued = QueuedPrompt(text: "queued", model: nil)

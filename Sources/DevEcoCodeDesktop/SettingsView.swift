@@ -124,6 +124,7 @@ private struct ServerSettingsPane: View {
     @State private var backupFailed = false
     @State private var showLogViewer = false
     @State private var diagnosticsCopied = false
+    @State private var diagnosticsResetTask: Task<Void, Never>?
 
     var body: some View {
         ScrollView {
@@ -223,7 +224,13 @@ private struct ServerSettingsPane: View {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(server.diagnosticsReport(), forType: .string)
                         diagnosticsCopied = true
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
+                        // The pane can be dismissed while the badge is still
+                        // showing; a detached timer would then write state on
+                        // a view that no longer exists.
+                        diagnosticsResetTask?.cancel()
+                        diagnosticsResetTask = Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 1_600_000_000)
+                            guard !Task.isCancelled else { return }
                             diagnosticsCopied = false
                         }
                     }
@@ -260,6 +267,10 @@ private struct ServerSettingsPane: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onAppear(perform: refreshResolved)
+        .onDisappear {
+            diagnosticsResetTask?.cancel()
+            diagnosticsResetTask = nil
+        }
         .sheet(isPresented: $showLogViewer) {
             LogViewerSheet()
         }

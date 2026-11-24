@@ -10,7 +10,10 @@ extension Notification.Name {
 final class ProviderStore: ObservableObject {
     @Published var providers: [ProviderEntry] = [] {
         didSet {
-            if providers.map(\.id) != oldValue.map(\.id) { rebuildModelLookup() }
+            // Compare full entries, not just ids: renaming a provider model
+            // keeps the id list identical, but the cached display names used
+            // by message metadata would stay stale.
+            if providers != oldValue { rebuildModelLookup() }
         }
     }
     @Published var catalog: [CatalogProvider] = []

@@ -34,10 +34,6 @@ struct SessionListView: View {
         return store.pinnedSessionIDs.compactMap { id in active.first { $0.id == id } }
     }
 
-    private var unpinnedActiveSessions: [Session] {
-        activeSessions.filter { !store.pinnedSessionIDs.contains($0.id) }
-    }
-
     private var matches: (Session) -> Bool {
         guard !query.isEmpty else { return { _ in true } }
         return { session in
@@ -105,7 +101,10 @@ struct SessionListView: View {
                 .fill(Theme.hairline)
                 .frame(height: 1)
 
-            if store.sessions.isEmpty {
+            // Subagent sessions never render here, so a store containing only
+            // internal children would otherwise show an empty list with no
+            // explanation instead of the "no sessions" call to action.
+            if activeSessions.isEmpty && archivedSessions.isEmpty {
                 VStack(spacing: 6) {
                     Image(systemName: "tray")
                         .foregroundStyle(.secondary)
@@ -364,39 +363,6 @@ struct SessionListView: View {
                     error.localizedDescription
                 )
             }
-        }
-    }
-
-    private func timeGroups(_ sessions: [Session]) -> [(label: String, items: [Session])] {
-        let calendar = Calendar.current
-        let startOfToday = calendar.startOfDay(for: Date())
-        let startOfYesterday = calendar.date(byAdding: .day, value: -1, to: startOfToday)
-
-        var groups: [String: [Session]] = [:]
-        for session in sessions {
-            let label: String
-            if let updated = session.updatedAt {
-                if updated >= startOfToday {
-                    label = NSLocalizedString("Today", comment: "session group")
-                } else if let startOfYesterday, updated >= startOfYesterday {
-                    label = NSLocalizedString("Yesterday", comment: "session group")
-                } else {
-                    label = NSLocalizedString("Earlier", comment: "session group")
-                }
-            } else {
-                label = NSLocalizedString("Earlier", comment: "session group")
-            }
-            groups[label, default: []].append(session)
-        }
-
-        let order = [
-            NSLocalizedString("Today", comment: "session group"),
-            NSLocalizedString("Yesterday", comment: "session group"),
-            NSLocalizedString("Earlier", comment: "session group"),
-        ]
-        return order.compactMap { label in
-            guard let items = groups[label], !items.isEmpty else { return nil }
-            return (label, items.sorted(by: byUpdatedDescending))
         }
     }
 

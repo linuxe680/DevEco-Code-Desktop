@@ -370,6 +370,9 @@ final class SessionStore: ObservableObject {
     private var pendingDeltas: [String: String] = [:]
     private var lastDeltaFlush = Date.distantPast
     private var deltaFlushTask: Task<Void, Never>?
+    /// Bumped whenever a flush timer is scheduled or cancelled so a stale
+    /// timer that wakes up late cannot clear the reference of a newer one.
+    private var deltaFlushGeneration = 0
 
     private static let cacheSessionsKey = "cachedSessions"
     private static let cacheSelectedKey = "cachedSelectedSession"
@@ -481,6 +484,7 @@ final class SessionStore: ObservableObject {
         messageLoadTasks = [:]
         pendingDeltas = [:]
         lastDeltaFlush = .distantPast
+        deltaFlushGeneration &+= 1
         deltaFlushTask?.cancel()
         deltaFlushTask = nil
         lastStreamActivity = Date()
@@ -527,7 +531,8 @@ final class SessionStore: ObservableObject {
             unreadSessionIDs.formIntersection(ids)
             inlineErrorsBySession = inlineErrorsBySession.filter { ids.contains($0.key) }
             // Drop per-session picks for deleted sessions.
-            if modelsBySession.count > ids.count || variantsBySession.count > ids.count {
+            if !modelsBySession.keys.allSatisfy(ids.contains)
+                || !variantsBySession.keys.allSatisfy(ids.contains) {
                 modelsBySession = modelsBySession.filter { ids.contains($0.key) }
                 variantsBySession = variantsBySession.filter { ids.contains($0.key) }
                 AppSettings.sessionModels = modelsBySession
@@ -1033,6 +1038,22 @@ final class SessionStore: ObservableObject {
         setQueue(state.queue, for: sessionID)
     }
 
+    /// Moves one queued prompt one slot toward the head/tail. The queue UI
+    /// uses these so the second-to-last item can still move down.
+    func moveQueuedUp(_ id: UUID) {
+        guard let sessionID = selectedSessionID else { return }
+        var state = composerState(for: sessionID)
+        state.moveQueuedUp(id: id)
+        setQueue(state.queue, for: sessionID)
+    }
+
+    func moveQueuedDown(_ id: UUID) {
+        guard let sessionID = selectedSessionID else { return }
+        var state = composerState(for: sessionID)
+        state.moveQueuedDown(id: id)
+        setQueue(state.queue, for: sessionID)
+    }
+
     private func composerState(for sessionID: String) -> ComposerState {
         var state = ComposerState()
         state.draft = sessionID == selectedSessionID ? draft : (draftsBySession[sessionID] ?? "")
@@ -1062,7 +1083,11 @@ final class SessionStore: ObservableObject {
     /// was rejected (mid-abort, already generating, disconnected) — callers
     /// MUST put the snapshot back somewhere visible.
     @discardableResult
-    private func performSend(_ prompt: PromptSnapshot, sessionID id: String) -> Bool {
+    private func performSend(
+        _ prompt: PromptSnapshot,
+        sessionID id: String,
+        isAutoRetry: Bool = false
+    ) -> Bool {
         guard let api,
               !activeSessionIDs.contains(id),
               !abortingSessionIDs.contains(id) else {
@@ -1089,7 +1114,12 @@ final class SessionStore: ObservableObject {
         activeSessionIDs.insert(id)
         inlineErrorsBySession.removeValue(forKey: id)
         lastSentPromptBySession[id] = prompt
-        autoRetryCountBySession[id] = 0
+        // A user-initiated send earns a fresh automatic retry; the retry
+        // itself must not reset the counter, or a flapping network could
+        // retry forever.
+        if !isAutoRetry {
+            autoRetryCountBySession[id] = 0
+        }
         autoTitleIfNeeded(sessionID: id, prompt: prompt.text)
         // draft is a plain @Published value: bump once for every code-driven
         // replacement so the NSTextView can clear exactly once per send.
@@ -1719,7 +1749,7 @@ final class SessionStore: ObservableObject {
             self.retryInfoBySession.removeValue(forKey: sessionID)
             guard let prompt = self.lastSentPromptBySession[sessionID],
                   !self.abortingSessionIDs.contains(sessionID),
-                  self.performSend(prompt, sessionID: sessionID) else {
+                  self.performSend(prompt, sessionID: sessionID, isAutoRetry: true) else {
                 self.recordSessionFailure(sessionID, message: message, kind: kind)
                 return
             }
@@ -2158,13 +2188,17 @@ final class SessionStore: ObservableObject {
     /// the next event arrived. One coalesced timer per active burst.
     private func scheduleDeltaFlush() {
         guard !pendingDeltas.isEmpty, deltaFlushTask == nil else { return }
+        deltaFlushGeneration &+= 1
+        let generation = deltaFlushGeneration
         deltaFlushTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 30_000_000)
-            guard let self, self.deltaFlushTask != nil else { return }
+            guard let self,
+                  !Task.isCancelled,
+                  self.deltaFlushGeneration == generation else { return }
             if !self.pendingDeltas.isEmpty { self.flushDeltas() }
             // 只有当前注册的任务可以清理/续约；被 disconnect 取消或替换的
             // 旧任务醒来执行时不会清掉新任务的引用。
-            guard self.deltaFlushTask != nil else { return }
+            guard self.deltaFlushGeneration == generation else { return }
             self.deltaFlushTask = nil
             if !self.pendingDeltas.isEmpty { self.scheduleDeltaFlush() }
         }

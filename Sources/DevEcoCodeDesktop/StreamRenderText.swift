@@ -19,24 +19,29 @@ enum StreamRenderText {
         }
 
         let lines = Array(text.split(separator: "\n", omittingEmptySubsequences: false))
+        var openFenceStart: Int?
         var lastCompleteFence: Int?
-        var firstIncompleteFence: Int?
-        var inFence = false
         for (index, rawLine) in lines.enumerated() {
             let line = rawLine.trimmingCharacters(in: .whitespaces)
             guard line.hasPrefix("```") else { continue }
-            if inFence {
+            if openFenceStart != nil {
+                openFenceStart = nil
                 lastCompleteFence = index
-                inFence = false
             } else {
-                inFence = true
-                firstIncompleteFence = index
+                openFenceStart = index
             }
         }
 
-        var boundary = lines.count - 1
-        if inFence, let fenceStart = firstIncompleteFence ?? lastCompleteFence {
+        var boundary: Int
+        if let fenceStart = openFenceStart {
             boundary = fenceStart
+        } else if lastCompleteFence == lines.count - 1 {
+            // The reply currently ends on the closing fence. Keep that line in
+            // the stable prefix; leaving it in the live tail rendered a second
+            // stray "```" below the code block.
+            boundary = lines.count
+        } else {
+            boundary = lines.count - 1
         }
         boundary = max(0, boundary)
 
@@ -50,9 +55,27 @@ enum StreamRenderText {
         let stablePrefix = prefixParts.isEmpty
             ? ""
             : prefixParts.joined(separator: "\n") + "\n"
-        let lineStartOffset = prefixParts.reduce(0) { $0 + $1.utf16.count + 1 }
-        let tailStart = text.index(text.startIndex, offsetBy: min(lineStartOffset, text.utf16.count))
-        let liveTail = String(text[tailStart...])
+        let liveTail = lines.dropFirst(prefixParts.count).joined(separator: "\n")
         return Split(stablePrefix: stablePrefix, liveTail: liveTail)
+    }
+
+    /// Plain-text tail for the live bubble. While the typewriter is still
+    /// revealing glyphs the caret is appended to the tail itself; a caret on
+    /// its own line only appears when the tail is empty (e.g. the reply
+    /// currently ends on a completed code fence).
+    static func liveTailText(_ split: Split, showCaret: Bool) -> String {
+        let tail = split.liveTail
+        guard showCaret else { return tail }
+        return tail + "▍"
+    }
+
+    /// Display split for a bubble. While the reply is live the last line stays
+    /// plain text (unfinished markup must not repaint the bubble); once it is
+    /// finished the whole text is stable so its final line still gets inline
+    /// Markdown styling.
+    static func displaySplit(_ text: String, isLive: Bool) -> Split {
+        guard !isLive else { return split(text) }
+        guard !text.isEmpty else { return Split(stablePrefix: "", liveTail: "") }
+        return Split(stablePrefix: text.hasSuffix("\n") ? text : text + "\n", liveTail: "")
     }
 }

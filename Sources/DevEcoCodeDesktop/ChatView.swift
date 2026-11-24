@@ -8,6 +8,16 @@ private struct ModelGroup: Identifiable {
     var id: String { provider }
 }
 
+/// Measured height of the queued-prompt strip, so the floating "Back to
+/// latest" pill can clear it without hard-coding a per-row height.
+private struct QueuedStripHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 struct ChatView: View {
     @Binding var workPanelOpen: Bool
     @Binding var showSearch: Bool
@@ -63,6 +73,8 @@ struct ChatView: View {
     @State private var searchQuery = ""
     @State private var searchMatchIndex = 0
     @State private var searchJumpTick = 0
+    /// Measured height of the queued-prompt strip (0 when it is hidden).
+    @State private var queuedStripHeight: CGFloat = 0
     @FocusState private var searchFocused: Bool
     @State private var dragHover = false
     @State private var showModelPicker = false
@@ -952,7 +964,9 @@ struct ChatView: View {
     /// never overlap.
     private var queuedPromptsInset: CGFloat {
         guard !store.queuedPrompts.isEmpty else { return 0 }
-        return CGFloat(store.queuedPrompts.count) * 34 + 8
+        // Measured instead of assuming a row height: long attachment labels
+        // and font-size changes made a hard-coded 34pt drift out of sync.
+        return queuedStripHeight
     }
 
     private var sessionArea: some View {
@@ -1113,6 +1127,16 @@ struct ChatView: View {
                           }) else { return }
                     proxy.scrollTo(first.id, anchor: .top)
                 }
+                .onChange(of: visibleMessages.count) { count in
+                    // Streaming can remove the message the index pointed at
+                    // (or the match set can shrink), leaving the "n/m" label
+                    // and the jump target out of range.
+                    if count == 0 {
+                        searchMatchIndex = 0
+                    } else if searchMatchIndex >= count {
+                        searchMatchIndex = count - 1
+                    }
+                }
                 .onChange(of: searchJumpTick) { _ in
                     guard searchMatchIndex < visibleMessages.count else { return }
                     proxy.scrollTo(visibleMessages[searchMatchIndex].id, anchor: .center)
@@ -1141,9 +1165,7 @@ struct ChatView: View {
                             // Reorder inline: a second control row used to make
                             // every queued prompt two lines tall.
                             Button {
-                                guard let index = store.queuedPrompts.firstIndex(where: { $0.id == queued.id }),
-                                      index > 0 else { return }
-                                store.moveQueued(queued.id, before: store.queuedPrompts[index - 1].id)
+                                store.moveQueuedUp(queued.id)
                             } label: {
                                 Image(systemName: "chevron.up")
                                     .font(.system(size: 9, weight: .semibold))
@@ -1152,16 +1174,7 @@ struct ChatView: View {
                             .foregroundStyle(.tertiary)
                             .disabled(store.queuedPrompts.first?.id == queued.id)
                             Button {
-                                guard let index = store.queuedPrompts.firstIndex(where: { $0.id == queued.id }),
-                                      index + 1 < store.queuedPrompts.count else { return }
-                                // moveQueued inserts *before* the target, so
-                                // skip one further to actually move down.
-                                let targetIndex = index + 2
-                                if targetIndex < store.queuedPrompts.count {
-                                    store.moveQueued(queued.id, before: store.queuedPrompts[targetIndex].id)
-                                } else {
-                                    store.moveQueued(queued.id, before: store.queuedPrompts[index + 1].id)
-                                }
+                                store.moveQueuedDown(queued.id)
                             } label: {
                                 Image(systemName: "chevron.down")
                                     .font(.system(size: 9, weight: .semibold))
@@ -1212,6 +1225,11 @@ struct ChatView: View {
                 // clips the row in half.
                 .fixedSize(horizontal: false, vertical: true)
                 .layoutPriority(1)
+                .background(
+                    GeometryReader { geo in
+                        Color.clear.preference(key: QueuedStripHeightKey.self, value: geo.size.height)
+                    }
+                )
             }
 
             VStack(spacing: 8) {
@@ -1362,6 +1380,9 @@ struct ChatView: View {
                       ? NSLocalizedString("Enter sends · Shift+Enter newline · ⌘⏎ sends · / for commands", comment: "")
                       : NSLocalizedString("⌘⏎ sends · / for commands", comment: ""))
             }
+        }
+        .onPreferenceChange(QueuedStripHeightKey.self) { height in
+            queuedStripHeight = height
         }
         .onChange(of: store.draft) { _ in
             paletteIndex = 0
@@ -1945,6 +1966,7 @@ private struct MessageBubble: View {
     @State private var actionsVisible = false
     @State private var hideActionsWorkItem: DispatchWorkItem?
     @State private var copied = false
+    @State private var copyResetTask: Task<Void, Never>?
 
     private var isStreamingThis: Bool { isStreaming }
 
@@ -2054,6 +2076,8 @@ private struct MessageBubble: View {
         }
         .onDisappear {
             hideActionsWorkItem?.cancel()
+            copyResetTask?.cancel()
+            copyResetTask = nil
         }
     }
 
@@ -2267,7 +2291,10 @@ private struct MessageBubble: View {
             NSPasteboard.general.setString(messageText, forType: .string)
         }
         copied = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+        copyResetTask?.cancel()
+        copyResetTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            guard !Task.isCancelled else { return }
             copied = false
         }
     }
@@ -2361,25 +2388,56 @@ private struct StreamingTextView: View {
     }
 
     private var content: String {
-        guard isTypewriterActive else { return split.liveTail }
-        guard !split.hasLiveTail else { return "▍" }
-        return split.liveTail + "▍"
+        StreamRenderText.liveTailText(split, showCaret: isTypewriterActive)
+    }
+
+    /// A bubble is live only while the server is appending or the typewriter
+    /// is still catching up. The split renderer keeps the last line as plain
+    /// text so half-written markup cannot repaint the bubble; a finished reply
+    /// must go through the full Markdown path or inline styling on its final
+    /// line (bold, code spans, links) would render as literal markers.
+    private var isLive: Bool {
+        isStreaming || isTypewriterActive
+    }
+
+    /// User-authored text must stay verbatim: running it through the Markdown
+    /// renderer turned "# heading" into a heading and ``` fences into code
+    /// cards, so what the user typed no longer matched what they sent.
+    private var plainContent: String {
+        isTypewriterActive ? shown + "▍" : shown
     }
 
     private var split: StreamRenderText.Split {
-        StreamRenderText.split(shown)
+        StreamRenderText.displaySplit(shown, isLive: isLive)
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if split.hasStablePrefix {
-                MarkdownContentView(content: split.stablePrefix, searchQuery: searchQuery)
+        Group {
+            if useMarkdown {
+                VStack(alignment: .leading, spacing: 0) {
+                    if split.hasStablePrefix {
+                        MarkdownContentView(content: split.stablePrefix, searchQuery: searchQuery)
+                    }
+                    Text(content)
+                        .font(.system(size: ChatTypography.body(chatFontSize)))
+                        .lineSpacing(ChatTypography.lineSpacing(chatFontSize))
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } else if !searchQuery.isEmpty,
+                      let attributed = highlightedAttributedString(plainContent, query: searchQuery) {
+                Text(attributed)
+                    .font(.system(size: ChatTypography.body(chatFontSize)))
+                    .lineSpacing(ChatTypography.lineSpacing(chatFontSize))
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text(plainContent)
+                    .font(.system(size: ChatTypography.body(chatFontSize)))
+                    .lineSpacing(ChatTypography.lineSpacing(chatFontSize))
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            Text(content)
-                .font(.system(size: ChatTypography.body(chatFontSize)))
-                .lineSpacing(ChatTypography.lineSpacing(chatFontSize))
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
         }
         .onAppear { reveal.update(target: target, isStreaming: revealIsStreaming) }
         .onChange(of: target) { newTarget in reveal.update(target: newTarget, isStreaming: revealIsStreaming) }
@@ -2391,12 +2449,15 @@ private struct StreamingTextView: View {
 /// every 24ms. Grapheme clusters are honored so Chinese and emoji are never
 /// cut in half.
 @MainActor
-private final class StreamingReveal: ObservableObject {
+final class StreamingReveal: ObservableObject {
     @Published private(set) var text = ""
 
     private var target = ""
     private var displayedUnits = 0
     private var lastTick = Date.distantPast
+    /// At most one queued tick. Without this, a burst of `update` calls could
+    /// start several independent asyncAfter chains that all mutate `text`.
+    private var tickScheduled = false
     /// Set only when the bubble has actually been in a live streaming state.
     private(set) var activated = false
     var finished: Bool { displayedUnits >= target.count }
@@ -2441,15 +2502,29 @@ private final class StreamingReveal: ObservableObject {
         }
         let now = Date()
         let elapsed = now.timeIntervalSince(lastTick)
-        guard elapsed >= Self.minInterval else { return }
+        guard elapsed >= Self.minInterval else {
+            // Arriving early (e.g. right after activation) must still leave a
+            // timer behind; otherwise a short reply freezes mid-sentence when
+            // the stream ends before the next update arrives.
+            scheduleTick(after: Self.minInterval - elapsed)
+            return
+        }
         let step = max(1, min(3, Int(Self.glyphsPerSecond * elapsed)))
         lastTick = now
         displayedUnits = min(target.count, displayedUnits + step)
         text = String(target.prefix(displayedUnits))
         if displayedUnits < target.count {
-            DispatchQueue.main.asyncAfter(deadline: .now() + Self.minInterval) { [weak self] in
-                self?.ensureTicking()
-            }
+            scheduleTick(after: Self.minInterval)
+        }
+    }
+
+    private func scheduleTick(after delay: TimeInterval) {
+        guard !tickScheduled else { return }
+        tickScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0, delay)) { [weak self] in
+            guard let self else { return }
+            self.tickScheduled = false
+            self.ensureTicking()
         }
     }
 }
@@ -2478,7 +2553,7 @@ private struct PartView: View {
         switch part.type {
         case "text":
             let text = part.text ?? ""
-            let visibleText = removingSystemNoticeLines(text)
+            let visibleText = visiblePartText(text, useMarkdown: useMarkdown)
             if visibleText.isEmpty {
                 EmptyView()
             } else {
@@ -2662,6 +2737,16 @@ func removingSystemNoticeLines(_ text: String) -> String {
         .filter { !isSystemNoticeLine(String($0.trimmingCharacters(in: .whitespaces))) }
         .joined(separator: "\n")
         .trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+/// Only assistant output carries model bookkeeping lines. User prompts are
+/// verbatim: a prompt like "searching for X (in src)" must never be mistaken
+/// for a notice and filtered down to an empty bubble.
+func visiblePartText(_ text: String, useMarkdown: Bool) -> String {
+    guard useMarkdown else {
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    return removingSystemNoticeLines(text)
 }
 
 func systemNoticeText(_ text: String) -> String {
@@ -2923,6 +3008,7 @@ private struct CodeBlockView: View {
     private var chatFontSize = 15.0
 
     @State private var copied = false
+    @State private var copyResetTask: Task<Void, Never>?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -2966,13 +3052,20 @@ private struct CodeBlockView: View {
             RoundedRectangle(cornerRadius: 8)
                 .stroke(Theme.softStroke)
         )
+        .onDisappear {
+            copyResetTask?.cancel()
+            copyResetTask = nil
+        }
     }
 
     private func copyCode() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(code, forType: .string)
         copied = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+        copyResetTask?.cancel()
+        copyResetTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard !Task.isCancelled else { return }
             copied = false
         }
     }
@@ -3667,30 +3760,6 @@ private struct ToolCardView: View {
               let pretty = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]),
               let string = String(data: pretty, encoding: .utf8) else { return nil }
         return string
-    }
-
-    /// Compact, human-readable tool input: strings shown raw, nested
-    /// structures inlined as "key: value" pairs (no pretty-printed JSON).
-    private func inputSummary(_ value: JSONValue) -> String {
-        if let questions = toolQuestions(value) {
-            return questions.map { question in
-                let options = question.options.map(\.label).joined(separator: " / ")
-                let detail = question.details ?? ""
-                return "\(question.header)：\(question.question)\n选项：\(options)\(detail.isEmpty ? "" : "\n\(detail)")"
-            }
-            .joined(separator: "\n\n")
-        }
-        guard case .object(let object) = value else { return value.displayText }
-        return object
-            .sorted { $0.key < $1.key }
-            .map { key, item in
-                if case .string(let text) = item { return "\(key): \(text)" }
-                if case .array(let items) = item, items.count <= 6 {
-                    return "\(key): \(items.map(\.displayText).joined(separator: ", "))"
-                }
-                return "\(key): \(item.displayText)"
-            }
-            .joined(separator: "\n")
     }
 
     private func toolQuestions(_ value: JSONValue) -> [UserQuestionInfo]? {

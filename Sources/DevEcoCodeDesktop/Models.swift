@@ -675,7 +675,7 @@ struct ModelEntry: Identifiable, Hashable {
     var variants: [String]
 }
 
-struct ProviderEntry: Identifiable {
+struct ProviderEntry: Identifiable, Equatable {
     var id: String
     var name: String
     var npm: String
@@ -1068,13 +1068,16 @@ func humanizedErrorSummary(_ raw: String, kind: FailureKind) -> String {
     guard var line = lines.first else { return kind.label }
 
     // Strip chained wrapper prefixes: "UnknownError: FooError: real text".
-    let wrapper = try! NSRegularExpression(
+    // A failed compile must degrade to the raw line instead of trapping while
+    // a message bubble is being rendered.
+    if let wrapper = try? NSRegularExpression(
         pattern: #"^(?:[A-Za-z_][A-Za-z0-9_]*(?:Error|Exception):\s*)+"#
-    )
-    let range = NSRange(line.startIndex..<line.endIndex, in: line)
-    if let match = wrapper.firstMatch(in: line, range: range),
-       let matchRange = Range(match.range, in: line) {
-        line = String(line[matchRange.upperBound...]).trimmingCharacters(in: .whitespaces)
+    ) {
+        let range = NSRange(line.startIndex..<line.endIndex, in: line)
+        if let match = wrapper.firstMatch(in: line, range: range),
+           let matchRange = Range(match.range, in: line) {
+            line = String(line[matchRange.upperBound...]).trimmingCharacters(in: .whitespaces)
+        }
     }
 
     // Nothing actionable left (only class names): use the category's own text.

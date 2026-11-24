@@ -207,6 +207,12 @@ final class ModelTests: XCTestCase {
         XCTAssertEqual(removingSystemNoticeLines(text), "你好！有什么可以帮你的吗？")
     }
 
+    func testUserPromptIsNeverTreatedAsSystemNotice() {
+        let prompt = "searching for the crash (in Sources)"
+        XCTAssertEqual(visiblePartText(prompt, useMarkdown: false), prompt)
+        XCTAssertEqual(removingSystemNoticeLines(prompt), "")
+    }
+
     func testTokenMetadataDistinguishesGeneratedFromContext() {
         let generatedKey = NSLocalizedString("Generated %@ tokens", comment: "")
         let contextKey = NSLocalizedString("Context window", comment: "")
