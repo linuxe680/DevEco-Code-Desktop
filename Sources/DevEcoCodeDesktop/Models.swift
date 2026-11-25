@@ -1082,6 +1082,16 @@ func humanizedErrorSummary(_ raw: String, kind: FailureKind) -> String {
         .filter { !$0.isEmpty }
     guard var line = lines.first else { return kind.label }
 
+    // Tool schema errors put the actionable text on line one and the stack
+    // on later lines. Keep only line one in the bubble; the full text stays
+    // in the inline error's "Show details" disclosure.
+    if lines.count > 1, line.hasSuffix(":"), line.count > 12,
+       !line.localizedCaseInsensitiveContains("unknownerror"),
+       !line.localizedCaseInsensitiveContains("notfounderror") {
+        let wrapped = line
+        return wrapped
+    }
+
     // Strip chained wrapper prefixes: "UnknownError: FooError: real text".
     // A failed compile must degrade to the raw line instead of trapping while
     // a message bubble is being rendered.

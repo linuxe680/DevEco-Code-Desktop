@@ -3549,6 +3549,15 @@ private struct ToolCardView: View {
     }
     private var isError: Bool { state?.status == "error" && !isStopped }
 
+    /// "The user dismissed this question" is a normal way to end a question
+    /// tool; painting the card red and labeling it Error made the transcript
+    /// look broken. Keep the dismiss note as neutral metadata.
+    private var isQuestionDismissed: Bool {
+        part.tool == "question"
+            && state?.status == "error"
+            && (state?.error ?? "").localizedCaseInsensitiveContains("dismissed")
+    }
+
     private var hasDetail: Bool {
         if let output = state?.output, !output.isEmpty, !ToolTrace.looksLikeRawTrace(output) { return true }
         if part.tool == "question" { return false }
@@ -3566,7 +3575,9 @@ private struct ToolCardView: View {
     }
 
     private var toolTint: Color {
-        isError ? .red : (isStopped ? .secondary : Theme.toolTint(part.tool ?? ""))
+        isError && !isQuestionDismissed
+            ? .red
+            : (isStopped || isQuestionDismissed ? .secondary : Theme.toolTint(part.tool ?? ""))
     }
 
     private var headline: String {
@@ -3575,6 +3586,7 @@ private struct ToolCardView: View {
         }
         if let title = state?.title, !title.isEmpty { return title }
         if let summary = state?.summary, !summary.isEmpty { return summary }
+        if let error = state?.error, !error.isEmpty { return error }
         return toolName
     }
 
@@ -3668,8 +3680,13 @@ private struct ToolCardView: View {
                 }
             }
 
-            if let error = state?.error, !error.isEmpty, isError {
+            if let error = state?.error, !error.isEmpty, isError, !isQuestionDismissed {
                 detailSection(label: NSLocalizedString("Error", comment: ""), content: error, lineLimit: nil, copyable: true, tint: .red)
+            } else if isQuestionDismissed, let error = state?.error, !error.isEmpty {
+                Text(error)
+                    .font(.system(size: ChatTypography.micro(chatFontSize)))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
             }
         }
         .padding(.horizontal, 10)
@@ -3678,7 +3695,7 @@ private struct ToolCardView: View {
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(isError ? Color.red.opacity(0.45) : Theme.hairline)
+                .stroke(isError && !isQuestionDismissed ? Color.red.opacity(0.45) : Theme.hairline)
         )
     }
 

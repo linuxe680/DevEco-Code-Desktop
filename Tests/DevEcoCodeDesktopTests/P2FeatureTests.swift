@@ -187,6 +187,20 @@ final class P2FeatureTests: XCTestCase {
         XCTAssertEqual(summary, "invalid api key")
     }
 
+    func testErrorSummaryKeepsOnlyFirstLineOfToolSchemaError() {
+        let raw = """
+        The question tool was called with invalid arguments: SchemaError(Expected QuestionOption, got "")
+          at ["questions"][0]["options"][0]).
+        Please rewrite the input so it satisfies the expected schema.
+        """
+        let summary = humanizedErrorSummary(raw, kind: .unknown)
+        XCTAssertEqual(
+            summary,
+            "The question tool was called with invalid arguments: SchemaError(Expected QuestionOption, got \"\")"
+        )
+        XCTAssertFalse(summary.contains("at [\"questions\"]"))
+    }
+
     func testErrorSummaryFallsBackToKindLabel() {
         XCTAssertEqual(
             humanizedErrorSummary("UnknownError:", kind: .modelUnavailable),
