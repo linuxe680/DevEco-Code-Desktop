@@ -40,6 +40,10 @@ final class ProviderStore: ObservableObject {
         case hit(String)
     }
     private var fuzzyNameCache: [String: FuzzyNameLookup] = [:]
+    /// In-flight `load()` calls are generation-tagged. A save/delete followed
+    /// by `load()` must not be overwritten by an older fetch already running
+    /// (load fetches config/catalog/models in parallel).
+    private var loadGeneration = 0
 
     private func rebuildModelLookup() {
         fuzzyNameCache.removeAll()
@@ -167,6 +171,7 @@ final class ProviderStore: ObservableObject {
     func connect(baseURL: URL) {
         if let api, api.baseURL == baseURL, loadTask != nil { return }
         api = APIClient(baseURL: baseURL)
+        loadGeneration &+= 1
         loadTask = Task { [weak self] in
             await self?.load()
             self?.loadTask = nil
@@ -175,6 +180,7 @@ final class ProviderStore: ObservableObject {
 
     func disconnect() {
         api = nil
+        loadGeneration &+= 1
         loadTask?.cancel()
         loadTask = nil
         providers = []
@@ -188,11 +194,14 @@ final class ProviderStore: ObservableObject {
 
     func load() async {
         guard let api else { return }
+        loadGeneration &+= 1
+        let generation = loadGeneration
         async let configFetch: JSONValue = api.get("config")
         async let catalogFetch: CatalogResponse = api.get("provider")
         async let modelsFetch: ModelListResponse = api.get("api/model")
         do {
             let config = try await configFetch
+            guard generation == loadGeneration, api === self.api else { return }
             rawConfig = config.objectValue ?? [:]
             defaultModel = rawConfig["model"]?.stringValue ?? ""
             let providerObjects = rawConfig["provider"]?.objectValue ?? [:]
@@ -203,12 +212,15 @@ final class ProviderStore: ObservableObject {
         }
         do {
             let response = try await catalogFetch
+            guard generation == loadGeneration, api === self.api else { return }
             catalog = response.all.sorted { $0.displayName < $1.displayName }
         } catch {
             errorMessage = error.localizedDescription
         }
         do {
-            serverModels = try await modelsFetch.data ?? []
+            let models = try await modelsFetch.data ?? []
+            guard generation == loadGeneration, api === self.api else { return }
+            serverModels = models
         } catch {
             // Model list is decoration for the picker; keep quiet on failure.
         }

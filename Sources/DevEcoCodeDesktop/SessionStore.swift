@@ -335,7 +335,7 @@ final class SessionStore: ObservableObject {
     @Published private(set) var streamTick = 0
 
     private var api: APIClient?
-    private let eventStream = EventStream()
+    let eventStream = EventStream()
 
     private var retryTask: Task<Void, Never>?
     private var pollTasksBySession: [String: Task<Void, Never>] = [:]
@@ -481,6 +481,12 @@ final class SessionStore: ObservableObject {
     /// Manual recovery from a rejected SSE response (e.g. the user fixed the
     /// server or provider configuration and wants to resume without relaunch).
     func retryStreamConnection() {
+        // The server may have restarted on a new port while waiting for the
+        // user to retry. `api.baseURL` is the rejected URL from before that
+        // restart, so use the current one whenever the server is running.
+        if let currentURL = currentServerBaseURL {
+            api = APIClient(baseURL: currentURL)
+        }
         guard let api else { return }
         streamRejected = false
         errorMessage = nil
@@ -490,6 +496,13 @@ final class SessionStore: ObservableObject {
         retryTask = nil
         eventStream.connect(baseURL: api.baseURL)
     }
+
+    /// The live server's URL is published by ServerManager; SessionStore does
+    /// not retain that dependency, so the address is shared through a small
+    /// nonisolated hook installed by ContentView. It lets manual recovery
+    /// follow a server that restarted on a different port.
+    var currentServerBaseURLProvider: (() -> URL?)?
+    private var currentServerBaseURL: URL? { currentServerBaseURLProvider?() }
 
     /// 以服务端 /api/permission/saved 为准刷新本地"Always allow"缓存，
     /// 避免设置页撤销后客户端仍按旧规则自动放行。
@@ -1009,8 +1022,14 @@ final class SessionStore: ObservableObject {
             // state before emitting events, so anything still buffered is
             // already included in `fetched`. Keeping it would append the same
             // text twice (the fallback poll runs every 2s mid-stream).
-            pendingDeltas.removeAll()
-            pendingDeltaAttempts.removeAll()
+            // Keep only deltas for parts that are not in the snapshot yet:
+            // SSE can deliver a delta between the server's snapshot read and
+            // this assignment, and dropping it loses streamed text.
+            let snapshotPartIDs = Set(fetched.flatMap(\.parts).map(\.id))
+            for partID in pendingDeltas.keys where snapshotPartIDs.contains(partID) {
+                pendingDeltas.removeValue(forKey: partID)
+                pendingDeltaAttempts.removeValue(forKey: partID)
+            }
             autoTitleFromFirstMessageIfNeeded()
         } catch {
             guard isExplicit else { return }

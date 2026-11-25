@@ -139,6 +139,32 @@ final class ReviewFixTests: XCTestCase {
         XCTAssertFalse(stream.isConnected)
     }
 
+    func testFatalResponseClearsLiveSessionState() async {
+        let store = SessionStore()
+        store.currentServerBaseURLProvider = {
+            URL(string: "http://127.0.0.1:4100")!
+        }
+        store.connect(baseURL: URL(string: "http://127.0.0.1:4096")!)
+        let url = URL(string: "http://127.0.0.1:4096/event")!
+        let task = URLSession.shared.dataTask(with: url)
+        let response = HTTPURLResponse(
+            url: url,
+            statusCode: 404,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "text/html"]
+        )!
+        store.eventStream.urlSession(URLSession.shared, dataTask: task, didReceive: response) { _ in }
+        await Task.yield()
+
+        XCTAssertTrue(store.streamRejected)
+        XCTAssertFalse(store.isReconnecting)
+        XCTAssertNotNil(store.errorMessage)
+
+        store.retryStreamConnection()
+        XCTAssertFalse(store.streamRejected)
+        XCTAssertNil(store.errorMessage)
+    }
+
     // MARK: - Session completion paths
 
     func testIdleStatusAloneFinishesRunAndMarksUnread() throws {

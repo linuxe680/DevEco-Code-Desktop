@@ -167,6 +167,7 @@ struct ContentView: View {
         }
         .onChange(of: server.baseURL) { url in
             if let url {
+                store.currentServerBaseURLProvider = { server.baseURL }
                 store.connect(baseURL: url)
                 providers.connect(baseURL: url)
             } else {

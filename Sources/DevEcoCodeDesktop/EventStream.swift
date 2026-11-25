@@ -107,6 +107,23 @@ final class EventStream: NSObject, URLSessionDataDelegate {
         stalledCheck = nil
     }
 
+    /// Explicit helpers for the two response dispositions. Keeping the raw
+    /// URLSession callback thin avoids repeating session teardown and gives
+    /// tests direct coverage of the fatal-path state transitions.
+    func acceptResponse(statusCode: Int, contentType: String) {
+        lastHTTPStatus = statusCode
+    }
+
+    func rejectResponse(statusCode: Int?, contentType: String) {
+        lastHTTPStatus = statusCode
+        // Mirror a cancelled task: no socket is live after a fatal response,
+        // so a later didCompleteWithError must not trigger a reconnect.
+        task = nil
+        session?.invalidateAndCancel()
+        session = nil
+        onFatalResponse?(statusCode, contentType)
+    }
+
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         lastReceiveDate = Date()
         isReceivingHeartbeats = true
@@ -126,7 +143,6 @@ final class EventStream: NSObject, URLSessionDataDelegate {
             completionHandler(.allow)
             return
         }
-        lastHTTPStatus = http.statusCode
         let contentType = (http.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
         // Missing Content-Type is tolerated for older builds; an explicit
         // non-event-stream type (usually text/html) is a hard failure.
@@ -135,16 +151,10 @@ final class EventStream: NSObject, URLSessionDataDelegate {
                 "SSE rejected: HTTP \(http.statusCode, privacy: .public) \(contentType, privacy: .public)"
             )
             completionHandler(.cancel)
-            // Reflect the dead socket immediately; a cancelled task may never
-            // deliver didCompleteWithError to clear it for us.
-            task = nil
-            // Release the delegate queue/session too: leaving it alive keeps
-            // this object (and its buffer) retained until a manual retry.
-            self.session?.invalidateAndCancel()
-            self.session = nil
-            onFatalResponse?(http.statusCode, contentType)
+            rejectResponse(statusCode: http.statusCode, contentType: contentType)
             return
         }
+        acceptResponse(statusCode: http.statusCode, contentType: contentType)
         completionHandler(.allow)
     }
 
