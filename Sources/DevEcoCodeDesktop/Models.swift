@@ -992,12 +992,20 @@ enum FailureKind: String, Equatable {
             default: break
             }
         }
+        // Bare status numbers are intentionally absent here: free-form provider
+        // text routinely contains them ("generated 500 tokens"), and matching
+        // them as substrings produced confident but wrong categories. Numeric
+        // classification belongs to `statusCode` above, or to the explicit
+        // "HTTP 500" / "status 500" forms below.
         if contains(["unauthorized", "forbidden", "invalid api key", "api key",
-                     "authentication", "api_key", "401", "403"]) {
+                     "authentication", "api_key",
+                     "http 401", "status 401", "401 unauthorized",
+                     "http 403", "status 403", "403 forbidden"]) {
             return .auth
         }
         if contains(["rate limit", "quota", "billing", "insufficient", "credit",
-                     "exceeded", "429", "out of tokens"]) {
+                     "exceeded", "out of tokens",
+                     "http 429", "status 429", "429 rate limit"]) {
             return .quota
         }
         if contains(["model not found", "unknown model", "no such model",
@@ -1011,7 +1019,9 @@ enum FailureKind: String, Equatable {
                      "could not connect", "unreachable", "econnrefused"]) {
             return .network
         }
-        if contains(["internal server", "500", "502", "503", "bad gateway"]) {
+        if contains(["internal server", "bad gateway", "service unavailable",
+                     "http 500", "status 500", "http 502", "status 502",
+                     "http 503", "status 503"]) {
             return .server
         }
         return .unknown

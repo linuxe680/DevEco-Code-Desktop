@@ -27,7 +27,7 @@ The build script signs with a persistent self-signed certificate (created once i
 
 **Sessions & input**
 
-- Create (⌘N), search, rename, archive, and delete sessions; grouped by Today / Yesterday / Earlier with relative timestamps. New sessions take their title from the first prompt; placeholder titles are backfilled when loaded.
+- Create (⌘N), search, rename, archive, and delete sessions; grouped by project with relative timestamps. New sessions take their title from the first prompt; placeholder titles are backfilled when loaded.
 - Enter sends (Shift+Enter newline, ⌘⏎ also sends); prompts stream live with a single generation indicator (tool, todo progress, retry reason, stalled hint, stop button).
 - **Prompt queueing**: Enter while generating queues the prompt as a removable chip; it sends automatically on idle. **Prompt history**: Option+↑/↓ recalls recent prompts.
 - Drafts, queues, attachments, model picks, and generating state are fully isolated per session — switching chats never hijacks the composer.
@@ -102,7 +102,7 @@ git push origin v0.5.x    # pushes the tag → GitHub Actions builds & publishes
 swift test --disable-sandbox
 ```
 
-135 tests cover failure classification, queue hardening, session isolation, mention parsing, path filtering, image downscaling, and settings migrations.
+187 tests cover failure classification, queue hardening, session isolation, mention parsing, path filtering, image downscaling, and settings migrations.
 
 ## Localization
 
@@ -139,7 +139,7 @@ DevEco Code Desktop 是本机 `deveco` CLI 的原生 macOS 图形客户端。应
 
 **会话与输入**
 
-- 新建（⌘N）、搜索、重命名、归档、删除会话；按 今天/昨天/更早 分组并显示相对时间。新会话以首条 prompt 命名，占位标题在加载时自动回填。
+- 新建（⌘N）、搜索、重命名、归档、删除会话；按项目分组并显示相对时间。新会话以首条 prompt 命名，占位标题在加载时自动回填。
 - 回车发送（Shift+回车换行，⌘⏎ 也可发送）；生成状态单一指示条（当前工具、todo 进度、重试原因、卡顿提示、停止按钮）。
 - **队列**：生成中回车会把 prompt 排队（可删除的 chip），空闲后自动发送。**历史**：Option+↑/↓ 调出最近发送记录。
 - 草稿、队列、附件、模型选择、生成状态按会话完全隔离——切换会话不会劫持输入框。
@@ -197,7 +197,7 @@ git push origin v0.5.x    # 推送标签 → GitHub Actions 自动构建并发�
 swift test --disable-sandbox
 ```
 
-136 项测试覆盖失败分类、队列加固、会话隔离、@ 解析、路径过滤、图片压缩、token 口径与设置迁移。
+187 项测试覆盖失败分类、队列加固、会话隔离、@ 解析、路径过滤、图片压缩、token 口径与设置迁移。
 
 ## 本地化
 

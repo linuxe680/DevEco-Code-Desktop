@@ -31,8 +31,18 @@ final class ProviderStore: ObservableObject {
     /// Normalized catalog ids used when the server reports a slightly
     /// different id (vendor suffix differences).
     private var modelNameByLooseID: [(key: String, name: String)] = []
+    /// Memoizes the substring fallback below; the model-id set is small but
+    /// this lookup runs for every streamed message's metadata.
+    /// Misses are cached too — a plain `[String: String?]` would drop the key
+    /// when storing `nil` and rescan every model on each streamed message.
+    private enum FuzzyNameLookup {
+        case miss
+        case hit(String)
+    }
+    private var fuzzyNameCache: [String: FuzzyNameLookup] = [:]
 
     private func rebuildModelLookup() {
+        fuzzyNameCache.removeAll()
         var lookup: [String: ModelChoice] = [:]
         var seen = Set<String>()
         var choices: [ModelChoice] = []
@@ -84,8 +94,16 @@ final class ProviderStore: ObservableObject {
         if let loose = uniqueCatalogModelName(for: identifier, in: modelNameByLooseID) {
             return loose
         }
-        return modelChoicesByID.values
+        if let cached = fuzzyNameCache[fuzzyModel] {
+            switch cached {
+            case .miss: return nil
+            case .hit(let name): return name
+            }
+        }
+        let match = modelChoicesByID.values
             .first { $0.name.localizedCaseInsensitiveContains(fuzzyModel) }?.name
+        fuzzyNameCache[fuzzyModel] = match.map(FuzzyNameLookup.hit) ?? .miss
+        return match
     }
     /// "Always allow" rules saved via permission cards; revocable.
     @Published private(set) var savedPermissions: [SavedPermission] = []
@@ -228,18 +246,48 @@ final class ProviderStore: ObservableObject {
         }
     }
 
+    /// Picks a still-runnable default when the provider holding the current
+    /// default is removed. `nil` means the default is unaffected; `""` means
+    /// clear it. Testable without a live server.
+    nonisolated static func replacementDefaultModel(
+        current: String,
+        deletedProviderID: String,
+        availableModels: [ServerModel],
+        clientDefault: String = AppSettings.defaultSessionModel
+    ) -> String? {
+        guard !deletedProviderID.isEmpty,
+              current.hasPrefix(deletedProviderID + "/") else { return nil }
+        let candidates = [clientDefault] + availableModels.compactMap { model -> String? in
+            guard let providerID = model.providerID else { return nil }
+            return "\(providerID)/\(model.id)"
+        }
+        return candidates.first {
+            !$0.isEmpty && !$0.hasPrefix(deletedProviderID + "/")
+        } ?? ""
+    }
+
     func delete(_ provider: ProviderEntry) async {
         guard let api else { return }
         var providerObjects = rawConfig["provider"]?.objectValue ?? [:]
         providerObjects.removeValue(forKey: provider.id)
+        var body: [String: JSONValue] = ["provider": JSONValue.object(providerObjects)]
+        let previousDefault = defaultModel
+        if let replacement = Self.replacementDefaultModel(
+            current: previousDefault,
+            deletedProviderID: provider.id,
+            availableModels: serverModels
+        ) {
+            // Send the model change in the SAME patch. Clearing only the local
+            // value used to be undone by load(), which read the stale server
+            // config back and re-selected a model from the deleted provider.
+            body["model"] = .string(replacement)
+            defaultModel = replacement
+        }
         do {
-            let body = ["provider": JSONValue.object(providerObjects)]
-            let _: JSONValue = try await api.patch("config", body: body.jsonData())
-            if defaultModel.hasPrefix(provider.id + "/") {
-                defaultModel = ""
-            }
+            let _: JSONValue = try await api.patch("config", body: JSONValue.object(body).jsonData())
             await load()
         } catch {
+            defaultModel = previousDefault
             errorMessage = error.localizedDescription
         }
     }

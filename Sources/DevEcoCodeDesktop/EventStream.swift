@@ -11,10 +11,17 @@ final class EventStream: NSObject, URLSessionDataDelegate {
     var onDisconnect: (() -> Void)?
     /// Fired when the socket has been silent long enough to look dead.
     var onStalled: (() -> Void)?
+    /// Fired when the server answers the SSE request with a fatal HTTP
+    /// response. The caller must stop reconnecting and show a diagnosis —
+    /// silently retrying a 401/404 forever leaves the UI stuck with no cause.
+    var onFatalResponse: ((Int?, String) -> Void)?
 
     private var session: URLSession?
     private var task: URLSessionDataTask?
     private var buffer = Data()
+    /// Bytes already scanned with no terminator found. Keeps long, fragmented
+    /// frames from being rescanned from byte zero on every network chunk.
+    private var scanOffset = 0
     private var lastReceiveDate: Date?
     /// When the current socket opened. A server that accepts the connection
     /// but never sends a single byte must still trip the stall guard.
@@ -90,6 +97,7 @@ final class EventStream: NSObject, URLSessionDataDelegate {
         session?.invalidateAndCancel()
         session = nil
         buffer = Data()
+        scanOffset = 0
         lastReceiveDate = nil
         connectedAt = nil
         isReceivingHeartbeats = false
@@ -122,15 +130,29 @@ final class EventStream: NSObject, URLSessionDataDelegate {
         let contentType = (http.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
         // Missing Content-Type is tolerated for older builds; an explicit
         // non-event-stream type (usually text/html) is a hard failure.
-        let isEventStream = contentType.isEmpty || contentType.contains("text/event-stream")
-        if http.statusCode != 200 || !isEventStream {
+        if Self.isRejectableResponse(statusCode: http.statusCode, contentType: contentType) {
             Log.stream.warning(
                 "SSE rejected: HTTP \(http.statusCode, privacy: .public) \(contentType, privacy: .public)"
             )
             completionHandler(.cancel)
+            // Reflect the dead socket immediately; a cancelled task may never
+            // deliver didCompleteWithError to clear it for us.
+            task = nil
+            // Release the delegate queue/session too: leaving it alive keeps
+            // this object (and its buffer) retained until a manual retry.
+            self.session?.invalidateAndCancel()
+            self.session = nil
+            onFatalResponse?(http.statusCode, contentType)
             return
         }
         completionHandler(.allow)
+    }
+
+    /// Pure predicate so the rejection policy is testable without a socket.
+    static func isRejectableResponse(statusCode: Int, contentType: String) -> Bool {
+        let type = contentType.lowercased()
+        let isEventStream = type.isEmpty || type.contains("text/event-stream")
+        return statusCode != 200 || !isEventStream
     }
 
     /// A socket with no bytes for longer than `timeout` is likely dead. DevEco
@@ -145,6 +167,8 @@ final class EventStream: NSObject, URLSessionDataDelegate {
         guard self.task === task else { return }
         self.task = nil
         Log.stream.info("SSE closed (error: \(error?.localizedDescription ?? "clean close", privacy: .public))")
+        // A rejected HTTP response nils `task` before cancelling, so it never
+        // reaches this point and cannot drag the caller into a reconnect loop.
         // Reconnect on any close we did not initiate, including a clean close
         // (error == nil) after the server restarts.
         onDisconnect?()
@@ -171,7 +195,7 @@ final class EventStream: NSObject, URLSessionDataDelegate {
             guard let base = rawBuffer.baseAddress else { return }
             let bytes = base.assumingMemoryBound(to: UInt8.self)
             let count = rawBuffer.count
-            var i = 0
+            var i = scanOffset
             while i < count, found == nil {
                 if bytes[i] == 0x0A { // LF
                     let hasCR = i > 0 && bytes[i - 1] == 0x0D
@@ -190,10 +214,14 @@ final class EventStream: NSObject, URLSessionDataDelegate {
                 }
                 i += 1
             }
+            // No complete frame: retain one byte of overlap so a CR/LF pair
+            // split across two network chunks can still be recognised.
+            if found == nil { scanOffset = max(0, count - 1) }
         }
         guard let found else { return nil }
         let frame = buffer.subdata(in: buffer.startIndex..<(buffer.startIndex + found.frameEnd))
         buffer.removeSubrange(buffer.startIndex..<(buffer.startIndex + found.consumeEnd))
+        scanOffset = 0
         return frame
     }
 

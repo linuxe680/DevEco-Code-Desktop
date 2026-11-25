@@ -14,13 +14,20 @@ enum CodeHighlighter {
 
     private final class CachedAttributedString {
         let value: AttributedString
-        init(_ value: AttributedString) { self.value = value }
+        /// Kept so a hash collision can never return another block's colors.
+        let source: String
+        init(_ value: AttributedString, source: String) {
+            self.value = value
+            self.source = source
+        }
     }
 
     static func highlight(_ code: String, language: String) -> AttributedString {
-        let cacheKey = "\(language)|\(code)" as NSString
-        if let cached = cache.object(forKey: cacheKey)?.value {
-            return cached
+        // A key built from the full source retained a second copy of every
+        // code block in NSCache. Keep the key short and verify the source.
+        let cacheKey = "\(language)|\(code.count)|\(code.hashValue)" as NSString
+        if let cached = cache.object(forKey: cacheKey), cached.source == code {
+            return cached.value
         }
         let lang = language.lowercased()
         var pattern = ""
@@ -73,7 +80,7 @@ enum CodeHighlighter {
         if cursor < code.endIndex {
             attributed += AttributedString(code[cursor..<code.endIndex])
         }
-        cache.setObject(CachedAttributedString(attributed), forKey: cacheKey)
+        cache.setObject(CachedAttributedString(attributed, source: code), forKey: cacheKey)
         return attributed
     }
 

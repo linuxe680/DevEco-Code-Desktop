@@ -173,6 +173,7 @@
 "Default model" = "默认模型";
 "Used when a session has no explicit model." = "会话未指定模型时使用。";
 "Base URL" = "接口地址";
+"npm package" = "npm 包";
 "API key" = "API 密钥";
 "Display name" = "显示名称";
 "Display name (optional)" = "显示名称（可选）";
@@ -610,3 +611,7 @@
 "Appearance" = "外观";
 "%lld chars" = "%lld 个字符";
 "Logs: %@" = "日志：%@";
+"Event stream rejected (HTTP %@, %@). Check the server connection, then retry." = "事件流被拒绝（HTTP %@，%@）。请检查服务器连接后重试。";
+"Event stream rejected" = "事件流被拒绝";
+"Provider ID" = "供应商 ID";
+"Edit %@" = "编辑 %@";

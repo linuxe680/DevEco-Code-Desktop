@@ -303,6 +303,10 @@ final class SessionStore: ObservableObject {
     /// True while the event stream is down and reconnect attempts are pending;
     /// drives the connection status strip.
     @Published private(set) var isReconnecting = false
+    /// The server rejected the SSE request (401/404/non-SSE response). Blindly
+    /// reconnecting would spin forever with no diagnosis, so wait for an
+    /// explicit retry from the user.
+    @Published private(set) var streamRejected = false
     /// How many reconnect attempts have been made since the stream dropped.
     var reconnectAttemptCount: Int { reconnectAttempts }
     /// Changes whenever code assigns `draft` (send/clear, session switch,
@@ -413,6 +417,24 @@ final class SessionStore: ObservableObject {
                 self.scheduleReconnect()
             }
         }
+        eventStream.onFatalResponse = { [weak self] status, contentType in
+            Task { @MainActor in
+                guard let self else { return }
+                self.streamRejected = true
+                self.isReconnecting = false
+                self.retryTask?.cancel()
+                self.retryTask = nil
+                let code = status.map(String.init) ?? "?"
+                let type = contentType.isEmpty ? "—" : contentType
+                self.errorMessage = String(
+                    format: NSLocalizedString(
+                        "Event stream rejected (HTTP %@, %@). Check the server connection, then retry.",
+                        comment: "SSE fatal response diagnosis"
+                    ),
+                    code, type
+                )
+            }
+        }
         NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification,
             object: nil,
@@ -441,6 +463,7 @@ final class SessionStore: ObservableObject {
         api = APIClient(baseURL: baseURL)
         reconnectAttempts = 0
         isReconnecting = false
+        streamRejected = false
         eventStream.connect(baseURL: baseURL)
         if selectedModel == nil {
             let preferred = AppSettings.defaultSessionModel
@@ -453,6 +476,19 @@ final class SessionStore: ObservableObject {
         Task { await loadCommands() }
         Task { await loadAgreement() }
         Task { await syncSavedPermissionsFromServer() }
+    }
+
+    /// Manual recovery from a rejected SSE response (e.g. the user fixed the
+    /// server or provider configuration and wants to resume without relaunch).
+    func retryStreamConnection() {
+        guard let api else { return }
+        streamRejected = false
+        errorMessage = nil
+        isReconnecting = false
+        reconnectAttempts = 0
+        retryTask?.cancel()
+        retryTask = nil
+        eventStream.connect(baseURL: api.baseURL)
     }
 
     /// 以服务端 /api/permission/saved 为准刷新本地"Always allow"缓存，
@@ -490,6 +526,7 @@ final class SessionStore: ObservableObject {
         workPanelTabBySession = [:]
         workPanelTab = .review
         isReconnecting = false
+        streamRejected = false
         retryTask?.cancel()
         retryTask = nil
         pollTasksBySession.values.forEach { $0.cancel() }
@@ -1098,6 +1135,75 @@ final class SessionStore: ObservableObject {
         if draft != oldDraft { draftToken = UUID() }
     }
 
+    /// Builds the `POST /session/{id}/command` body. The deveco schema differs
+    /// from `prompt_async` in three ways (verified against GET /doc and the
+    /// live server): `arguments` is required even when empty, `model` is a
+    /// plain "providerID/modelID" string, and `parts` accepts FILE parts only.
+    nonisolated static func commandRequestBody(
+        command: String,
+        arguments: String?,
+        model: String?,
+        variant: String?,
+        attachments: [PendingAttachment]
+    ) -> Data? {
+        var body: [String: Any] = [
+            "command": command,
+            "arguments": arguments ?? "",
+        ]
+        if let model {
+            body["model"] = model
+        }
+        if let variant {
+            body["variant"] = variant
+        }
+        if !attachments.isEmpty {
+            body["parts"] = fileParts(attachments)
+        }
+        return try? JSONSerialization.data(withJSONObject: body)
+    }
+
+    /// Builds the `POST /session/{id}/prompt_async` body.
+    nonisolated static func promptRequestBody(_ prompt: PromptSnapshot) -> Data? {
+        var body: [String: Any] = ["parts": promptParts(prompt)]
+        if let model = prompt.model, let object = modelObject(from: model) {
+            body["model"] = object
+        }
+        if let variant = prompt.variant {
+            body["variant"] = variant
+        }
+        return try? JSONSerialization.data(withJSONObject: body)
+    }
+
+    nonisolated private static func modelObject(from id: String) -> [String: String]? {
+        let pieces = id.split(separator: "/", maxSplits: 1)
+        guard pieces.count == 2 else { return nil }
+        return ["providerID": String(pieces[0]), "modelID": String(pieces[1])]
+    }
+
+    nonisolated private static func fileParts(
+        _ attachments: [PendingAttachment]
+    ) -> [[String: Any]] {
+        attachments.map { attachment in
+            var part: [String: Any] = [
+                "type": "file",
+                "mime": attachment.mime,
+                "url": attachment.url,
+            ]
+            if let filename = attachment.filename {
+                part["filename"] = filename
+            }
+            return part
+        }
+    }
+
+    nonisolated private static func promptParts(
+        _ prompt: PromptSnapshot
+    ) -> [[String: Any]] {
+        var parts = fileParts(prompt.attachments)
+        parts.append(["type": "text", "text": prompt.text])
+        return parts
+    }
+
     /// Sends one immutable prompt to a specific session. Returns false if it
     /// was rejected (mid-abort, already generating, disconnected) — callers
     /// MUST put the snapshot back somewhere visible.
@@ -1149,22 +1255,18 @@ final class SessionStore: ObservableObject {
         if prompt.text.hasPrefix("/"), let slash = parseSlashCommand(prompt.text) {
             Task {
                 do {
-                    var body: [String: Any] = ["command": slash.name]
-                    if let arguments = slash.arguments, !arguments.isEmpty {
-                        body["arguments"] = arguments
-                    }
-                    if let model = prompt.model {
-                        let pieces = model.split(separator: "/", maxSplits: 1)
-                        if pieces.count == 2 {
-                            body["model"] = ["providerID": String(pieces[0]), "modelID": String(pieces[1])]
-                        }
-                    }
-                    let data = try? JSONSerialization.data(withJSONObject: body)
+                    let data = Self.commandRequestBody(
+                        command: slash.name,
+                        arguments: slash.arguments,
+                        model: prompt.model,
+                        variant: prompt.variant,
+                        attachments: prompt.attachments
+                    )
                     let _: EmptyResponse = try await api.post("session/\(id)/command", body: data)
                     await refreshMessagesIfSelected(id)
                     startFallbackPolling(for: id)
                 } catch {
-                    let kind = FailureKind.classify(error.localizedDescription)
+                    let kind = failureKind(for: error)
                     if kind != .aborted {
                         recordSessionFailure(id, message: error.localizedDescription, kind: kind)
                     }
@@ -1176,31 +1278,7 @@ final class SessionStore: ObservableObject {
             return true
         }
 
-        var parts: [[String: Any]] = []
-        for attachment in prompt.attachments {
-            var filePart: [String: Any] = [
-                "type": "file",
-                "mime": attachment.mime,
-                "url": attachment.url,
-            ]
-            if let filename = attachment.filename {
-                filePart["filename"] = filename
-            }
-            parts.append(filePart)
-        }
-        parts.append(["type": "text", "text": prompt.text])
-
-        var body: [String: Any] = ["parts": parts]
-        if let model = prompt.model {
-            let pieces = model.split(separator: "/", maxSplits: 1)
-            if pieces.count == 2 {
-                body["model"] = ["providerID": String(pieces[0]), "modelID": String(pieces[1])]
-            }
-        }
-        if let variant = prompt.variant {
-            body["variant"] = variant
-        }
-        let data = try? JSONSerialization.data(withJSONObject: body)
+        let data = Self.promptRequestBody(prompt)
         Task {
             do {
                 let _: EmptyResponse = try await api.post("session/\(id)/prompt_async", body: data)
@@ -1208,7 +1286,7 @@ final class SessionStore: ObservableObject {
                 startFallbackPolling(for: id)
                 // The session stays active until the server reports idle.
             } catch {
-                let kind = FailureKind.classify(error.localizedDescription)
+                let kind = failureKind(for: error)
                 if kind != .aborted {
                     recordSessionFailure(id, message: error.localizedDescription, kind: kind)
                 }
@@ -1590,7 +1668,7 @@ final class SessionStore: ObservableObject {
         do {
             let _: EmptyResponse = try await api.post("session/\(id)/abort", body: nil)
         } catch {
-            let kind = FailureKind.classify(error.localizedDescription)
+            let kind = failureKind(for: error)
             if kind != .aborted {
                 recordSessionFailure(id, message: error.localizedDescription, kind: kind)
             }
@@ -1741,6 +1819,13 @@ final class SessionStore: ObservableObject {
         }
     }
 
+    /// Prefer the HTTP status carried by APIError over keyword guessing on a
+    /// rendered message; the latter loses the status code and can mislabel.
+    private func failureKind(for error: Error) -> FailureKind {
+        if let apiError = error as? APIError { return apiError.kind }
+        return FailureKind.classify(error.localizedDescription)
+    }
+
     private func recordSessionFailure(_ sessionID: String, message: String, kind: FailureKind? = nil) {
         var error = InlineError(
             sessionID: sessionID,
@@ -1808,7 +1893,9 @@ final class SessionStore: ObservableObject {
         // A socket can be closed by the OS while the app sleeps without our
         // `onDisconnect` firing; re-open it instead of silently showing stale
         // transcripts forever.
-        if !eventStream.isConnected {
+        // A fatal HTTP response needs an explicit retry; reconnecting here
+        // would just reproduce the same rejection every time the app activates.
+        if !eventStream.isConnected && !streamRejected {
             reconnectAttempts = 0
             eventStream.connect(baseURL: api.baseURL)
         }
@@ -1833,6 +1920,8 @@ final class SessionStore: ObservableObject {
             retryTask = nil
             reconnectAttempts = 0
             isReconnecting = false
+            streamRejected = false
+            errorMessage = nil
             Task { await refresh() }
             Task { await loadMessages() }
             Task { await loadBranch() }
@@ -1913,10 +2002,19 @@ final class SessionStore: ObservableObject {
                 if !abortingSessionIDs.contains(sessionID) {
                     flushQueue(for: sessionID)
                 }
-                markUnreadIfNeeded(sessionID, wasGenerating: wasGenerating)
-                if sessionID == selectedSessionID {
-                    Task { await loadUsage() }
+                // Some servers report completion only via session.status.
+                // Without this, a background session keeps the mid-stream
+                // snapshot and switches back without final token/time stats.
+                if sessionID != selectedSessionID {
+                    Task { [weak self] in await self?.loadMessages(for: sessionID) }
                 }
+                // Servers that report completion only through session.status
+                // would otherwise finish silently: no chime, no notification.
+                if wasGenerating {
+                    notifyCompletion(sessionID: sessionID)
+                }
+                markUnreadIfNeeded(sessionID, wasGenerating: wasGenerating)
+                Task { await loadUsage() }
             } else if statusType == "retry" {
                 // Schema: {type: "retry", attempt, message} — keep the
                 // generating state and surface the reason.
@@ -2061,10 +2159,17 @@ final class SessionStore: ObservableObject {
     /// Posts a system notification and plays a sound when a session finishes
     /// generating — only for background sessions, like a mature chat client.
     private func notifyCompletion(sessionID: String?) {
+        // Only background work deserves an audible nudge. Playing for the
+        // conversation the user is watching is noise, despite the old comment.
+        // NSApp is an IUO and is nil in headless test runs; optional chaining
+        // keeps notification logic from crashing when no app is present.
+        let appIsActive = NSApp?.isActive ?? false
+        let isBackgroundSession = sessionID == nil || sessionID != selectedSessionID
+        guard !appIsActive || isBackgroundSession else { return }
         if AppSettings.playSoundOnComplete {
             NSSound(named: "Glass")?.play()
         }
-        guard AppSettings.notifyOnComplete, !NSApp.isActive else { return }
+        guard AppSettings.notifyOnComplete, !appIsActive else { return }
         let title = sessions.first { $0.id == sessionID }?.displayTitle
             ?? NSLocalizedString("Session", comment: "")
         let content = UNMutableNotificationContent()
@@ -2106,7 +2211,7 @@ final class SessionStore: ObservableObject {
             try? await Task.sleep(nanoseconds: 10_000_000_000)
             guard pendingPermissions.contains(where: { $0.id == request.id }),
                   notifiedPermissionIDs.contains(request.id),
-                  !NSApp.isActive else { return }
+                  !(NSApp?.isActive ?? false) else { return }
             let content = UNMutableNotificationContent()
             content.title = NSLocalizedString("Permission needed", comment: "")
             content.body = tool
@@ -2213,7 +2318,8 @@ final class SessionStore: ObservableObject {
         lastStreamActivity = Date()
         pendingDeltas[partID, default: ""] += delta
         // A fresh delta means the part may have just been created; retry from
-        // a clean slate instead of inheriting the previous budget.
+        // a clean slate instead of inheriting the previous budget. Once the
+        // deltas stop, the cap below still retires a part that never appears.
         pendingDeltaAttempts[partID] = 0
         let buffered = pendingDeltas[partID]?.count ?? 0
         if Date().timeIntervalSince(lastDeltaFlush) >= 0.03 || buffered > 8_192 {
@@ -2245,12 +2351,21 @@ final class SessionStore: ObservableObject {
 
     private func flushDeltas() {
         guard !pendingDeltas.isEmpty else { return }
+        // One index build per flush instead of a full transcript scan for
+        // every buffered delta. A burst of 100 deltas no longer costs 100×
+        // the message walk on a long conversation.
+        var partLocations: [String: (message: Int, part: Int)] = [:]
+        for (messageIndex, message) in messages.enumerated() {
+            for (partIndex, part) in message.parts.enumerated() {
+                partLocations[part.id] = (messageIndex, partIndex)
+            }
+        }
         var mutated = false
         var unresolved: [String: String] = [:]
         for (partID, delta) in pendingDeltas {
-            if let messageIndex = messages.firstIndex(where: { $0.parts.contains { $0.id == partID } }),
-               let partIndex = messages[messageIndex].parts.firstIndex(where: { $0.id == partID }) {
-                messages[messageIndex].parts[partIndex].text = (messages[messageIndex].parts[partIndex].text ?? "") + delta
+            if let location = partLocations[partID] {
+                messages[location.message].parts[location.part].text =
+                    (messages[location.message].parts[location.part].text ?? "") + delta
                 pendingDeltaAttempts.removeValue(forKey: partID)
                 mutated = true
             } else {

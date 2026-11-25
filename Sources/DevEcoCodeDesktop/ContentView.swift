@@ -22,7 +22,7 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if server.state != .running || store.isReconnecting {
+            if server.state != .running || store.isReconnecting || store.streamRejected {
                 ConnectionStatusStrip()
                 Divider()
             }
@@ -76,6 +76,8 @@ struct ContentView: View {
                         .font(.caption)
                         .lineLimit(2)
                     Spacer()
+                    // The persistent status strip owns the Retry action for a
+                    // rejected stream; the banner only carries the diagnosis.
                     Button(NSLocalizedString("Dismiss", comment: "")) {
                         store.errorMessage = nil
                         providers.errorMessage = nil
@@ -284,53 +286,65 @@ private struct ConnectionStatusStrip: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            switch (server.state, store.isReconnecting) {
-            case (_, true):
-                ProgressView()
-                    .controlSize(.small)
-                Image(systemName: "wifi.exclamationmark")
+            // A rejected stream is a connection state, not a one-off toast:
+            // keep a Retry affordance here so dismissing the error banner
+            // cannot strand the app with no way to reconnect.
+            if store.streamRejected {
+                Image(systemName: "bolt.horizontal.circle.fill")
                     .foregroundStyle(.orange)
-                Text(NSLocalizedString("Connection lost — reconnecting…", comment: ""))
+                Text(NSLocalizedString("Event stream rejected", comment: ""))
                     .font(.system(size: 14, weight: .medium))
-                Text(String(format: NSLocalizedString("Attempt %d", comment: ""), max(store.reconnectAttemptCount, 1)))
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-            case (.starting, false):
-                ProgressView()
+                Button(NSLocalizedString("Retry", comment: "")) { store.retryStreamConnection() }
                     .controlSize(.small)
-                Text(NSLocalizedString("Starting the deveco server…", comment: ""))
-                    .font(.system(size: 14, weight: .medium))
-                Text("127.0.0.1:\(server.port)")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-            case (.failed, false):
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.red)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(server.failureReason?.label ?? NSLocalizedString("Server failed", comment: ""))
-                        .font(.system(size: 14, weight: .semibold))
-                    if let message = server.errorMessage {
-                        Text(message)
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
+            } else {
+                switch (server.state, store.isReconnecting) {
+                case (_, true):
+                    ProgressView()
+                        .controlSize(.small)
+                    Image(systemName: "wifi.exclamationmark")
+                        .foregroundStyle(.orange)
+                    Text(NSLocalizedString("Connection lost — reconnecting…", comment: ""))
+                        .font(.system(size: 14, weight: .medium))
+                    Text(String(format: NSLocalizedString("Attempt %d", comment: ""), max(store.reconnectAttemptCount, 1)))
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                case (.starting, false):
+                    ProgressView()
+                        .controlSize(.small)
+                    Text(NSLocalizedString("Starting the deveco server…", comment: ""))
+                        .font(.system(size: 14, weight: .medium))
+                    Text("127.0.0.1:\(server.port)")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                case (.failed, false):
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.red)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(server.failureReason?.label ?? NSLocalizedString("Server failed", comment: ""))
+                            .font(.system(size: 14, weight: .semibold))
+                        if let message = server.errorMessage {
+                            Text(message)
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                        }
                     }
-                }
-                Button(NSLocalizedString("Retry", comment: "")) { server.start() }
+                    Button(NSLocalizedString("Retry", comment: "")) { server.start() }
+                        .controlSize(.small)
+                    Button(NSLocalizedString("Show Log", comment: "")) {
+                        NSWorkspace.shared.activateFileViewerSelecting([ServerManager.logFileURL])
+                    }
                     .controlSize(.small)
-                Button(NSLocalizedString("Show Log", comment: "")) {
-                    NSWorkspace.shared.activateFileViewerSelecting([ServerManager.logFileURL])
+                case (.stopped, false):
+                    Image(systemName: "pause.circle")
+                        .foregroundStyle(.secondary)
+                    Text(NSLocalizedString("Server stopped", comment: ""))
+                        .font(.system(size: 14, weight: .medium))
+                    Button(NSLocalizedString("Start Server", comment: "")) { server.start() }
+                        .controlSize(.small)
+                case (.running, false):
+                    EmptyView()
                 }
-                .controlSize(.small)
-            case (.stopped, false):
-                Image(systemName: "pause.circle")
-                    .foregroundStyle(.secondary)
-                Text(NSLocalizedString("Server stopped", comment: ""))
-                    .font(.system(size: 14, weight: .medium))
-                Button(NSLocalizedString("Start Server", comment: "")) { server.start() }
-                    .controlSize(.small)
-            case (.running, false):
-                EmptyView()
             }
             Spacer()
         }
@@ -339,6 +353,7 @@ private struct ConnectionStatusStrip: View {
         .background(server.state == .failed ? Theme.bannerError : Theme.bannerInfo)
         .animation(.easeInOut(duration: 0.15), value: server.state)
         .animation(.easeInOut(duration: 0.15), value: store.isReconnecting)
+        .animation(.easeInOut(duration: 0.15), value: store.streamRejected)
     }
 }
 

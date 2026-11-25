@@ -25,7 +25,14 @@ struct ProviderEditorView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text(isNew ? "Add Provider" : "Edit \(provider.name)").font(.title3.weight(.semibold))
+                Group {
+                    if isNew {
+                        Text("Add Provider")
+                    } else {
+                        Text("Edit \(provider.name)")
+                    }
+                }
+                .font(.title3.weight(.semibold))
                 Spacer()
                 Button(NSLocalizedString("Cancel", comment: "")) { onCancel() }
                 Button(NSLocalizedString("Save", comment: "")) { onSave() }
@@ -38,14 +45,14 @@ struct ProviderEditorView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    labeledField("Provider ID", text: $provider.id, placeholder: NSLocalizedString("my-provider", comment: ""))
+                    labeledField("Provider ID", text: $provider.id, placeholder: "my-provider")
                         .disabled(!isNew)
-                    labeledField("Display name", text: $provider.name, placeholder: NSLocalizedString("My Provider", comment: ""))
-                    labeledField("npm package", text: $provider.npm, placeholder: NSLocalizedString("@ai-sdk/openai-compatible", comment: ""))
+                    labeledField("Display name", text: $provider.name, placeholder: "My Provider")
+                    labeledField("npm package", text: $provider.npm, placeholder: "@ai-sdk/openai-compatible")
                     labeledField("Base URL", text: Binding(
                         get: { provider.baseURL },
                         set: { provider.baseURL = $0 }
-                    ), placeholder: NSLocalizedString("https://api.example.com/v1", comment: ""))
+                    ), placeholder: "https://api.example.com/v1")
                     secureField("API key", text: Binding(
                         get: { provider.apiKey },
                         set: { provider.apiKey = $0 }
@@ -116,7 +123,11 @@ struct ProviderEditorView: View {
         .frame(width: 640, height: 560)
     }
 
-    private func labeledField(_ label: String, text: Binding<String>, placeholder: String) -> some View {
+    private func labeledField(
+        _ label: LocalizedStringKey,
+        text: Binding<String>,
+        placeholder: LocalizedStringKey
+    ) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label).font(.caption).foregroundStyle(.secondary)
             TextField(placeholder, text: text)
@@ -124,7 +135,7 @@ struct ProviderEditorView: View {
         }
     }
 
-    private func secureField(_ label: String, text: Binding<String>) -> some View {
+    private func secureField(_ label: LocalizedStringKey, text: Binding<String>) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label).font(.caption).foregroundStyle(.secondary)
             SecureField("Optional", text: text)
