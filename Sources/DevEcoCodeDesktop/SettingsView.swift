@@ -56,6 +56,9 @@ private struct GeneralSettingsPane: View {
                     Text("简体中文").tag("zh-Hans")
                     Text("English").tag("en")
                 }
+                .onChange(of: appLanguageRaw) { _ in
+                    AppSettings.applyLanguageOverride()
+                }
                 Text(NSLocalizedString("Takes effect after relaunch.", comment: ""))
                     .font(.caption)
                     .foregroundStyle(.secondary)

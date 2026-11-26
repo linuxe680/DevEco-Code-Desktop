@@ -240,8 +240,8 @@ struct ChatView: View {
         if historyIndex == nil {
             draftBeforeHistory = store.draft
             historyIndex = 0
-        } else if historyIndex! + 1 < history.count {
-            historyIndex! += 1
+        } else if let current = historyIndex, current + 1 < history.count {
+            historyIndex = current + 1
         }
         let index = historyIndex ?? 0
         store.draft = history[history.count - 1 - index]
@@ -250,14 +250,14 @@ struct ChatView: View {
 
     private func historyDown() {
         let history = AppSettings.promptHistory
-        guard historyIndex != nil else { return }
+        guard let current = historyIndex else { return }
         let oldDraft = store.draft
-        if historyIndex == 0 {
+        if current == 0 {
             historyIndex = nil
             store.draft = draftBeforeHistory
         } else {
-            historyIndex! -= 1
-            let index = min(historyIndex ?? 0, max(history.count - 1, 0))
+            historyIndex = current - 1
+            let index = min(current - 1, max(history.count - 1, 0))
             store.draft = history[history.count - 1 - index]
         }
         if store.draft != oldDraft { store.bumpDraftToken() }
@@ -1295,9 +1295,9 @@ struct ChatView: View {
                                                 .font(.caption)
                                                 .foregroundStyle(Color.accentColor)
                                         }
-                                Text(attachment.filename ?? (attachment.mime.hasPrefix("image/")
-                                     ? NSLocalizedString("image", comment: "attachment fallback")
-                                     : NSLocalizedString("file", comment: "attachment fallback")))
+                                        Text(attachment.filename ?? (attachment.mime.hasPrefix("image/")
+                                             ? NSLocalizedString("image", comment: "attachment fallback")
+                                             : NSLocalizedString("file", comment: "attachment fallback")))
                                             .font(.system(size: 12))
                                             .lineLimit(1)
                                         Button {
@@ -1853,8 +1853,8 @@ private final class ChatTextView: NSTextView {
     }
 
     func reportHeight() {
-        guard let onContentHeight, let layoutManager else { return }
-        let used = layoutManager.usedRect(for: textContainer!).height
+        guard let onContentHeight, let layoutManager, let textContainer else { return }
+        let used = layoutManager.usedRect(for: textContainer).height
         let total = used + textContainerInset.height * 2 + 6
         let height = max(52, min(160, ceil(total)))
         if abs(frame.height - height) > 0.5 {

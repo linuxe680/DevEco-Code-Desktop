@@ -167,6 +167,8 @@ final class EventStream: NSObject, URLSessionDataDelegate {
 
     /// A socket with no bytes for longer than `timeout` is likely dead. DevEco
     /// normally sends periodic SSE comments, so 15s is a conservative guard.
+    /// The timer fires every 5s, so the timeout must be >= 2 timer intervals
+    /// to avoid false positives on a slightly slow but healthy connection.
     func heartbeatIsStale(timeout: TimeInterval = 15) -> Bool {
         guard let reference = lastReceiveDate ?? connectedAt else { return false }
         let elapsed = Date().timeIntervalSince(reference)

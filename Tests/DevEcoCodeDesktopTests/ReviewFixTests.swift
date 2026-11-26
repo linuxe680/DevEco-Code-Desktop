@@ -216,7 +216,7 @@ final class ReviewFixTests: XCTestCase {
                 current: "p1/old",
                 deletedProviderID: "p1",
                 availableModels: [],
-                clientDefault: ""
+                clientDefault: "p3/unrelated"
             ),
             ""
         )

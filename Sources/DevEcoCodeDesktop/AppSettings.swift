@@ -157,8 +157,26 @@ enum AppSettings {
         let language = appLanguage
         if language == "system" {
             UserDefaults.standard.removeObject(forKey: "AppleLanguages")
+            UserDefaults.standard.removeObject(forKey: "AppleLocale")
         } else {
-            UserDefaults.standard.set([language], forKey: "AppleLanguages")
+            // LaunchServices reads AppleLanguages at process launch, before
+            // SwiftUI's init runs. Writing the same array again here makes
+            // a language change take effect on the next restart without
+            // requiring the user to launch the app twice.
+            let current = UserDefaults.standard.stringArray(forKey: "AppleLanguages") ?? []
+            let currentLocale = UserDefaults.standard.string(forKey: "AppleLocale")
+            let desiredLocale = language == "en" ? "en_CN" : "zh_CN"
+            if current != [language] {
+                UserDefaults.standard.set([language], forKey: "AppleLanguages")
+                // AppleLocale must be a plain string. Writing an array here
+                // makes macOS report "未能读取数据，因为它的格式不正确" on
+                // launch when it reads the per-app override.
+                UserDefaults.standard.set(language == "en" ? "en_CN" : "zh_CN", forKey: "AppleLocale")
+            } else if currentLocale != desiredLocale {
+                // Repair a locale written with the wrong type by an older
+                // build (an array instead of a string).
+                UserDefaults.standard.set(desiredLocale, forKey: "AppleLocale")
+            }
         }
     }
 

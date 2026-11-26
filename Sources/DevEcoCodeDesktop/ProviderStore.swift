@@ -267,9 +267,27 @@ final class ProviderStore: ObservableObject {
         availableModels: [ServerModel],
         clientDefault: String = AppSettings.defaultSessionModel
     ) -> String? {
+        // The client-side default is independent of the server's configured
+        // model. Deleting a provider must not silently repoint new sessions
+        // to a model the user never chose for this app; use a runnable server
+        // model instead and let the Settings picker stay untouched.
+        return replacementDefaultModel(
+            current: current,
+            deletedProviderID: deletedProviderID,
+            availableModels: availableModels,
+            fallbackClientDefault: nil
+        )
+    }
+
+    nonisolated private static func replacementDefaultModel(
+        current: String,
+        deletedProviderID: String,
+        availableModels: [ServerModel],
+        fallbackClientDefault: String?
+    ) -> String? {
         guard !deletedProviderID.isEmpty,
               current.hasPrefix(deletedProviderID + "/") else { return nil }
-        let candidates = [clientDefault] + availableModels.compactMap { model -> String? in
+        let candidates = (fallbackClientDefault.map { [$0] } ?? []) + availableModels.compactMap { model -> String? in
             guard let providerID = model.providerID else { return nil }
             return "\(providerID)/\(model.id)"
         }

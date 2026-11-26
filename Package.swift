@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "DevEcoCodeDesktop",
-    platforms: [.macOS(.v11)],
+    platforms: [.macOS(.v12)],
     targets: [
         .executableTarget(
             name: "DevEcoCodeDesktop",

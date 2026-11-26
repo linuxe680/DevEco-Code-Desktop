@@ -144,6 +144,37 @@ extension P3ReliabilityTests {
 
     // MARK: One-shot settings migrations (settingsVersion marker)
 
+    func testLanguageOverrideRepairsLegacyLocaleType() {
+        let defaults = UserDefaults.standard
+        let savedLanguage = defaults.string(forKey: AppSettings.Keys.appLanguage)
+        let savedLanguages = defaults.object(forKey: "AppleLanguages")
+        let savedLocale = defaults.object(forKey: "AppleLocale")
+        defer {
+            if let savedLanguage { defaults.set(savedLanguage, forKey: AppSettings.Keys.appLanguage) }
+            else { defaults.removeObject(forKey: AppSettings.Keys.appLanguage) }
+            if let savedLanguages { defaults.set(savedLanguages, forKey: "AppleLanguages") }
+            else { defaults.removeObject(forKey: "AppleLanguages") }
+            if let savedLocale { defaults.set(savedLocale, forKey: "AppleLocale") }
+            else { defaults.removeObject(forKey: "AppleLocale") }
+        }
+
+        defaults.set("zh-Hans", forKey: AppSettings.Keys.appLanguage)
+        defaults.set(["zh-Hans"], forKey: "AppleLanguages")
+        // An older build wrote an array; macOS expects a string.
+        defaults.set(["zh-Hans-CN"], forKey: "AppleLocale")
+
+        AppSettings.applyLanguageOverride()
+
+        XCTAssertEqual(defaults.stringArray(forKey: "AppleLanguages"), ["zh-Hans"])
+        XCTAssertEqual(defaults.string(forKey: "AppleLocale"), "zh_CN")
+
+        // "Follow system" removes the app-level overrides; verify the
+        // explicit write above is gone from the volatile domain.
+        defaults.set("system", forKey: AppSettings.Keys.appLanguage)
+        AppSettings.applyLanguageOverride()
+        XCTAssertNil(defaults.volatileDomain(forName: "NSUserDefaultsNormalizedDomain")["AppleLocale"])
+    }
+
     private func withFreshDefaults(_ body: () -> Void) {
         let defaults = UserDefaults.standard
         let savedFont = defaults.object(forKey: AppSettings.Keys.chatFontSize)

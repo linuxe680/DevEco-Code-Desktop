@@ -401,7 +401,7 @@ final class ServerManager: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             let healthy = await self.probeHealth()
-            guard healthy, self.state == .starting || self.state == .failed else { return }
+            guard healthy, (self.state == .starting || self.state == .failed) else { return }
             // A stop/start while the probe was in flight must not mark the
             // replacement process as running.
             guard self.serverProcess?.pid == launched.pid else { return }
