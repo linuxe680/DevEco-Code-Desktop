@@ -175,6 +175,33 @@ extension P3ReliabilityTests {
         XCTAssertNil(defaults.volatileDomain(forName: "NSUserDefaultsNormalizedDomain")["AppleLocale"])
     }
 
+    func testUserFacingErrorHidesRawCocoaFormatMessage() {
+        let error = NSError(
+            domain: NSCocoaErrorDomain,
+            code: 260,
+            userInfo: [NSLocalizedDescriptionKey: "未能读取数据，因为它的格式不正确。"]
+        )
+        let message = UserFacingError.message(error)
+        XCTAssertEqual(message, "Stored data could not be read. The app will rebuild it automatically.")
+        XCTAssertFalse(message.contains("格式不正确"))
+        XCTAssertEqual(
+            UserFacingError.sanitize("未能读取数据，因为它的格式不正确。"),
+            "Stored data could not be read. The app will rebuild it automatically."
+        )
+        XCTAssertEqual(
+            UserFacingError.sanitize("The data couldn’t be read because it isn’t in the correct format."),
+            "Stored data could not be read. The app will rebuild it automatically."
+        )
+        XCTAssertEqual(
+            UserFacingError.sanitize("未能读取数据，因为它的格式错误。"),
+            "Stored data could not be read. The app will rebuild it automatically."
+        )
+        XCTAssertEqual(
+            UserFacingError.sanitize("Could not connect to the server."),
+            "Could not reach the deveco server. Check the connection and retry."
+        )
+    }
+
     private func withFreshDefaults(_ body: () -> Void) {
         let defaults = UserDefaults.standard
         let savedFont = defaults.object(forKey: AppSettings.Keys.chatFontSize)
@@ -190,12 +217,12 @@ extension P3ReliabilityTests {
         body()
     }
 
-    func testSettingsMigrationMovesLegacyFontTo15() {
+    func testSettingsMigrationMovesLegacyFontTo14() {
         withFreshDefaults {
             UserDefaults.standard.set(16.0, forKey: AppSettings.Keys.chatFontSize)
             AppSettings.registerDefaults()
-            XCTAssertEqual(UserDefaults.standard.double(forKey: AppSettings.Keys.chatFontSize), 15.0)
-            XCTAssertEqual(UserDefaults.standard.integer(forKey: AppSettings.Keys.settingsVersion), 1)
+            XCTAssertEqual(UserDefaults.standard.double(forKey: AppSettings.Keys.chatFontSize), 14.0)
+            XCTAssertEqual(UserDefaults.standard.integer(forKey: AppSettings.Keys.settingsVersion), 2)
         }
     }
 

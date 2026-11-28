@@ -54,7 +54,13 @@ final class ProviderStore: ObservableObject {
             let providerID = model.providerID ?? "unknown"
             let id = "\(providerID)/\(model.id)"
             guard seen.insert(id).inserted else { continue }
-            let choice = ModelChoice(id: id, provider: providerID, name: model.name ?? model.id)
+            let choice = ModelChoice(
+                id: id,
+                provider: providerID,
+                name: model.name ?? model.id,
+                contextWindow: Int(model.limit?.context ?? 0),
+                reasoning: !(model.variants ?? []).isEmpty
+            )
             choices.append(choice)
             lookup[id] = choice
         }
@@ -62,7 +68,13 @@ final class ProviderStore: ObservableObject {
             for model in provider.models {
                 let id = "\(provider.id)/\(model.id)"
                 guard seen.insert(id).inserted else { continue }
-                let choice = ModelChoice(id: id, provider: provider.id, name: model.name)
+                let choice = ModelChoice(
+                    id: id,
+                    provider: provider.id,
+                    name: model.name,
+                    contextWindow: model.context,
+                    reasoning: model.reasoning
+                )
                 choices.append(choice)
                 lookup[id] = choice
             }
@@ -153,7 +165,7 @@ final class ProviderStore: ObservableObject {
             AppSettings.savedPermissionRules = rules
             NotificationCenter.default.post(name: .savedPermissionsDidChange, object: nil)
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = UserFacingError.message(error)
         }
     }
 
@@ -164,7 +176,7 @@ final class ProviderStore: ObservableObject {
             try await api.delete("api/permission/saved/\(saved.id)")
             await loadSavedPermissions()
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = UserFacingError.message(error)
         }
     }
 
@@ -208,14 +220,14 @@ final class ProviderStore: ObservableObject {
             providers = providerObjects.compactMap { ProviderEntry.parse(id: $0.key, value: $0.value) }
                 .sorted { $0.id < $1.id }
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = UserFacingError.message(error)
         }
         do {
             let response = try await catalogFetch
             guard generation == loadGeneration, api === self.api else { return }
             catalog = response.all.sorted { $0.displayName < $1.displayName }
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = UserFacingError.message(error)
         }
         do {
             let models = try await modelsFetch.data ?? []
@@ -253,7 +265,7 @@ final class ProviderStore: ObservableObject {
             await load()
             return true
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = UserFacingError.message(error)
             return false
         }
     }
@@ -318,7 +330,7 @@ final class ProviderStore: ObservableObject {
             await load()
         } catch {
             defaultModel = previousDefault
-            errorMessage = error.localizedDescription
+            errorMessage = UserFacingError.message(error)
         }
     }
 
@@ -329,7 +341,7 @@ final class ProviderStore: ObservableObject {
             let _: JSONValue = try await api.patch("config", body: body.jsonData())
             defaultModel = model
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = UserFacingError.message(error)
         }
     }
 }

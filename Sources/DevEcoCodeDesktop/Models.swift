@@ -96,6 +96,21 @@ struct SessionTime: Codable {
     let archived: Double?
 }
 
+struct SessionModel: Codable {
+    let id: String?
+    let providerID: String?
+    let variant: String?
+
+    var modelID: String? {
+        guard let id, !id.isEmpty else { return nil }
+        if let providerID, !providerID.isEmpty, id.hasPrefix(providerID + "/") {
+            return id
+        }
+        guard let providerID, !providerID.isEmpty else { return id }
+        return "\(providerID)/\(id)"
+    }
+}
+
 struct Session: Identifiable, Codable {
     let id: String
     var title: String?
@@ -104,11 +119,15 @@ struct Session: Identifiable, Codable {
     let revert: SessionRevert?
     var parentID: String?
     var permission: [PermissionRule]?
+    /// Model recorded by the server for this session. Older servers used a
+    /// plain id string; current ones send {id, providerID, variant}.
+    var model: SessionModel?
     var tokens: MessageTokens?
     var cost: Double?
+    var share: SessionShareInfo?
 
     enum CodingKeys: String, CodingKey {
-        case id, title, directory, time, revert, parentID, permission, tokens, cost
+        case id, title, directory, time, revert, parentID, permission, model, tokens, cost, share
     }
 
     var displayTitle: String {
@@ -517,12 +536,49 @@ struct ToolTime: Codable {
 }
 
 struct ToolState: Codable {
+    /// Some server versions emit `state` as a plain status string ("running",
+    /// "completed") while others emit an object. Accept both so one legacy
+    /// message cannot make the whole session list fail to decode.
+    enum CodingKeys: String, CodingKey {
+        case status, title, output, error, input, time
+    }
+
     let status: String?
     let title: String?
     let output: String?
     let error: String?
     let input: JSONValue?
     var time: ToolTime?
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let status = try? container.decode(String.self) {
+            self.status = status
+            title = nil
+            output = nil
+            error = nil
+            input = nil
+            time = nil
+            return
+        }
+        let object = try decoder.container(keyedBy: CodingKeys.self)
+        status = try object.decodeIfPresent(String.self, forKey: .status)
+        title = try object.decodeIfPresent(String.self, forKey: .title)
+        output = try object.decodeIfPresent(String.self, forKey: .output)
+        error = try object.decodeIfPresent(String.self, forKey: .error)
+        input = try object.decodeIfPresent(JSONValue.self, forKey: .input)
+        time = try object.decodeIfPresent(ToolTime.self, forKey: .time)
+    }
+
+    init(status: String?, title: String? = nil, output: String? = nil, error: String? = nil,
+         input: JSONValue? = nil, time: ToolTime? = nil) {
+        self.status = status
+        self.title = title
+        self.output = output
+        self.error = error
+        self.input = input
+        self.time = time
+    }
 
     var summary: String {
         switch status {
@@ -757,6 +813,10 @@ struct ModelChoice: Identifiable, Hashable {
     let id: String
     let provider: String
     let name: String
+    /// Context window in tokens; 0 when the catalog does not report one.
+    var contextWindow: Int = 0
+    /// Whether the model exposes reasoning-effort variants.
+    var reasoning: Bool = false
 }
 
 /// One entry of GET /api/model — every model the server can run.
@@ -819,6 +879,51 @@ struct UserQuestionRequest: Identifiable, Decodable {
     let id: String
     let sessionID: String
     let questions: [UserQuestionInfo]
+}
+
+/// Unsubmitted answers for one question request. Keyed by request id so a
+/// reused SwiftUI card can never inherit choices from a previous ask.
+struct QuestionDraft {
+    var selections: [Int: [String]] = [:]
+    var customAnswers: [Int: String] = [:]
+}
+
+/// Decides whether a `question` tool card in the transcript is stranded:
+/// the server restarted and its in-memory pending request is gone, so the
+/// card would otherwise spin forever. Kept out of the view so the rule can
+/// be unit-tested without a live server.
+enum QuestionCardState {
+    static func resultSummary(_ output: String) -> String? {
+        let text = output.replacingOccurrences(of: "\\n", with: "\n")
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if let prefix = trimmed.range(of: "User has answered your questions:") {
+            return String(trimmed[prefix.lowerBound...])
+        }
+        if let prefix = trimmed.range(of: "User dismissed") {
+            return String(trimmed[prefix.lowerBound...])
+        }
+        return trimmed
+    }
+
+    static func isExpired(
+        tool: String?,
+        status: String?,
+        questionTexts: Set<String>,
+        isSending: Bool,
+        pending: [UserQuestionRequest],
+        sessionID: String?
+    ) -> Bool {
+        guard tool == "question",
+              status == "running",
+              !isSending,
+              !questionTexts.isEmpty,
+              let sessionID else { return false }
+        return !pending.contains { request in
+            request.sessionID == sessionID
+                && !Set(request.questions.map(\.question)).isDisjoint(with: questionTexts)
+        }
+    }
 }
 
 // MARK: - Usage stats (GET /stats/usage)
@@ -928,7 +1033,9 @@ enum APIError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidResponse: return "Invalid response from deveco server"
-        case .status(let code, let body): return "Server returned \(code): \(Self.displayMessage(from: body))"
+        case .status(let code, let body):
+            let detail = Self.displayMessage(from: body)
+            return String(format: NSLocalizedString("Server error (%lld): %@", comment: ""), Int64(code), detail)
         }
     }
 

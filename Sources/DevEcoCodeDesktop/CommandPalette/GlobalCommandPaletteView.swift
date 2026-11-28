@@ -248,6 +248,16 @@ struct CommandAction: Identifiable {
             run: { store, _ in store.createSession() }
         ),
         CommandAction(
+            title: NSLocalizedString("Next Unread Session", comment: ""),
+            subtitle: NSLocalizedString("Jump to the newest conversation with unread output", comment: ""),
+            localizationKey: "Next Unread Session",
+            subtitleLocalizationKey: "Jump to the newest conversation with unread output",
+            symbol: "envelope.badge",
+            shortcut: "⌥⌘U",
+            keywords: ["unread", "next", "notify", "inbox"],
+            run: { store, _ in store.selectNextUnreadSession() }
+        ),
+        CommandAction(
             title: NSLocalizedString("Choose Project Folder…", comment: ""),
             subtitle: NSLocalizedString("Switch the running server to another project", comment: ""),
             localizationKey: "Choose Project Folder…",

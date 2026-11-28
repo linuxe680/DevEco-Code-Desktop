@@ -52,6 +52,14 @@ struct QueuedPrompt: Identifiable {
     }
 }
 
+struct TimelineNotice: Identifiable, Equatable {
+    let id: String
+    let sessionID: String
+    let messageID: String?
+    let date: Date
+    let text: String
+}
+
 @MainActor
 final class SessionStore: ObservableObject {
     typealias PendingAttachment = DevEcoCodeDesktop.PendingAttachment
@@ -75,6 +83,9 @@ final class SessionStore: ObservableObject {
     @Published var workPanelOpenBySession: [String: Bool] = [:]
     @Published var workPanelTab: WorkPanelTab = .review
     private var workPanelTabBySession: [String: WorkPanelTab] = [:]
+    @Published private(set) var vcsStatus: [VcsStatus] = []
+    @Published private(set) var vcsDiffs: [VcsDiff] = []
+    @Published private(set) var childSessions: [Session] = []
     /// Durable "always allow" rules the client records itself; the deveco
     /// server only remembers them for the lifetime of one server process.
     @Published private(set) var savedPermissionRules: [String] = AppSettings.savedPermissionRules
@@ -98,6 +109,38 @@ final class SessionStore: ObservableObject {
     @Published var isCompacting = false
     /// Pending "agent asks the user" requests, from question.asked events.
     @Published var pendingQuestions: [UserQuestionRequest] = []
+    /// In-progress answers keyed by request id. Views are reused by SwiftUI;
+    /// without this a second ask inherits the first ask's selections.
+    private var questionDrafts: [String: QuestionDraft] = [:]
+
+    func questionDraft(for id: String) -> QuestionDraft {
+        questionDrafts[id] ?? QuestionDraft()
+    }
+
+    func updateQuestionDraft(for id: String, _ update: (inout QuestionDraft) -> Void) {
+        var draft = questionDrafts[id] ?? QuestionDraft()
+        update(&draft)
+        questionDrafts[id] = draft
+    }
+
+    func clearQuestionDraft(for id: String) {
+        questionDrafts.removeValue(forKey: id)
+    }
+
+    /// Test-only assertion hook for request-keyed answer isolation.
+    func questionDraftSelections(for id: String) -> [Int: [String]] {
+        questionDrafts[id]?.selections ?? [:]
+    }
+
+    /// Test-only seed used by request-isolation tests; mirrors UI updates.
+    func testSetQuestionDraft(for id: String, index: Int, labels: [String]) {
+        updateQuestionDraft(for: id) { $0.selections[index] = labels }
+    }
+    /// Recently answered/rejected ids. A delayed SSE `question.asked` event
+    /// must not resurrect a card the user already dismissed.
+    private var dismissedQuestionIDs: [String: Date] = [:]
+    private static let questionTombstoneTTL: TimeInterval = 10
+    private static let maxQuestionTombstones = 256
     /// Current git branch of the project (GET /vcs + vcs.branch.updated).
     @Published var vcsBranch: String?
     /// Aggregated usage for the project (GET /stats/usage).
@@ -314,7 +357,13 @@ final class SessionStore: ObservableObject {
     /// distinguish a real external replacement from a stale SwiftUI render
     /// of user typing. A UUID avoids the wraparound hazard of an Int counter.
     @Published private(set) var draftToken = UUID()
-    @Published var draft = ""
+    @Published var draft = "" {
+        didSet {
+            guard oldValue != draft, let id = selectedSessionID else { return }
+            draftsBySession[id] = draft
+            scheduleDraftPersist()
+        }
+    }
 
     func bumpDraftToken() { draftToken = UUID() }
     @Published var selectedModel: String? {
@@ -333,8 +382,24 @@ final class SessionStore: ObservableObject {
     }
     /// Bumped whenever the transcript mutates; drives follow-scroll in the chat view.
     @Published private(set) var streamTick = 0
+    /// System notices extracted from assistant text, rendered as a Codex-style
+    /// dated divider instead of an extra paragraph in the answer.
+    @Published private(set) var timelineNotices: [TimelineNotice] = []
 
     private var api: APIClient?
+    var apiForTools: APIClient? { api }
+    func setToolError(_ message: String) { errorMessage = message }
+    var fallbackDirectory: String?
+    var currentDirectory: String? {
+        if let directory = selectedSession?.directory, !directory.isEmpty { return directory }
+        if let directory = fallbackDirectory, !directory.isEmpty { return directory }
+        return nil
+    }
+    func vcsQuery(mode: String? = nil) -> [String: String] {
+        var query = APIClient.locationQuery(directory: currentDirectory, workspace: nil)
+        if let mode { query["mode"] = mode }
+        return query
+    }
     let eventStream = EventStream()
 
     private var retryTask: Task<Void, Never>?
@@ -342,9 +407,91 @@ final class SessionStore: ObservableObject {
     /// 后台会话在 idle 时抓取的消息快照。切回该会话时先展示缓存，
     /// 避免 SSE 增量因 `sessionID != selectedSessionID` 被丢弃后只显示空态。
     private var messagesCacheBySession: [String: [MessageRecord]] = [:]
+    /// Message snapshots are only a fast first-paint cache. Keep the newest
+    /// few; everything else is re-fetched from the server on demand instead
+    /// of growing one full transcript copy per visited session.
+    private static let maxMessageCacheEntries = 8
+    private static let maxMessageCacheCharacters = 400_000
+    private var messageCacheCharacters = 0
+
+    private func cacheMessages(_ messages: [MessageRecord], for id: String) {
+        let characters = messages.reduce(0) { total, message in
+            total + message.parts.reduce(0) { $0 + ($1.text?.count ?? 0) }
+        }
+        if messagesCacheBySession[id] == nil {
+            evictOldestMessageCache(keeping: id, requiredCharacters: characters)
+        } else {
+            messageCacheCharacters -= cachedMessageCharacters(for: id)
+        }
+        messagesCacheBySession[id] = messages
+        messageCacheCharacters += characters
+    }
+
+    private func cachedMessageCharacters(for id: String) -> Int {
+        messagesCacheBySession[id]?.reduce(0) { total, message in
+            total + message.parts.reduce(0) { $0 + ($1.text?.count ?? 0) }
+        } ?? 0
+    }
+
+    func messageCacheEntryCountForTesting() -> Int {
+        messagesCacheBySession.count
+    }
+
+    var messageCacheCharactersForTesting: Int { messageCacheCharacters }
+
+    static var maxMessageCacheEntriesForTesting: Int { maxMessageCacheEntries }
+
+    func cacheMessagesForTesting(_ messages: [MessageRecord], for id: String) {
+        cacheMessages(messages, for: id)
+    }
+
+    private func evictOldestMessageCache(keeping id: String, requiredCharacters: Int = 0) {
+        while messagesCacheBySession.count >= Self.maxMessageCacheEntries
+            || messageCacheCharacters + requiredCharacters > Self.maxMessageCacheCharacters {
+            let candidate = messagesCacheBySession.keys.first { $0 != id }
+            guard let candidate else { return }
+            messageCacheCharacters -= cachedMessageCharacters(for: candidate)
+            messagesCacheBySession.removeValue(forKey: candidate)
+        }
+    }
+
+    private func clearMessageCache() {
+        messagesCacheBySession.removeAll()
+        messageCacheCharacters = 0
+    }
+
     private var reconnectAttempts = 0
+    /// Invalidates reconnect closures that were scheduled before a healthy
+    /// connection or an explicit foreground check took over.
+    private var reconnectGeneration = 0
+    /// A Stop request must invalidate every already-scheduled retry even if
+    /// `finishRun` clears the abort flag before the timer wakes up.
+    private var abortGenerationBySession: [String: Int] = [:]
+    /// Test-only hook: mirrors a scheduled auto retry without making a real
+    /// network request. Returns whether the retry survived generation checks.
+    func testAutoRetrySurvives(sessionID: String, generation: Int) -> Bool {
+        !abortingSessionIDs.contains(sessionID)
+            && abortGenerationBySession[sessionID] == generation
+    }
+
+    func pendingDeltaBytesForTesting(partID: String) -> Int {
+        pendingDeltas[partID]?.utf8.count ?? 0
+    }
+
+    func appendForTesting(_ delta: String, partID: String) {
+        append(delta, to: partID, in: "msg_test", sessionID: selectedSessionID ?? "test")
+    }
+
+    func testAbortGeneration(for sessionID: String) -> Int {
+        abortGenerationBySession[sessionID] ?? 0
+    }
+
+    func finishRunForTesting(_ sessionID: String) {
+        finishRun(sessionID)
+    }
     /// Drafts stashed per session so switching preserves in-progress text.
-    private var draftsBySession: [String: String] = [:]
+    private var draftsBySession: [String: String] = AppSettings.sessionDrafts
+    private var draftPersistTask: Task<Void, Never>?
     /// Queues stashed per session (only the selected session's is published).
     private var queuesBySession: [String: [QueuedPrompt]] = [:]
     /// Per-session model/variant picks, restored on switch and persisted
@@ -377,6 +524,10 @@ final class SessionStore: ObservableObject {
     /// is called from SSE, fallback polling, and connect refresh at once.
     private var messageLoadTasks: [String: Task<Void, Never>] = [:]
     private var pendingDeltas: [String: String] = [:]
+    /// A single huge part can still hold tens of MB before it is flushed.
+    /// Bound the buffered tail so a runaway server event cannot allocate
+    /// without limit.
+    private static let maxPendingDeltaBytesPerPart = 64 * 1024
     /// How many flush cycles each buffered part has gone unresolved. A delta
     /// for a part the snapshot never creates used to be re-queued forever,
     /// keeping the 30ms timer alive for the lifetime of the app.
@@ -401,6 +552,15 @@ final class SessionStore: ObservableObject {
         if let id = UserDefaults.standard.string(forKey: Self.cacheSelectedKey),
            sessions.contains(where: { $0.id == id }) {
             selectedSessionID = id
+            // Restore the composer pick for the session we reopen on launch.
+            // Without this the selection is only in `modelsBySession` and the
+            // first render falls back to the server default until a switch.
+            let stored = modelsBySession[id].flatMap { $0.isEmpty ? nil : $0 }
+                ?? sessions.first(where: { $0.id == id })?.model?.modelID
+                ?? (AppSettings.defaultSessionModel.isEmpty ? nil : AppSettings.defaultSessionModel)
+            selectedModel = stored
+            selectedVariant = variantsBySession[id].flatMap { $0.isEmpty ? nil : $0 }
+            draft = draftsBySession[id] ?? ""
         }
         eventStream.onEvent = { [weak self] event in
             Task { @MainActor in self?.handle(event) }
@@ -422,6 +582,7 @@ final class SessionStore: ObservableObject {
                 guard let self else { return }
                 self.streamRejected = true
                 self.isReconnecting = false
+                self.reconnectGeneration &+= 1
                 self.retryTask?.cancel()
                 self.retryTask = nil
                 let code = status.map(String.init) ?? "?"
@@ -460,6 +621,7 @@ final class SessionStore: ObservableObject {
         // and tear down this freshly connected stream.
         retryTask?.cancel()
         retryTask = nil
+        reconnectGeneration &+= 1
         api = APIClient(baseURL: baseURL)
         reconnectAttempts = 0
         isReconnecting = false
@@ -494,6 +656,7 @@ final class SessionStore: ObservableObject {
         reconnectAttempts = 0
         retryTask?.cancel()
         retryTask = nil
+        reconnectGeneration &+= 1
         eventStream.connect(baseURL: api.baseURL)
     }
 
@@ -559,7 +722,6 @@ final class SessionStore: ObservableObject {
         draft = ""
         attachments = []
         queuedPrompts = []
-        draftsBySession = [:]
         queuesBySession = [:]
         attachmentsBySession = [:]
         sessionStatuses = [:]
@@ -567,12 +729,13 @@ final class SessionStore: ObservableObject {
         autoRetryCountBySession = [:]
         autoRetryTasksBySession.values.forEach { $0.cancel() }
         autoRetryTasksBySession = [:]
-        messagesCacheBySession = [:]
+        clearMessageCache()
         sessions = []
         messages = []
         isLoadingMessages = false
         pendingPermissions = []
         pendingQuestions = []
+        questionDrafts = [:]
         inlineErrorsBySession = [:]
         unreadSessionIDs = []
         todos = []
@@ -606,6 +769,17 @@ final class SessionStore: ObservableObject {
                 AppSettings.sessionVariants = variantsBySession
             }
             persistCache()
+            // A session that never had an explicit local pick follows the
+            // model the server remembered for it. Re-apply that after refresh
+            // so reopening the app does not silently fall back to the global
+            // default (the user reported this as "model not saved").
+            if let id = selectedSessionID,
+               modelsBySession[id] == nil,
+               let serverModel = sessions.first(where: { $0.id == id })?.model?.modelID,
+               !serverModel.isEmpty,
+               selectedModel != serverModel {
+                selectedModel = serverModel
+            }
             // Open on the most recent conversation instead of a dead input.
             if selectedSessionID == nil || !ids.contains(selectedSessionID ?? "") {
                 if sessions.isEmpty { selectedSessionID = nil }
@@ -614,7 +788,7 @@ final class SessionStore: ObservableObject {
             Task { await loadUsage() }
         } catch {
             guard case .status(404, _) = error as? APIError else {
-                errorMessage = error.localizedDescription
+                errorMessage = UserFacingError.message(error)
                 return
             }
         }
@@ -639,6 +813,30 @@ final class SessionStore: ObservableObject {
             UserDefaults.standard.set(data, forKey: Self.cacheSessionsKey)
         }
         UserDefaults.standard.set(selectedSessionID, forKey: Self.cacheSelectedKey)
+    }
+
+    /// Writes per-session draft text. Called on a short debounce while typing
+    /// and synchronously on quit/session switch, so a crash or Cmd+Q cannot
+    /// discard an in-progress message.
+    private func persistDrafts() {
+        draftPersistTask?.cancel()
+        draftPersistTask = nil
+        let nonEmpty = draftsBySession.filter { !$0.value.isEmpty }
+        AppSettings.sessionDrafts = nonEmpty
+    }
+
+    private func scheduleDraftPersist() {
+        draftPersistTask?.cancel()
+        draftPersistTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            guard !Task.isCancelled else { return }
+            self?.persistDrafts()
+        }
+    }
+
+    /// Flushes pending draft text before the process exits.
+    func flushDrafts() {
+        persistDrafts()
     }
 
     /// Server snapshots (refresh, SSE, PATCH responses) are authoritative for
@@ -674,7 +872,7 @@ final class SessionStore: ObservableObject {
                 sessions.insert(session, at: 0)
                 select(session.id)
             } catch {
-                errorMessage = error.localizedDescription
+                errorMessage = UserFacingError.message(error)
             }
         }
     }
@@ -693,13 +891,14 @@ final class SessionStore: ObservableObject {
             // select() restarts it when the session comes back.
             stopPolling(for: old)
             draftsBySession[old] = draft
+            persistDrafts()
             queuesBySession[old] = queuedPrompts
             attachmentsBySession[old] = attachments
             modelsBySession[old] = selectedModel ?? ""
             variantsBySession[old] = selectedVariant ?? ""
             workPanelTabBySession[old] = workPanelTab
             // 切走前保存当前会话的转写，供再次切回时秒显。
-            if !messages.isEmpty { messagesCacheBySession[old] = messages }
+            if !messages.isEmpty { cacheMessages(messages, for: old) }
         }
         unreadSessionIDs.remove(id)
         selectedSessionID = id
@@ -731,7 +930,9 @@ final class SessionStore: ObservableObject {
             return serverDefaultModel.isEmpty ? nil : serverDefaultModel
         }()
         let storedModel = modelsBySession[id].map { $0.isEmpty ? nil : $0 } ?? nil
-        let restoredModel = resolvedModel(storedModel) ?? resolvedModel(globalDefault)
+        let restoredModel = resolvedModel(storedModel)
+            ?? resolvedModel(sessions.first(where: { $0.id == id })?.model?.modelID)
+            ?? resolvedModel(globalDefault)
         selectedModel = restoredModel
         selectedVariant = restoredVariant
         Task { await loadMessages() }
@@ -755,6 +956,17 @@ final class SessionStore: ObservableObject {
         guard let candidate, !candidate.isEmpty else { return nil }
         guard !availableModels.isEmpty else { return candidate }
         if availableModels.contains(candidate) { return candidate }
+        // Some older saves prefixed the provider twice ("magpie/openrouter/…").
+        // Match the model-id suffix so a valid saved pick is not treated as
+        // stale and silently replaced by the global default.
+        if let suffixMatch = availableModels.first(where: { candidate.hasSuffix($0) }) {
+            return suffixMatch
+        }
+        let candidateSuffix = candidate.split(separator: "/", maxSplits: 1).last.map(String.init)
+        if let candidateSuffix,
+           let suffixMatch = availableModels.first(where: { $0.hasSuffix("/\(candidateSuffix)") }) {
+            return suffixMatch
+        }
         for fallback in [AppSettings.defaultSessionModel, serverDefaultModel] where !fallback.isEmpty {
             if availableModels.contains(fallback) { return fallback }
         }
@@ -820,7 +1032,90 @@ final class SessionStore: ObservableObject {
             guard id == selectedSessionID else { return }
             diffs = fetched
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = UserFacingError.message(error)
+        }
+    }
+
+    func loadVCS() async {
+        guard let api else { return }
+        do {
+            let status: [VcsStatus] = try await api.get("vcs/status", query: vcsQuery())
+            let diffs: [VcsDiff] = try await api.get("vcs/diff", query: vcsQuery(mode: "git"))
+            vcsStatus = status
+            vcsDiffs = diffs
+        } catch {
+            errorMessage = UserFacingError.message(error)
+        }
+    }
+
+    func applyVCSPatch(_ patch: String) async -> Bool {
+        guard let api else { return false }
+        do {
+            let response: VcsApplyResponse = try await api.post(
+                "vcs/apply",
+                query: vcsQuery(),
+                body: try VcsApplyRequest(patch: patch).jsonData()
+            )
+            guard response.applied else { return false }
+            await loadVCS()
+            await loadDiff()
+            return true
+        } catch {
+            errorMessage = UserFacingError.message(error)
+            return false
+        }
+    }
+
+    func loadChildSessions() async {
+        guard let api, let id = selectedSessionID else { return }
+        do {
+            let query = APIClient.locationQuery(directory: currentDirectory, workspace: nil)
+            let fetched: [Session] = try await api.get("session/\(id)/children", query: query)
+            guard selectedSessionID == id else { return }
+            childSessions = fetched
+        } catch {
+            childSessions = []
+            errorMessage = UserFacingError.message(error)
+        }
+    }
+
+    func summarizeSelectedSession() async {
+        guard let api, let id = selectedSessionID,
+              let model = selectedModel,
+              let slash = model.firstIndex(of: "/") else { return }
+        let providerID = String(model[model.startIndex..<slash])
+        let modelID = String(model[model.index(after: slash)...])
+        guard !providerID.isEmpty, !modelID.isEmpty else { return }
+        do {
+            let request = SessionSummarizeRequest(
+                providerID: providerID,
+                modelID: modelID,
+                auto: true
+            )
+            _ = try await api.post("session/\(id)/summarize", body: try request.jsonData()) as Bool
+            await loadMessages()
+        } catch {
+            errorMessage = UserFacingError.message(error)
+        }
+    }
+
+    func shareSelectedSession() async {
+        guard let api, let id = selectedSessionID else { return }
+        do {
+            let updated: Session = try await api.post("session/\(id)/share", body: nil)
+            upsert(updated)
+        } catch {
+            errorMessage = UserFacingError.message(error)
+        }
+    }
+
+    func unshareSelectedSession() async {
+        guard let api, let id = selectedSessionID else { return }
+        do {
+            let updated: Session = try await api.delete("session/\(id)/share")
+            upsert(updated)
+        } catch {
+            errorMessage = UserFacingError.message(error)
         }
     }
 
@@ -835,7 +1130,7 @@ final class SessionStore: ObservableObject {
             try await api.postNoContent("session/\(id)/compact")
             await loadMessages()
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = UserFacingError.message(error)
         }
     }
 
@@ -851,7 +1146,7 @@ final class SessionStore: ObservableObject {
             Task { await loadDiff() }
             Task { await loadTodos() }
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = UserFacingError.message(error)
         }
     }
 
@@ -862,12 +1157,12 @@ final class SessionStore: ObservableObject {
             await refresh()
             await loadMessages()
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = UserFacingError.message(error)
         }
     }
 
     /// Writes the session transcript as Markdown to the given file URL.
-    func export(_ session: Session, to url: URL) async throws {
+    func markdown(for session: Session) async throws -> String {
         guard let api else {
             throw NSError(
                 domain: "Export",
@@ -879,7 +1174,11 @@ final class SessionStore: ObservableObject {
             )
         }
         let messages: [MessageRecord] = try await api.get("session/\(session.id)/message")
-        let markdown = TranscriptExporter.markdown(session: session, messages: messages)
+        return TranscriptExporter.markdown(session: session, messages: messages)
+    }
+
+    func export(_ session: Session, to url: URL) async throws {
+        let markdown = try await markdown(for: session)
         try markdown.write(to: url, atomically: true, encoding: .utf8)
     }
 
@@ -888,30 +1187,52 @@ final class SessionStore: ObservableObject {
     /// Replies to a question request; one array of selected labels per question.
     func answer(_ request: UserQuestionRequest, answers: [[String]]) async {
         guard let api else { return }
-        pendingQuestions.removeAll { $0.id == request.id }
+        removePendingQuestion(request.id)
         do {
             let body = ["answers": answers]
             try await api.postNoContent("question/\(request.id)/reply", body: body.jsonData())
         } catch {
             if !pendingQuestions.contains(where: { $0.id == request.id }) {
-                pendingQuestions.append(request)
+                restorePendingQuestion(request)
             }
-            errorMessage = error.localizedDescription
+            errorMessage = UserFacingError.message(error)
         }
     }
 
     /// Skips a question request; the agent decides how to proceed.
     func rejectQuestion(_ request: UserQuestionRequest) async {
         guard let api else { return }
-        pendingQuestions.removeAll { $0.id == request.id }
+        removePendingQuestion(request.id)
         do {
             try await api.postNoContent("question/\(request.id)/reject")
         } catch {
             if !pendingQuestions.contains(where: { $0.id == request.id }) {
-                pendingQuestions.append(request)
+                restorePendingQuestion(request)
             }
-            errorMessage = error.localizedDescription
+            errorMessage = UserFacingError.message(error)
         }
+    }
+
+    /// Stale SSE replies can arrive after the user has answered a newer
+    /// request with the same question text. Keep a short-lived tombstone so
+    /// only the request the user actually answered stays dismissed.
+    private func removePendingQuestion(_ id: String) {
+        guard pendingQuestions.contains(where: { $0.id == id }) else { return }
+        dismissedQuestionIDs[id] = Date()
+        let cutoff = Date().addingTimeInterval(-Self.questionTombstoneTTL)
+        dismissedQuestionIDs = dismissedQuestionIDs.filter { $0.value > cutoff }
+        if dismissedQuestionIDs.count > Self.maxQuestionTombstones,
+           let oldest = dismissedQuestionIDs.min(by: { $0.value < $1.value })?.key {
+            dismissedQuestionIDs.removeValue(forKey: oldest)
+        }
+        pendingQuestions.removeAll { $0.id == id }
+        questionDrafts.removeValue(forKey: id)
+    }
+
+    private func restorePendingQuestion(_ request: UserQuestionRequest) {
+        if let dismissedAt = dismissedQuestionIDs[request.id],
+           Date().timeIntervalSince(dismissedAt) < Self.questionTombstoneTTL { return }
+        pendingQuestions.append(request)
     }
 
     // MARK: Project-level info
@@ -1007,16 +1328,16 @@ final class SessionStore: ObservableObject {
             let fetched: [MessageRecord] = try await api.get("session/\(id)/message")
             if !isVisible {
                 // 后台快照：只缓存，绝不触碰当前 UI 状态。
-                messagesCacheBySession[id] = fetched
+                cacheMessages(fetched, for: id)
                 return
             }
             // Another select may have happened while the request was in flight.
             guard id == selectedSessionID else {
-                messagesCacheBySession[id] = fetched
+                cacheMessages(fetched, for: id)
                 return
             }
             messages = fetched
-            messagesCacheBySession[id] = fetched
+            cacheMessages(fetched, for: id)
             clearInlineErrorIfTranscriptMovedPast(fetched, sessionID: id)
             // The snapshot supersedes every buffered delta: the server writes
             // state before emitting events, so anything still buffered is
@@ -1041,7 +1362,7 @@ final class SessionStore: ObservableObject {
                 applyDeletion(of: id)
                 return
             }
-            errorMessage = error.localizedDescription
+            errorMessage = UserFacingError.message(error)
         }
     }
 
@@ -1287,7 +1608,7 @@ final class SessionStore: ObservableObject {
                 } catch {
                     let kind = failureKind(for: error)
                     if kind != .aborted {
-                        recordSessionFailure(id, message: error.localizedDescription, kind: kind)
+                        recordSessionFailure(id, message: UserFacingError.message(error), kind: kind)
                     }
                     finishRun(id)
                     // The command never reached the server; surface it with
@@ -1307,7 +1628,7 @@ final class SessionStore: ObservableObject {
             } catch {
                 let kind = failureKind(for: error)
                 if kind != .aborted {
-                    recordSessionFailure(id, message: error.localizedDescription, kind: kind)
+                    recordSessionFailure(id, message: UserFacingError.message(error), kind: kind)
                 }
                 finishRun(id)
                 // The prompt never reached the server; keep it recoverable
@@ -1357,6 +1678,7 @@ final class SessionStore: ObservableObject {
 
     /// Remembers recently sent prompts for Option+↑/↓ recall.
     private func recordHistory(_ text: String) {
+        guard AppSettings.savePromptHistory else { return }
         var history = AppSettings.promptHistory
         history.removeAll { $0 == text }
         history.append(text)
@@ -1488,7 +1810,7 @@ final class SessionStore: ObservableObject {
             draft = text
             if draft != oldDraft { draftToken = UUID() }
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = UserFacingError.message(error)
         }
     }
 
@@ -1513,7 +1835,7 @@ final class SessionStore: ObservableObject {
             upsert(newSession)
             select(newSession.id)
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = UserFacingError.message(error)
         }
     }
 
@@ -1543,7 +1865,7 @@ final class SessionStore: ObservableObject {
             }
             reconcileClientTitles()
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = UserFacingError.message(error)
         }
     }
 
@@ -1555,7 +1877,7 @@ final class SessionStore: ObservableObject {
             let updated: Session = try await api.patch("session/\(session.id)", body: try body.jsonData())
             upsert(updated)
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = UserFacingError.message(error)
         }
     }
 
@@ -1565,7 +1887,7 @@ final class SessionStore: ObservableObject {
             try await api.delete("session/\(session.id)")
             applyDeletion(of: session.id)
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = UserFacingError.message(error)
         }
     }
 
@@ -1588,7 +1910,7 @@ final class SessionStore: ObservableObject {
             )
             upsert(updated)
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = UserFacingError.message(error)
         }
     }
 
@@ -1619,15 +1941,33 @@ final class SessionStore: ObservableObject {
         }
     }
 
+    /// Selects the newest unread session, cycling through them on repeat.
+    /// Returns false when nothing is unread so menus can stay disabled.
+    @discardableResult
+    func selectNextUnreadSession() -> Bool {
+        let unread = sessions
+            .filter { unreadSessionIDs.contains($0.id) && !$0.isArchived && !$0.isSubagent }
+            .sorted { ($0.updatedAt ?? .distantPast) > ($1.updatedAt ?? .distantPast) }
+        guard !unread.isEmpty else { return false }
+        let next = unread.first(where: { $0.id != selectedSessionID }) ?? unread.first
+        if let next { select(next.id) }
+        return true
+    }
+
     private func applyDeletion(of id: String) {
         sessions.removeAll { $0.id == id }
         workPanelOpenBySession.removeValue(forKey: id)
         workPanelTabBySession.removeValue(forKey: id)
         pendingPermissions.removeAll { $0.sessionID == id }
+        for request in pendingQuestions where request.sessionID == id {
+            questionDrafts.removeValue(forKey: request.id)
+        }
         pendingQuestions.removeAll { $0.sessionID == id }
         draftsBySession.removeValue(forKey: id)
+        persistDrafts()
         queuesBySession.removeValue(forKey: id)
         attachmentsBySession.removeValue(forKey: id)
+        messageCacheCharacters -= cachedMessageCharacters(for: id)
         messagesCacheBySession.removeValue(forKey: id)
         lastSentPromptBySession.removeValue(forKey: id)
         sessionStatuses.removeValue(forKey: id)
@@ -1675,8 +2015,19 @@ final class SessionStore: ObservableObject {
         // timer wakes on a 2s delay, and finishRun clears the flag below, so
         // without this the retry would resend the prompt after Stop.
         autoRetryTasksBySession.removeValue(forKey: id)?.cancel()
+        abortGenerationBySession[id, default: 0] &+= 1
         abortingSessionIDs.insert(id)
         retryInfoBySession.removeValue(forKey: id)
+        // Stop means stop everything for this turn, including questions that
+        // are waiting for an answer and permissions that are still queued.
+        for request in pendingQuestions where request.sessionID == id {
+            questionDrafts.removeValue(forKey: request.id)
+        }
+        pendingQuestions.removeAll { $0.sessionID == id }
+        for request in pendingPermissions where request.sessionID == id {
+            notifiedPermissionIDs.remove(request.id)
+        }
+        pendingPermissions.removeAll { $0.sessionID == id }
         if clearQueue {
             setQueue([], for: id)
         }
@@ -1689,7 +2040,7 @@ final class SessionStore: ObservableObject {
         } catch {
             let kind = failureKind(for: error)
             if kind != .aborted {
-                recordSessionFailure(id, message: error.localizedDescription, kind: kind)
+                recordSessionFailure(id, message: UserFacingError.message(error), kind: kind)
             }
         }
         finishRun(id)
@@ -1702,6 +2053,7 @@ final class SessionStore: ObservableObject {
 
     func reply(to request: PermissionRequest, reply: String) {
         pendingPermissions.removeAll { $0.id == request.id }
+        questionDrafts.removeValue(forKey: request.id)
         notifiedPermissionIDs.remove(request.id)
         guard let api else {
             errorMessage = NSLocalizedString("Not connected yet — wait for the server to start.", comment: "")
@@ -1721,7 +2073,7 @@ final class SessionStore: ObservableObject {
                 if !pendingPermissions.contains(where: { $0.id == request.id }) {
                     pendingPermissions.append(request)
                 }
-                errorMessage = error.localizedDescription
+                errorMessage = UserFacingError.message(error)
             }
         }
     }
@@ -1811,6 +2163,7 @@ final class SessionStore: ObservableObject {
     private func finishRun(_ sessionID: String) {
         activeSessionIDs.remove(sessionID)
         abortingSessionIDs.remove(sessionID)
+        abortGenerationBySession[sessionID, default: 0] &+= 1
         retryInfoBySession.removeValue(forKey: sessionID)
         autoRetryTasksBySession.removeValue(forKey: sessionID)?.cancel()
         stopPolling(for: sessionID)
@@ -1872,6 +2225,7 @@ final class SessionStore: ObservableObject {
         retryInfoBySession[sessionID] = NSLocalizedString(
             "Network error — retrying…", comment: ""
         )
+        let abortGeneration = abortGenerationBySession[sessionID] ?? 0
         autoRetryTasksBySession.removeValue(forKey: sessionID)?.cancel()
         let task = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 2_000_000_000)
@@ -1879,10 +2233,12 @@ final class SessionStore: ObservableObject {
             self.autoRetryTasksBySession.removeValue(forKey: sessionID)
             self.retryInfoBySession.removeValue(forKey: sessionID)
             // Stop may have landed while the timer was waking up.
-            guard !self.abortingSessionIDs.contains(sessionID) else { return }
+            guard !self.abortingSessionIDs.contains(sessionID),
+                  self.abortGenerationBySession[sessionID] == abortGeneration else { return }
             guard let prompt = self.lastSentPromptBySession[sessionID],
                   self.performSend(prompt, sessionID: sessionID, isAutoRetry: true) else {
-                if !self.abortingSessionIDs.contains(sessionID) {
+                if !self.abortingSessionIDs.contains(sessionID),
+                   self.abortGenerationBySession[sessionID] == abortGeneration {
                     self.recordSessionFailure(sessionID, message: message, kind: kind)
                 }
                 return
@@ -1893,7 +2249,10 @@ final class SessionStore: ObservableObject {
 
     private func scheduleReconnect() {
         guard api != nil else { return }
+        guard !streamRejected else { return }
         isReconnecting = true
+        reconnectGeneration &+= 1
+        let generation = reconnectGeneration
         reconnectAttempts += 1
         // Exponential backoff: 1s, 2s, 4s, 8s, capped at 16s.
         let delay = min(pow(2.0, Double(min(reconnectAttempts - 1, 4))), 16.0)
@@ -1901,7 +2260,10 @@ final class SessionStore: ObservableObject {
         retryTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             guard let self, !Task.isCancelled, let api = self.api else { return }
+            guard self.reconnectGeneration == generation else { return }
             self.eventStream.connect(baseURL: api.baseURL)
+            self.isReconnecting = false
+            self.retryTask = nil
         }
     }
 
@@ -1909,6 +2271,7 @@ final class SessionStore: ObservableObject {
     /// app is in the background, leaving `isReconnecting` stuck forever.
     private func recheckConnectionIfNeeded() {
         guard let api else { return }
+        reconnectGeneration &+= 1
         // A socket can be closed by the OS while the app sleeps without our
         // `onDisconnect` firing; re-open it instead of silently showing stale
         // transcripts forever.
@@ -1916,7 +2279,10 @@ final class SessionStore: ObservableObject {
         // would just reproduce the same rejection every time the app activates.
         if !eventStream.isConnected && !streamRejected {
             reconnectAttempts = 0
+            retryTask?.cancel()
+            retryTask = nil
             eventStream.connect(baseURL: api.baseURL)
+            isReconnecting = false
         }
         // The final usage lands just after the last delta; if we slept through
         // it, the tail keeps its "streaming" look until the next snapshot.
@@ -1935,6 +2301,7 @@ final class SessionStore: ObservableObject {
         case "server.connected":
             // A scheduled reconnect must not fire after the stream is healthy
             // again; it would disconnect the live socket.
+            reconnectGeneration &+= 1
             retryTask?.cancel()
             retryTask = nil
             reconnectAttempts = 0
@@ -2100,6 +2467,9 @@ final class SessionStore: ObservableObject {
         case "question.asked", "question.v2.asked":
             guard let properties = event.properties,
                   let request: UserQuestionRequest = decode(properties) else { return }
+            if let dismissedAt = dismissedQuestionIDs[request.id],
+               Date().timeIntervalSince(dismissedAt) < Self.questionTombstoneTTL { return }
+            dismissedQuestionIDs.removeValue(forKey: request.id)
             if !pendingQuestions.contains(where: { $0.id == request.id }) {
                 pendingQuestions.append(request)
             }
@@ -2189,6 +2559,7 @@ final class SessionStore: ObservableObject {
             NSSound(named: "Glass")?.play()
         }
         guard AppSettings.notifyOnComplete, !appIsActive else { return }
+        if AppSettings.notifyOnlyWhenBackground, !isBackgroundSession { return }
         let title = sessions.first { $0.id == sessionID }?.displayTitle
             ?? NSLocalizedString("Session", comment: "")
         let content = UNMutableNotificationContent()
@@ -2218,12 +2589,18 @@ final class SessionStore: ObservableObject {
     /// the background, nudge with a notification (generation is blocked).
     /// Each request nudges at most once, even while others are still pending.
     private var notifiedPermissionIDs: Set<String> = []
+    private static let maxNotifiedPermissionIDs = 128
 
     private func schedulePermissionNotification() {
         guard AppSettings.notifyOnComplete else { return }
         guard let request = pendingPermissions.last,
               !notifiedPermissionIDs.contains(request.id) else { return }
         notifiedPermissionIDs.insert(request.id)
+        if notifiedPermissionIDs.count > Self.maxNotifiedPermissionIDs {
+            if let oldest = notifiedPermissionIDs.first {
+                notifiedPermissionIDs.remove(oldest)
+            }
+        }
         let tool = request.title
         let permissionSessionID = request.sessionID
         Task {
@@ -2336,6 +2713,9 @@ final class SessionStore: ObservableObject {
         guard sessionID == selectedSessionID else { return }
         lastStreamActivity = Date()
         pendingDeltas[partID, default: ""] += delta
+        if let buffered = pendingDeltas[partID], buffered.utf8.count > Self.maxPendingDeltaBytesPerPart {
+            pendingDeltas[partID] = String(buffered.suffix(Self.maxPendingDeltaBytesPerPart))
+        }
         // A fresh delta means the part may have just been created; retry from
         // a clean slate instead of inheriting the previous budget. Once the
         // deltas stop, the cap below still retires a part that never appears.
@@ -2417,6 +2797,37 @@ final class SessionStore: ObservableObject {
             enqueue(QueuedPrompt(prompt: prompt), for: id)
             return
         }
+        if !performSend(prompt, sessionID: id) {
+            enqueue(QueuedPrompt(prompt: prompt), for: id)
+        }
+    }
+
+    /// Rolls back the latest turn and re-sends the same prompt, keeping the
+    /// model/variant and attachments that produced it. Used by the transcript's
+    /// "Regenerate" action.
+    func regenerateLastResponse() async {
+        guard let id = selectedSessionID,
+              let user = messages.last(where: { $0.info.role == "user" }) else { return }
+        let prompt = lastSentPromptBySession[id] ?? PromptSnapshot(
+            text: user.parts
+                .filter { $0.type == "text" }
+                .compactMap(\.text)
+                .joined(separator: "\n"),
+            model: selectedModel,
+            variant: selectedVariant,
+            attachments: user.parts.compactMap { part in
+                guard part.type == "file", let url = part.url else { return nil }
+                return PendingAttachment(
+                    mime: part.mime ?? "application/octet-stream",
+                    filename: part.filename,
+                    url: url,
+                    thumbnail: nil
+                )
+            }
+        )
+        await revert(to: user)
+        guard selectedSessionID == id else { return }
+        inlineErrorsBySession.removeValue(forKey: id)
         if !performSend(prompt, sessionID: id) {
             enqueue(QueuedPrompt(prompt: prompt), for: id)
         }

@@ -4,12 +4,16 @@ import XCTest
 @MainActor
 final class ContinuityFixTests: XCTestCase {
     private var savedHistory: [String] = []
+    private var savedSaveHistory = true
+    private var savedDrafts: [String: String] = [:]
     private var savedTitles: [String: String] = [:]
     private var savedManual: [String] = []
 
     override func setUp() {
         super.setUp()
         savedHistory = AppSettings.promptHistory
+        savedSaveHistory = AppSettings.savePromptHistory
+        savedDrafts = AppSettings.sessionDrafts
         savedTitles = AppSettings.clientAutoTitles
         savedManual = AppSettings.manuallyRenamedSessionIDs
         AppSettings.clientAutoTitles = [:]
@@ -18,6 +22,8 @@ final class ContinuityFixTests: XCTestCase {
 
     override func tearDown() {
         AppSettings.promptHistory = savedHistory
+        AppSettings.savePromptHistory = savedSaveHistory
+        AppSettings.sessionDrafts = savedDrafts
         AppSettings.clientAutoTitles = savedTitles
         AppSettings.manuallyRenamedSessionIDs = savedManual
         super.tearDown()
@@ -105,5 +111,28 @@ final class ContinuityFixTests: XCTestCase {
         store.send()
         XCTAssertEqual(store.draft, "  ")
         XCTAssertEqual(store.draftToken, oldToken)
+    }
+
+    func testPromptHistoryCanBeDisabled() {
+        AppSettings.savePromptHistory = false
+        let before = AppSettings.promptHistory
+        let store = SessionStore()
+        store.connect(baseURL: URL(string: "http://127.0.0.1:4199")!)
+        store.selectedSessionID = "ses_no_history"
+        store.draft = "do not remember"
+        store.send()
+        XCTAssertEqual(AppSettings.promptHistory, before)
+    }
+
+    func testDraftsPersistAcrossStoreRecreation() {
+        AppSettings.sessionDrafts = ["ses_draft": "unsent text"]
+        let store = SessionStore()
+        store.sessions = [Session(id: "ses_draft", title: "Draft", directory: nil, time: nil, revert: nil)]
+        store.select("ses_draft")
+        XCTAssertEqual(store.draft, "unsent text")
+
+        store.draft = "edited draft"
+        store.flushDrafts()
+        XCTAssertEqual(AppSettings.sessionDrafts["ses_draft"], "edited draft")
     }
 }

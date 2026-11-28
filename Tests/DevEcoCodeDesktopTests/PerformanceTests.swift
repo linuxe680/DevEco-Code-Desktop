@@ -28,6 +28,19 @@ final class PerformanceTests: XCTestCase {
         XCTAssertTrue(markdownProseBlocksCacheToken(for: prose) === markdownProseBlocksCacheToken(for: prose))
     }
 
+    func testHugeStreamingMarkdownIsNotCached() {
+        let huge = String(repeating: "streaming prefix ", count: 2_000)
+        XCTAssertNil(markdownSegmentsCacheToken(for: huge))
+        XCTAssertFalse(parseMarkdownSegments(huge).isEmpty)
+    }
+
+    func testPendingDeltaBufferIsBounded() {
+        let store = SessionStore()
+        store.selectedSessionID = "ses_delta_cap"
+        store.appendForTesting(String(repeating: "x", count: 200_000), partID: "prt_huge")
+        XCTAssertLessThanOrEqual(store.pendingDeltaBytesForTesting(partID: "prt_huge"), 64 * 1024)
+    }
+
     func testDeltaPipelinePerformance() {
         let store = SessionStore()
         let partID = "prt_bench"

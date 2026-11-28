@@ -11,6 +11,13 @@ struct SessionListView: View {
     @State private var deletionCandidate: Session?
     @State private var hoveredSessionID: String?
 
+    @AppStorage(AppSettings.Keys.sessionSort)
+    private var sessionSortRaw = SessionSortOrder.recent.rawValue
+
+    private var sessionSort: SessionSortOrder {
+        SessionSortOrder(rawValue: sessionSortRaw) ?? .recent
+    }
+
     private var activeSessions: [Session] {
         // Harness subagent sessions (memory extraction, task children) are
         // internal work; they never belong in the user's session list.
@@ -23,7 +30,8 @@ struct SessionListView: View {
 
     private var projectGroups: [SessionProjectGroup] {
         SessionProjectGroup.groups(
-            activeSessions.filter { !store.pinnedSessionIDs.contains($0.id) }
+            activeSessions.filter { !store.pinnedSessionIDs.contains($0.id) },
+            sort: sessionSort
         )
     }
 
@@ -59,6 +67,30 @@ struct SessionListView: View {
                 Text(NSLocalizedString("Chats", comment: ""))
                     .font(.system(size: 16, weight: .semibold))
                 Spacer()
+                Menu {
+                    ForEach(SessionSortOrder.allCases) { order in
+                        Button {
+                            sessionSortRaw = order.rawValue
+                        } label: {
+                            if sessionSort == order {
+                                Label(order.label, systemImage: "checkmark")
+                            } else {
+                                Text(order.label)
+                            }
+                        }
+                    }
+                } label: {
+                    Image(systemName: "arrow.up.arrow.down")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 28, height: 28)
+                        .contentShape(RoundedRectangle(cornerRadius: 7))
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .accessibilityLabel(Text(NSLocalizedString("Sort sessions", comment: "session sort")))
+                .iconTooltip(NSLocalizedString("Sort sessions", comment: "session sort"))
                 Button { store.createSession() } label: {
                     Image(systemName: "square.and.pencil")
                         .font(.system(size: 14, weight: .medium))
@@ -68,8 +100,8 @@ struct SessionListView: View {
                         .contentShape(RoundedRectangle(cornerRadius: 7))
                 }
                 .buttonStyle(.plain)
-                .keyboardShortcut("n", modifiers: .command)
-                .help(NSLocalizedString("New session (⌘N)", comment: ""))
+                .accessibilityLabel(Text(NSLocalizedString("New session (⌘N)", comment: "")))
+                .iconTooltip(NSLocalizedString("New session (⌘N)", comment: ""))
             }
             .padding(.horizontal, 14)
             .padding(.top, 2)
@@ -89,6 +121,8 @@ struct SessionListView: View {
                             .foregroundStyle(.tertiary)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(Text(NSLocalizedString("Clear search", comment: "")))
+                    .iconTooltip(NSLocalizedString("Clear search", comment: ""))
                 }
             }
             .padding(.horizontal, 9)
@@ -190,13 +224,13 @@ struct SessionListView: View {
                         let results = store.sessions
                             .filter { !$0.isSubagent }
                             .filter(matches)
-                            .sorted(by: byUpdatedDescending)
+                            .sorted(by: sessionSort.areInIncreasingOrder)
                         Section {
                             ForEach(results) { session in
                                 row(for: session)
                             }
                             if results.isEmpty {
-                                Text("No sessions match “\(query)”")
+                                Text(String(format: NSLocalizedString("No sessions match “%@”", comment: ""), query))
                                     .font(.system(size: 12))
                                     .foregroundStyle(.tertiary)
                                     .padding(.horizontal, 10)
@@ -227,7 +261,7 @@ struct SessionListView: View {
             Text(group.name)
                 .lineLimit(1)
             if !group.path.isEmpty {
-                Text("• \(group.sessions.count)")
+                Text(String(format: NSLocalizedString("• %lld", comment: "session count"), group.sessions.count))
                     .foregroundStyle(.quaternary)
             }
             Spacer()
@@ -351,23 +385,23 @@ struct SessionListView: View {
     private func exportPanel(for session: Session) {
         let panel = NSSavePanel()
         panel.nameFieldStringValue = session.displayTitle.replacingOccurrences(of: "/", with: "-") + ".md"
-        panel.allowedContentTypes = [.plainText]
+        panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
+        panel.isExtensionHidden = false
         panel.canCreateDirectories = true
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        let destination = url.pathExtension.lowercased() == "md"
+            ? url
+            : url.deletingPathExtension().appendingPathExtension("md")
         Task {
             do {
-                try await store.export(session, to: url)
+                try await store.export(session, to: destination)
             } catch {
                 store.errorMessage = String(
                     format: NSLocalizedString("Export failed: %@", comment: ""),
-                    error.localizedDescription
+                    UserFacingError.message(error)
                 )
             }
         }
-    }
-
-    private func byUpdatedDescending(_ a: Session, _ b: Session) -> Bool {
-        (a.updatedAt ?? .distantPast) > (b.updatedAt ?? .distantPast)
     }
 }
 
@@ -492,7 +526,7 @@ struct SessionProjectGroup: Identifiable {
     let path: String
     var sessions: [Session]
 
-    static func groups(_ sessions: [Session]) -> [SessionProjectGroup] {
+    static func groups(_ sessions: [Session], sort: SessionSortOrder = .recent) -> [SessionProjectGroup] {
         var groups: [String: SessionProjectGroup] = [:]
         for session in sessions {
             let path = session.directory ?? ""
@@ -506,14 +540,19 @@ struct SessionProjectGroup: Identifiable {
         return groups.values
             .map { group in
                 var copy = group
-                copy.sessions.sort { ($0.updatedAt ?? .distantPast) > ($1.updatedAt ?? .distantPast) }
+                copy.sessions.sort(by: sort.areInIncreasingOrder)
                 return copy
             }
             .sorted { lhs, rhs in
-                let lhsUpdated = lhs.sessions.first?.updatedAt ?? .distantPast
-                let rhsUpdated = rhs.sessions.first?.updatedAt ?? .distantPast
-                if lhsUpdated == rhsUpdated { return lhs.name < rhs.name }
-                return lhsUpdated > rhsUpdated
+                switch sort {
+                case .recent:
+                    let lhsUpdated = lhs.sessions.first?.updatedAt ?? .distantPast
+                    let rhsUpdated = rhs.sessions.first?.updatedAt ?? .distantPast
+                    if lhsUpdated == rhsUpdated { return lhs.name < rhs.name }
+                    return lhsUpdated > rhsUpdated
+                case .title:
+                    return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+                }
             }
     }
 }

@@ -78,4 +78,15 @@ enum StreamRenderText {
         guard !text.isEmpty else { return Split(stablePrefix: "", liveTail: "") }
         return Split(stablePrefix: text.hasSuffix("\n") ? text : text + "\n", liveTail: "")
     }
+
+    /// Whether a transcript row is the live tail that should type itself out.
+    /// `isSending` flips true the moment the user submits, before the server
+    /// has appended the new user message, so checking "last row" alone made
+    /// the previous finished reply replay its whole typewriter pass.
+    static func shouldTypewrite(_ message: MessageRecord, isSending: Bool, isLast: Bool) -> Bool {
+        isSending
+            && isLast
+            && message.info.role == "assistant"
+            && message.info.time?.completed == nil
+    }
 }

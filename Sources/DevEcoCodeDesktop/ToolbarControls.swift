@@ -1,5 +1,44 @@
 import SwiftUI
 
+struct IconTooltip: ViewModifier {
+    let text: String
+    @State private var isHovered = false
+
+    func body(content: Content) -> some View {
+        content
+            .onHover { inside in
+                withAnimation(.easeOut(duration: 0.1)) {
+                    isHovered = inside
+                }
+            }
+            .overlay(alignment: .bottom) {
+                if isHovered {
+                    Text(text)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.primary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .stroke(Theme.hairline, lineWidth: 1)
+                        )
+                        .shadow(radius: 2, y: 1)
+                        .fixedSize()
+                        .offset(y: 24)
+                        .zIndex(100)
+                        .allowsHitTesting(false)
+                }
+            }
+    }
+}
+
+extension View {
+    func iconTooltip(_ text: String) -> some View {
+        modifier(IconTooltip(text: text))
+    }
+}
+
 /// Top-level destinations. Named `AppSection` so it never collides with
 /// SwiftUI's `Section` inside list builders.
 enum AppSection: String, CaseIterable, Identifiable {
@@ -9,8 +48,8 @@ enum AppSection: String, CaseIterable, Identifiable {
 
     var navigationLabel: String {
         switch self {
-        case .sessions: return NSLocalizedString("Chat", comment: "")
-        case .providers: return NSLocalizedString("Models", comment: "")
+        case .sessions: return NSLocalizedString("Chats", comment: "")
+        case .providers: return NSLocalizedString("Models & Providers", comment: "")
         }
     }
 
@@ -46,7 +85,8 @@ struct SectionSwitcher: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help(item.navigationLabel)
+                .accessibilityLabel(Text(item.navigationLabel))
+                .iconTooltip(item.navigationLabel)
             }
         }
         .padding(2)
@@ -83,8 +123,8 @@ struct ServerStatusDot: View {
             .fill(color)
             .frame(width: 7, height: 7)
             .padding(.horizontal, 3)
-            .help(text)
             .accessibilityLabel(Text(text))
+            .iconTooltip(text)
     }
 }
 
@@ -95,6 +135,13 @@ struct AppChromeControls: View {
 
     var body: some View {
         HStack(spacing: 2) {
+            toolbarButton(
+                "sidebar.left",
+                help: NSLocalizedString("Toggle Sidebar (⌘B)", comment: "")
+            ) {
+                NotificationCenter.default.post(name: .toggleSidebar, object: nil)
+            }
+
             Menu {
                 Button(NSLocalizedString("Choose Folder…", comment: "")) { server.chooseFolder() }
                 if !server.recentProjects.isEmpty {
@@ -115,7 +162,8 @@ struct AppChromeControls: View {
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
-            .help(NSLocalizedString("Project", comment: ""))
+            .accessibilityLabel(Text(NSLocalizedString("Project", comment: "")))
+            .iconTooltip(NSLocalizedString("Project", comment: ""))
 
             toolbarButton(
                 server.state == .running ? "stop.circle" : "play.circle",
@@ -155,8 +203,8 @@ func toolbarButton(
             .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
     .buttonStyle(.plain)
-    .help(help)
     .accessibilityLabel(Text(help))
+    .iconTooltip(help)
 }
 
 /// Transcript actions (text size, search, review, compact) rendered in the
@@ -164,11 +212,13 @@ func toolbarButton(
 struct TranscriptToolbarActions: View {
     @Binding var showSearch: Bool
     @Binding var workPanelOpen: Bool
+    let openWorkPanelTab: (WorkPanelTab) -> Void
 
     @EnvironmentObject private var store: SessionStore
 
     @AppStorage(AppSettings.Keys.chatFontSize)
     private var chatFontSize = 15.0
+    @State private var copiedTranscript = false
 
     private func adjustChatFont(by delta: Double) {
         chatFontSize = min(
@@ -231,11 +281,20 @@ struct TranscriptToolbarActions: View {
                     } label: {
                         Label(NSLocalizedString("Search in conversation (⌘F)", comment: ""), systemImage: "magnifyingglass")
                     }
-                    .keyboardShortcut("f", modifiers: .command)
                     Button {
                         openReviewPanel()
                     } label: {
                         Label(NSLocalizedString("Review file changes", comment: ""), systemImage: "rectangle.split.2x1")
+                    }
+                    Button {
+                        Task { await copyTranscript() }
+                    } label: {
+                        Label(
+                            copiedTranscript
+                                ? NSLocalizedString("Copied transcript", comment: "")
+                                : NSLocalizedString("Copy transcript as Markdown", comment: ""),
+                            systemImage: copiedTranscript ? "checkmark.circle.fill" : "doc.on.doc"
+                        )
                     }
                     Button {
                         Task { await store.compact() }
@@ -248,6 +307,40 @@ struct TranscriptToolbarActions: View {
                         )
                     }
                     .disabled(store.isCompacting || store.isSending)
+                    Button {
+                        Task { await store.summarizeSelectedSession() }
+                    } label: {
+                        Label(NSLocalizedString("Summarize conversation", comment: ""), systemImage: "text.badge.checkmark")
+                    }
+                    .disabled(store.selectedModel == nil || store.isSending)
+                    if store.selectedSession?.share?.url == nil {
+                        Button {
+                            Task { await store.shareSelectedSession() }
+                        } label: {
+                            Label(NSLocalizedString("Share session", comment: ""), systemImage: "square.and.arrow.up")
+                        }
+                    } else {
+                        Button {
+                            Task { await store.unshareSelectedSession() }
+                        } label: {
+                            Label(NSLocalizedString("Stop sharing", comment: ""), systemImage: "square.and.arrow.up")
+                        }
+                    }
+                    Button {
+                        openWorkPanel(.vcs)
+                    } label: {
+                        Label(NSLocalizedString("Working tree changes", comment: ""), systemImage: "source.control")
+                    }
+                    Button {
+                        openWorkPanel(.files)
+                    } label: {
+                        Label(NSLocalizedString("Browse project files", comment: ""), systemImage: "folder")
+                    }
+                    Button {
+                        openWorkPanel(.children)
+                    } label: {
+                        Label(NSLocalizedString("Child sessions", comment: ""), systemImage: "square.on.square")
+                    }
                 }
                 Section {
                     Button {
@@ -291,11 +384,28 @@ struct TranscriptToolbarActions: View {
     }
 
     private func openReviewPanel() {
-        workPanelOpen = true
-        store.setWorkPanelTab(.review)
-        if let id = store.selectedSessionID {
-            store.workPanelOpenBySession[id] = true
-        }
+        openWorkPanel(.review)
         Task { await store.loadDiff() }
+    }
+
+    private func openWorkPanel(_ tab: WorkPanelTab) {
+        openWorkPanelTab(tab)
+    }
+
+    private func copyTranscript() async {
+        guard let session = store.selectedSession else { return }
+        do {
+            let markdown = try await store.markdown(for: session)
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(markdown, forType: .string)
+            copiedTranscript = true
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            copiedTranscript = false
+        } catch {
+            store.errorMessage = String(
+                format: NSLocalizedString("Export failed: %@", comment: ""),
+                UserFacingError.message(error)
+            )
+        }
     }
 }

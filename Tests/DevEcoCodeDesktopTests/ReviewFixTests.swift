@@ -190,6 +190,93 @@ final class ReviewFixTests: XCTestCase {
         try JSONDecoder.deveco.decode(DevEvent.self, from: Data(json.utf8))
     }
 
+    func testServerConnectedClearsReconnectState() throws {
+        let store = SessionStore()
+        store.eventStream.disconnect()
+        store.connect(baseURL: URL(string: "http://127.0.0.1:4096")!)
+        store.disconnect()
+        store.eventStream.onDisconnect?()
+        XCTAssertFalse(store.isReconnecting, "disconnect clears retry state; a later connected event must be harmless")
+
+        store.handle(try Self.event(#"{"type":"server.connected","properties":{}}"#))
+        XCTAssertFalse(store.isReconnecting)
+        XCTAssertEqual(store.reconnectAttemptCount, 0)
+    }
+
+    func testFatalResponseBlocksReconnect() throws {
+        let store = SessionStore()
+        store.connect(baseURL: URL(string: "http://127.0.0.1:4096")!)
+        store.eventStream.rejectResponse(statusCode: 401, contentType: "application/json")
+        let exp = expectation(description: "fatal response processed")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { exp.fulfill() }
+        wait(for: [exp], timeout: 1)
+        store.eventStream.onDisconnect?()
+        let exp2 = expectation(description: "reconnect decision processed")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { exp2.fulfill() }
+        wait(for: [exp2], timeout: 1)
+        XCTAssertFalse(store.isReconnecting, "a rejected stream must not reconnect automatically")
+    }
+
+    func testAbortInvalidatesScheduledRetry() {
+        let store = SessionStore()
+        store.finishRunForTesting("s1")
+        let oldGeneration = store.testAbortGeneration(for: "s1") - 1
+        XCTAssertFalse(
+            store.testAutoRetrySurvives(sessionID: "s1", generation: oldGeneration),
+            "a retry scheduled before Stop must not survive the abort generation bump"
+        )
+    }
+
+    // MARK: - User-facing error text
+
+    func testSanitizeKeepsStructuredServerErrors() {
+        let structured = [
+            "Server returned 500: database connection refused by provider",
+            "Server error: model connection not found",
+            "deveco serve exited. Error: network interface changed",
+        ]
+        for text in structured {
+            XCTAssertEqual(UserFacingError.sanitize(text), text, "must not hide the real diagnosis")
+        }
+    }
+
+    func testSanitizeStillReplacesBareTransportAndCocoaErrors() {
+        XCTAssertEqual(
+            UserFacingError.sanitize("Could not connect to the server."),
+            "Could not reach the deveco server. Check the connection and retry."
+        )
+        XCTAssertTrue(UserFacingError.isBareTransportError("The internet connection appears to be offline."))
+        XCTAssertFalse(UserFacingError.isBareTransportError("Server returned 500: connection refused"))
+        XCTAssertEqual(
+            UserFacingError.sanitize("未能读取数据，因为它的格式不正确。"),
+            "Stored data could not be read. The app will rebuild it automatically."
+        )
+    }
+
+    // MARK: - Prompt history index safety
+
+    func testHistoryDownIndexHandlesEmptyAndShrunkHistory() {
+        XCTAssertNil(ChatView.historyDownIndex(current: 1, historyCount: 0))
+        XCTAssertNil(ChatView.historyDownIndex(current: 0, historyCount: 3))
+        XCTAssertEqual(ChatView.historyDownIndex(current: 1, historyCount: 3), 2)
+        XCTAssertEqual(ChatView.historyDownIndex(current: 3, historyCount: 3), 0)
+        // Stale current beyond a truncated history clamps instead of trapping.
+        XCTAssertEqual(ChatView.historyDownIndex(current: 99, historyCount: 3), 0)
+    }
+
+    // MARK: - Fatal SSE response teardown
+
+    func testRejectResponseDisarmsStalledWatchdog() {
+        let stream = EventStream()
+        let url = URL(string: "http://127.0.0.1:4096/event")!
+        stream.connect(baseURL: url)
+        XCTAssertTrue(stream.isStalledCheckActive)
+
+        stream.rejectResponse(statusCode: 401, contentType: "application/json")
+        XCTAssertFalse(stream.isStalledCheckActive)
+        XCTAssertFalse(stream.isConnected)
+    }
+
     // MARK: - Provider deletion fallback
 
     func testDefaultModelFallsBackWhenItsProviderIsDeleted() {

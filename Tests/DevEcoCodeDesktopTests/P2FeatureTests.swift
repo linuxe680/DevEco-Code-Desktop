@@ -115,6 +115,15 @@ final class P2FeatureTests: XCTestCase {
         XCTAssertEqual(store.resolvedModel("prov/B"), "prov/B")
     }
 
+    func testResolvedModelRepairsDoublePrefixedSavedPick() {
+        let store = SessionStore()
+        store.availableModels = ["openrouter/openrouter/free", "workbuddy/hy4flash-free"]
+        XCTAssertEqual(
+            store.resolvedModel("magpie/openrouter/openrouter/free"),
+            "openrouter/openrouter/free"
+        )
+    }
+
     func testResolvedModelFallsBackWhenProviderRemoved() {
         let store = SessionStore()
         store.serverDefaultModel = "prov/live"

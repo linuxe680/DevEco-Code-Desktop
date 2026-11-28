@@ -21,6 +21,18 @@ final class ModelTests: XCTestCase {
         XCTAssertEqual(SessionAccessMode.current(for: []), .ask)
     }
 
+    func testCachedSessionKeepsPermissionAndModel() throws {
+        let json = """
+        {"id":"s1","title":"t","directory":null,"time":null,"revert":null,
+         "parentID":null,"permission":[{"permission":"bash","pattern":"*","action":"allow"}],
+         "model":{"id":"openrouter/openrouter/free","providerID":"magpie","variant":"default"},
+         "tokens":null,"cost":null}
+        """
+        let session = try JSONDecoder.deveco.decode(Session.self, from: Data(json.utf8))
+        XCTAssertEqual(SessionAccessMode.current(for: session.permission), .allowAll)
+        XCTAssertEqual(session.model?.modelID, "magpie/openrouter/openrouter/free")
+    }
+
     func testAccessModeFollowsLastMatchingRule() {
         let rules = [
             PermissionRule(permission: "edit", pattern: "*", action: "allow"),
@@ -139,6 +151,15 @@ final class ModelTests: XCTestCase {
         XCTAssertEqual(info.tokens?.cache?.read, 99)
         XCTAssertEqual(info.elapsedMilliseconds, 2500)
         XCTAssertEqual(info.elapsedDuration, "2.50s")
+    }
+
+    func testPartDecodesStringToolState() throws {
+        let json = """
+        {"id":"p1","type":"tool","tool":"bash","state":"completed"}
+        """
+        let part = try JSONDecoder.deveco.decode(Part.self, from: Data(json.utf8))
+        XCTAssertEqual(part.state?.status, "completed")
+        XCTAssertEqual(part.state?.summary, "Completed")
     }
 
     func testDurationFormatting() {
@@ -304,6 +325,12 @@ final class ModelTests: XCTestCase {
         XCTAssertEqual(request.questions[0].custom, true)
     }
 
+    func testQuestionDraftDefaultsAreEmpty() {
+        let draft = QuestionDraft()
+        XCTAssertTrue(draft.selections.isEmpty)
+        XCTAssertTrue(draft.customAnswers.isEmpty)
+    }
+
     func testVcsInfoAndUsageDecode() throws {
         let vcs = try JSONDecoder.deveco.decode(VcsInfo.self, from: Data(#"{"branch":null,"default_branch":"main"}"#.utf8))
         XCTAssertNil(vcs.branch)
@@ -464,5 +491,112 @@ final class ModelTests: XCTestCase {
         // Fields the app doesn't model must survive the round trip.
         XCTAssertEqual(modelObject["extra"]?.objectValue?["x"]?.intValue, 1)
         XCTAssertEqual(provider.jsonValue().objectValue?["options"]?.objectValue?["customFlag"]?.boolValue, true)
+    }
+
+    // MARK: - Stranded question cards
+
+    private func pendingQuestion(
+        id: String = "que_1",
+        sessionID: String = "ses_1",
+        text: String = "下一步做什么？"
+    ) -> UserQuestionRequest {
+        UserQuestionRequest(
+            id: id,
+            sessionID: sessionID,
+            questions: [
+                UserQuestionInfo(
+                    question: text,
+                    header: "下一步",
+                    options: [UserQuestionOption(label: "继续", description: nil)],
+                    multiple: false,
+                    details: nil,
+                    custom: nil
+                )
+            ]
+        )
+    }
+
+    func testQuestionCardExpiresWhenServerLostItsPendingRequest() {
+        XCTAssertTrue(QuestionCardState.isExpired(
+            tool: "question",
+            status: "running",
+            questionTexts: ["下一步做什么？"],
+            isSending: false,
+            pending: [],
+            sessionID: "ses_1"
+        ))
+    }
+
+    func testQuestionCardStaysLiveWhileItsRequestIsPending() {
+        XCTAssertFalse(QuestionCardState.isExpired(
+            tool: "question",
+            status: "running",
+            questionTexts: ["下一步做什么？"],
+            isSending: false,
+            pending: [pendingQuestion()],
+            sessionID: "ses_1"
+        ))
+    }
+
+    func testQuestionCardIgnoresIdenticalQuestionFromAnotherSession() {
+        XCTAssertTrue(QuestionCardState.isExpired(
+            tool: "question",
+            status: "running",
+            questionTexts: ["下一步做什么？"],
+            isSending: false,
+            pending: [pendingQuestion(sessionID: "ses_2")],
+            sessionID: "ses_1"
+        ))
+    }
+
+    func testQuestionCardNeverExpiresWhileSessionIsSending() {
+        XCTAssertFalse(QuestionCardState.isExpired(
+            tool: "question",
+            status: "running",
+            questionTexts: ["下一步做什么？"],
+            isSending: true,
+            pending: [],
+            sessionID: "ses_1"
+        ))
+    }
+
+    func testFinishedQuestionToolIsNotTreatedAsExpired() {
+        XCTAssertFalse(QuestionCardState.isExpired(
+            tool: "question",
+            status: "completed",
+            questionTexts: ["下一步做什么？"],
+            isSending: false,
+            pending: [],
+            sessionID: "ses_1"
+        ))
+    }
+
+    func testQuestionResultSummaryFromOutput() {
+        let output = "User has answered your questions: \"下一步做什么？\"=\"继续开发\". You can now continue."
+        let summary = QuestionCardState.resultSummary(output)
+        XCTAssertEqual(summary, "User has answered your questions: \"下一步做什么？\"=\"继续开发\". You can now continue.")
+    }
+
+    func testQuestionDismissSummaryFromEscapedOutput() {
+        XCTAssertEqual(
+            QuestionCardState.resultSummary("User dismissed the question\\nno answer"),
+            "User dismissed the question\nno answer"
+        )
+    }
+}
+
+extension ModelTests {
+    func testExportEscapesUserMarkdownAndHandlesBackticksInMetadata() throws {
+        let session = Session(id: "s_escape", title: "A *draft* #title", directory: "/tmp/with`tick", time: nil, revert: nil)
+        let messages = [
+            MessageRecord(
+                info: MessageInfo(id: "msg_1", role: "user"),
+                parts: [Part(id: "p1", type: "text", text: "Use `code` and *stars* <script>")]
+            ),
+        ]
+        let markdown = TranscriptExporter.markdown(session: session, messages: messages)
+        XCTAssertTrue(markdown.contains("# A \\*draft\\* \\#title"))
+        XCTAssertTrue(markdown.contains("``with`tick``"))
+        XCTAssertTrue(markdown.contains("Use \\`code\\` and \\*stars\\* \\<script\\>"))
     }
 }

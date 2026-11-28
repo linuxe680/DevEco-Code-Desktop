@@ -28,6 +28,31 @@ enum AppAppearance: String, CaseIterable, Identifiable {
     }
 }
 
+enum SessionSortOrder: String, CaseIterable, Identifiable {
+    case recent, title
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .recent: return NSLocalizedString("Last updated", comment: "session sort")
+        case .title: return NSLocalizedString("Title", comment: "session sort")
+        }
+    }
+
+    func areInIncreasingOrder(_ lhs: Session, _ rhs: Session) -> Bool {
+        switch self {
+        case .recent:
+            let left = lhs.updatedAt ?? .distantPast
+            let right = rhs.updatedAt ?? .distantPast
+            if left == right { return lhs.displayTitle < rhs.displayTitle }
+            return left > right
+        case .title:
+            return lhs.displayTitle.localizedStandardCompare(rhs.displayTitle) == .orderedAscending
+        }
+    }
+}
+
 /// User-facing settings. Simple keys live in UserDefaults and are read
 /// directly wherever needed; views bind with @AppStorage(AppSettings.Keys.*).
 enum AppSettings {
@@ -46,9 +71,14 @@ enum AppSettings {
         static let defaultSessionModel = "defaultSessionModel"
         static let notifyOnComplete = "notifyOnComplete"
         static let playSoundOnComplete = "playSoundOnComplete"
+        static let notifyOnlyWhenBackground = "notifyOnlyWhenBackground"
+        static let savePromptHistory = "savePromptHistory"
         static let promptHistory = "promptHistory"
         static let sessionModels = "sessionModels"
         static let sessionVariants = "sessionVariants"
+        static let sessionDrafts = "sessionDrafts"
+        static let sessionSort = "sessionSortOrder"
+        static let sidebarHidden = "sidebarHidden"
         static let settingsVersion = "settingsVersion"
         static let pinnedSessionIDs = "pinnedSessionIDs"
         static let clientAutoTitles = "clientAutoTitles"
@@ -66,26 +96,35 @@ enum AppSettings {
             Keys.basePort: 4096,
             Keys.quitBehavior: QuitBehavior.stopServer.rawValue,
             Keys.sendOnEnter: true,
-            Keys.chatFontSize: 15.0,
+            Keys.chatFontSize: 14.0,
             Keys.autoScroll: true,
             Keys.expandThinking: false,
             Keys.defaultSessionModel: "",
             Keys.devecoPath: "",
             Keys.notifyOnComplete: false,
             Keys.playSoundOnComplete: false,
+            Keys.notifyOnlyWhenBackground: true,
+            Keys.savePromptHistory: true,
             Keys.appAppearance: AppAppearance.dark.rawValue,
+            Keys.sessionSort: SessionSortOrder.recent.rawValue,
+            Keys.sidebarHidden: false,
         ])
         // One-shot migrations, gated by a single version marker so new rules
-        // append instead of stacking one-off flag keys. v1: older defaults
-        // were too small on modern displays, and Codex's 16px CSS renders
-        // optically smaller than AppKit 16pt (CJK fallback) — both land on
-        // 15pt once, without overriding later user choices.
+        // append instead of stacking one-off flag keys. v2 aligns the default
+        // transcript body with Codex's 14px text while preserving larger
+        // explicit user choices.
         if defaults.integer(forKey: Keys.settingsVersion) < 1 {
             if let stored = defaults.object(forKey: Keys.chatFontSize) as? Double,
                stored <= 16.0 {
-                defaults.set(15.0, forKey: Keys.chatFontSize)
+                defaults.set(14.0, forKey: Keys.chatFontSize)
             }
             defaults.set(1, forKey: Keys.settingsVersion)
+        }
+        if defaults.integer(forKey: Keys.settingsVersion) < 2 {
+            if defaults.double(forKey: Keys.chatFontSize) == 15.0 {
+                defaults.set(14.0, forKey: Keys.chatFontSize)
+            }
+            defaults.set(2, forKey: Keys.settingsVersion)
         }
     }
 
@@ -144,6 +183,22 @@ enum AppSettings {
     static var playSoundOnComplete: Bool {
         get { UserDefaults.standard.bool(forKey: Keys.playSoundOnComplete) }
         set { UserDefaults.standard.set(newValue, forKey: Keys.playSoundOnComplete) }
+    }
+
+    static var notifyOnlyWhenBackground: Bool {
+        get {
+            guard UserDefaults.standard.object(forKey: Keys.notifyOnlyWhenBackground) != nil else { return true }
+            return UserDefaults.standard.bool(forKey: Keys.notifyOnlyWhenBackground)
+        }
+        set { UserDefaults.standard.set(newValue, forKey: Keys.notifyOnlyWhenBackground) }
+    }
+
+    static var savePromptHistory: Bool {
+        get {
+            guard UserDefaults.standard.object(forKey: Keys.savePromptHistory) != nil else { return true }
+            return UserDefaults.standard.bool(forKey: Keys.savePromptHistory)
+        }
+        set { UserDefaults.standard.set(newValue, forKey: Keys.savePromptHistory) }
     }
 
     /// UI language: forced Chinese by default, with English and follow-system
@@ -206,6 +261,13 @@ enum AppSettings {
     static var sessionModels: [String: String] {
         get { UserDefaults.standard.dictionary(forKey: Keys.sessionModels) as? [String: String] ?? [:] }
         set { UserDefaults.standard.set(newValue, forKey: Keys.sessionModels) }
+    }
+
+    /// Per-session draft text, keyed by session id. Persisted so quitting the
+    /// app never silently discards something the user was typing.
+    static var sessionDrafts: [String: String] {
+        get { UserDefaults.standard.dictionary(forKey: Keys.sessionDrafts) as? [String: String] ?? [:] }
+        set { UserDefaults.standard.set(newValue, forKey: Keys.sessionDrafts) }
     }
 
     /// Per-session reasoning-effort variant, keyed by session id.

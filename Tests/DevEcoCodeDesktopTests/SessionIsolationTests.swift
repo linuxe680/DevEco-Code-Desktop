@@ -5,15 +5,18 @@ import XCTest
 final class SessionIsolationTests: XCTestCase {
     private var savedModels: [String: String] = [:]
     private var savedVariants: [String: String] = [:]
+    private var savedDrafts: [String: String] = [:]
     private var savedDefaultModel = ""
 
     override func setUp() {
         super.setUp()
         savedModels = AppSettings.sessionModels
         savedVariants = AppSettings.sessionVariants
+        savedDrafts = AppSettings.sessionDrafts
         savedDefaultModel = AppSettings.defaultSessionModel
         AppSettings.sessionModels = [:]
         AppSettings.sessionVariants = [:]
+        AppSettings.sessionDrafts = [:]
         AppSettings.defaultSessionModel = ""
         UserDefaults.standard.removeObject(forKey: "cachedSessions")
         UserDefaults.standard.removeObject(forKey: "cachedSelectedSession")
@@ -22,6 +25,7 @@ final class SessionIsolationTests: XCTestCase {
     override func tearDown() {
         AppSettings.sessionModels = savedModels
         AppSettings.sessionVariants = savedVariants
+        AppSettings.sessionDrafts = savedDrafts
         AppSettings.defaultSessionModel = savedDefaultModel
         super.tearDown()
     }
@@ -230,7 +234,7 @@ final class SessionIsolationTests: XCTestCase {
         let error = APIError.status(500, body)
         XCTAssertEqual(
             error.localizedDescription,
-            "Server returned 500: Model not found"
+            String(format: NSLocalizedString("Server error (%lld): %@", comment: ""), Int64(500), "Model not found")
         )
     }
 
@@ -332,5 +336,65 @@ final class SessionIsolationTests: XCTestCase {
 
         store.select("s2")
         XCTAssertNil(store.indicator(for: "s2"))
+    }
+
+    func testQuestionDraftsAreIsolatedByRequestID() {
+        let store = SessionStore()
+        store.testSetQuestionDraft(for: "q1", index: 0, labels: ["A"])
+        XCTAssertEqual(store.questionDraftSelections(for: "q1")[0], ["A"])
+        XCTAssertTrue(store.questionDraftSelections(for: "q2").isEmpty)
+        store.clearQuestionDraft(for: "q1")
+        XCTAssertTrue(store.questionDraftSelections(for: "q1").isEmpty)
+    }
+
+    func testMessageSnapshotCacheIsBounded() {
+        let store = SessionStore()
+        for index in 0..<20 {
+            let message = MessageRecord(
+                info: MessageInfo(id: "m\(index)", role: "assistant"),
+                parts: [Part(id: "p\(index)", type: "text", text: "cached \(index)")]
+            )
+            store.cacheMessagesForTesting([message], for: "s\(index)")
+        }
+        XCTAssertLessThanOrEqual(
+            store.messageCacheEntryCountForTesting(),
+            SessionStore.maxMessageCacheEntriesForTesting
+        )
+    }
+
+    func testMessageSnapshotCacheEvictsUntilLargeEntryFits() {
+        let store = SessionStore()
+        let small = MessageRecord(
+            info: MessageInfo(id: "m_small", role: "assistant"),
+            parts: [Part(id: "p_small", type: "text", text: String(repeating: "a", count: 1_000))]
+        )
+        for index in 0..<8 {
+            store.cacheMessagesForTesting([small], for: "s\(index)")
+        }
+        let huge = MessageRecord(
+            info: MessageInfo(id: "m_huge", role: "assistant"),
+            parts: [Part(id: "p_huge", type: "text", text: String(repeating: "b", count: 50_000))]
+        )
+        store.cacheMessagesForTesting([huge], for: "huge")
+        XCTAssertLessThanOrEqual(
+            store.messageCacheEntryCountForTesting(),
+            SessionStore.maxMessageCacheEntriesForTesting
+        )
+        XCTAssertLessThanOrEqual(store.messageCacheCharactersForTesting, 400_000)
+    }
+
+    func testDisconnectResetsMessageCacheAccounting() {
+        let store = SessionStore()
+        let message = MessageRecord(
+            info: MessageInfo(id: "m_disconnect", role: "assistant"),
+            parts: [Part(id: "p_disconnect", type: "text", text: String(repeating: "x", count: 2_000))]
+        )
+        store.cacheMessagesForTesting([message], for: "s_disconnect")
+        XCTAssertEqual(store.messageCacheCharactersForTesting, 2_000)
+
+        store.disconnect()
+
+        XCTAssertEqual(store.messageCacheEntryCountForTesting(), 0)
+        XCTAssertEqual(store.messageCacheCharactersForTesting, 0)
     }
 }

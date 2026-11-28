@@ -28,6 +28,7 @@ final class ServerManager: ObservableObject {
     @Published var logTail = ""
     @Published var errorMessage: String?
     @Published private(set) var failureReason: FailureReason?
+    @Published private(set) var serverVersion: String?
 
     private(set) var port: UInt16 = 4096
 
@@ -226,7 +227,7 @@ final class ServerManager: ObservableObject {
             cleanUpIO()
             state = .failed
             failureReason = .launchFailed
-            errorMessage = error.localizedDescription
+            errorMessage = UserFacingError.message(error)
             Log.server.error("launch failed: \(error.localizedDescription, privacy: .public)")
             endStartupActivity()
             return // 不再启动健康检查
@@ -363,6 +364,7 @@ final class ServerManager: ObservableObject {
                   serverProcess?.pid == launched.pid else { return }
             if healthy, isServerAlive(launched) {
                 markRunning()
+                Task { [weak self] in await self?.loadServerVersion() }
                 return
             }
             try? await Task.sleep(nanoseconds: 250_000_000)
@@ -383,14 +385,21 @@ final class ServerManager: ObservableObject {
     private func probeHealth() async -> Bool {
         var request = URLRequest(url: candidateURL.appendingPathComponent("global/health"))
         request.timeoutInterval = 1.2
-        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.cachePolicy = .reloadIgnoringCacheData
         do {
-            let (_, response) = try await URLSession.shared.data(for: request)
+            let (_, response) = try await Self.ephemeralSession.data(for: request)
             return (response as? HTTPURLResponse)?.statusCode == 200
         } catch {
             return false
         }
     }
+
+    private static let ephemeralSession: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringCacheData
+        return URLSession(configuration: configuration)
+    }()
 
     /// Called when the app becomes active. App Nap can suspend the boot task
     /// while the app is in the background even though the server is already
@@ -418,6 +427,22 @@ final class ServerManager: ObservableObject {
         failureReason = nil
         endStartupActivity()
         clearPendingRestoreBackupIfNeeded()
+        Task { [weak self] in await self?.loadServerVersion() }
+    }
+
+    private func loadServerVersion() async {
+        struct Health: Decodable { let version: String? }
+        var request = URLRequest(url: candidateURL.appendingPathComponent("global/health"))
+        request.timeoutInterval = 2
+        request.cachePolicy = .reloadIgnoringCacheData
+        do {
+            let (data, response) = try await Self.ephemeralSession.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return }
+            let health = try JSONDecoder.deveco.decode(Health.self, from: data)
+            serverVersion = health.version
+        } catch {
+            serverVersion = nil
+        }
     }
 
     private func beginStartupActivity() {
@@ -544,6 +569,10 @@ final class ServerManager: ObservableObject {
     ) -> [String: String] {
         var environment = base
         environment["XDG_DATA_HOME"] = dataDirectory.path
+        // Guard against inheriting a stale HTTP cache location from a shell.
+        // Foundation's own requests are ephemeral; the managed server should
+        // be too, so it cannot read a corrupt Cache.db on the next launch.
+        environment["XDG_CACHE_HOME"] = dataDirectory.appendingPathComponent("cache").path
         // deveco CLI reads PWD for its working tree in addition to the real
         // cwd. The GUI app inherits PWD from whatever shell launched it, so
         // leaving it untouched can make tools run in a stale directory even

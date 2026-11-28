@@ -5,6 +5,7 @@ struct DiffFileRow: View {
     let diff: FileDiff
     let isExpanded: Bool
     var onToggle: () -> Void
+    var onOpenFile: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -24,6 +25,15 @@ struct DiffFileRow: View {
                     Text("-\(Int(diff.deletions ?? 0))")
                         .font(.caption)
                         .foregroundStyle(.red)
+                    if let onOpenFile {
+                        Button(action: onOpenFile) {
+                            Image(systemName: "arrow.up.right.square")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help(NSLocalizedString("Open in project", comment: ""))
+                    }
                     Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
@@ -68,5 +78,13 @@ struct DiffFileRow: View {
         case "deleted": return .red
         default: return .orange
         }
+    }
+}
+
+extension DiffFileRow {
+    func onOpenFile(_ action: @escaping () -> Void) -> DiffFileRow {
+        var copy = self
+        copy.onOpenFile = action
+        return copy
     }
 }

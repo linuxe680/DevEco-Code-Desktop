@@ -8,7 +8,7 @@ A native macOS GUI for the locally installed `deveco` CLI. The app manages a loc
 
 ## Requirements
 
-- macOS 11+（提供 Apple Silicon / Intel 两个安装包）
+- macOS 12+（提供 Apple Silicon / Intel 两个安装包）
 - Xcode command line tools (Swift 5.9)
 - `deveco` CLI installed locally (`npm i -g @deveco/deveco-code@stable`) and Node.js on PATH
 
@@ -30,16 +30,19 @@ The build script signs with a persistent self-signed certificate (created once i
 - Create (⌘N), search, rename, archive, and delete sessions; grouped by project with relative timestamps. New sessions take their title from the first prompt; placeholder titles are backfilled when loaded.
 - Enter sends (Shift+Enter newline, ⌘⏎ also sends); prompts stream live with a single generation indicator (tool, todo progress, retry reason, stalled hint, stop button).
 - **Prompt queueing**: Enter while generating queues the prompt as a removable chip; it sends automatically on idle. **Prompt history**: Option+↑/↓ recalls recent prompts.
-- Drafts, queues, attachments, model picks, and generating state are fully isolated per session — switching chats never hijacks the composer.
+- Drafts now survive quitting the app and are restored per session. Queues, attachments, model picks, and generating state stay isolated per session — switching chats never hijacks the composer.
+- Sort sessions by last updated or title; ⌘⇧P opens the command palette, ⌥⌘U jumps to the next unread session, and ⌘↑/⌘↓ jump through a long transcript.
 - `@` file mentions with 180 ms debounce (`/api/fs/find`), junk filtered (dot-directories, `node_modules`, logs/temp); Enter completes the highlighted candidate, and mentions work after line breaks. Slash commands (`/name args`) route to the command endpoint; Enter completes a half-typed command name.
 - Image/file attachments: pasted images compress to ≤1568 px (pixel-accurate on Retina), oversized ones warn; files attach by reference, must live inside the project folder.
 
 **Transcript & rendering**
 
-- Codex-style transcript: compact right-aligned user bubbles, borderless assistant prose, elapsed time per reply, quiet tool cards with durations and localized tool names.
+- Codex-style transcript: compact right-aligned user bubbles, borderless assistant prose, per-message timestamps, elapsed time, and quiet tool cards with durations and localized tool names. The latest answer can be regenerated in place.
 - Markdown prose (headings, lists, quotes, inline formatting) and code blocks with language label, copy button, and lightweight syntax highlighting. Streaming renders parse/highlight only the changed bubble via caches.
 - **⌘F** search with highlight and match navigation; **Changes** panel with colorized unified diffs; agent todo panel; assistant messages show model name, token usage, and cost.
 - **Compact** compresses context; **Revert/unrevert** rolls back to before any message; export any session as Markdown.
+- **Work Panel** docks Review, Context, Files, VCS, and Children beside the transcript. Files and VCS are scoped to the selected session's project directory; Apply Patch asks for confirmation. Summarize, Share/Stop sharing, and each panel have toolbar-menu entry points.
+- **Agents & Tools** settings lists server-provided Skills, Agents, MCP status, and capabilities. MCP servers can be connected/disconnected when the server exposes those actions.
 - Token usage is shown by dimension instead of one ambiguous number: a warning strip appears only when the context window is ≥80% full, each reply shows generated tokens on hover, and the Work Panel's Context tab breaks down context window, last-turn request size, and session totals.
 
 **Models & providers**
@@ -102,7 +105,7 @@ git push origin v0.5.x    # pushes the tag → GitHub Actions builds & publishes
 swift test --disable-sandbox
 ```
 
-187 tests cover failure classification, queue hardening, session isolation, mention parsing, path filtering, image downscaling, and settings migrations.
+220 tests cover failure classification, queue hardening, session isolation, mention parsing, path filtering, image downscaling, draft persistence, export escaping, settings migrations, and tooling API/model helpers.
 
 ## Localization
 
@@ -120,7 +123,7 @@ DevEco Code Desktop 是本机 `deveco` CLI 的原生 macOS 图形客户端。应
 
 ## 环境要求
 
-- macOS 11+（提供 Apple Silicon / Intel 两个安装包）
+- macOS 12+（提供 Apple Silicon / Intel 两个安装包）
 - Xcode 命令行工具（Swift 5.9）
 - 本机已安装 `deveco` CLI（`npm i -g @deveco/deveco-code@stable`）且 Node.js 在 PATH 中
 
@@ -142,16 +145,19 @@ DevEco Code Desktop 是本机 `deveco` CLI 的原生 macOS 图形客户端。应
 - 新建（⌘N）、搜索、重命名、归档、删除会话；按项目分组并显示相对时间。新会话以首条 prompt 命名，占位标题在加载时自动回填。
 - 回车发送（Shift+回车换行，⌘⏎ 也可发送）；生成状态单一指示条（当前工具、todo 进度、重试原因、卡顿提示、停止按钮）。
 - **队列**：生成中回车会把 prompt 排队（可删除的 chip），空闲后自动发送。**历史**：Option+↑/↓ 调出最近发送记录。
-- 草稿、队列、附件、模型选择、生成状态按会话完全隔离——切换会话不会劫持输入框。
+- 草稿会跨重启保存并按会话恢复；队列、附件、模型选择、生成状态按会话完全隔离——切换会话不会劫持输入框。
+- 会话可按最近更新或标题排序；⌘⇧P 打开命令面板，⌥⌘U 跳到下一个未读会话，⌘↑/⌘↓ 在长会话中快速跳转。
 - `@` 文件引用：180ms 防抖（`/api/fs/find`），过滤隐藏目录/`node_modules`/日志临时文件；回车补全选中项，换行后仍可触发。斜杠命令（`/name args`）走命令端点；未输完参数时回车先补全命令名。
 - 图片/文件附件：粘贴图片压缩到 ≤1568px（Retina 像素口径精确），过大图片有提示；文件按引用附加，必须在项目目录内。
 
 **转写与渲染**
 
-- Codex 风格转写：用户气泡右对齐紧凑、助手正文无边框、每条回复上方显示耗时、安静的工具卡（含耗时与中文名：读取/运行命令/…）。
+- Codex 风格转写：用户气泡右对齐紧凑、助手正文无边框、每条消息显示时间点与耗时、安静的工具卡（含耗时与中文名：读取/运行命令/…）。最新回答可原地重新生成。
 - Markdown 正文（标题/列表/引用/行内格式）与代码块（语言标签、复制按钮、轻量语法高亮）。流式期间经缓存只重新解析变化中的气泡。
 - **⌘F** 搜索（高亮 + 计数导航）；**变更**面板（着色 unified diff）；agent todo 面板；助手消息下方显示模型名、token 用量与费用。
 - **压缩**长上下文；**回退/撤销回退**到任意消息之前；导出任意会话为 Markdown。
+- **工作台**在转写旁停靠「变更 / 上下文 / 文件 / 版本控制 / 子会话」五个面板。文件和版本控制按当前会话的项目目录加载，应用补丁前会确认；工具栏菜单可直接总结会话、分享/取消分享并打开各面板。
+- **智能体与工具**设置展示服务端提供的技能、智能体、MCP 状态与能力；服务端支持时可直接连接/断开 MCP。
 - token 用量按维度展示，不再在输入框常驻一个含义模糊的数字：上下文窗口占用 ≥80% 时才出现告警条，单条回复悬停显示生成 token，工作台「上下文」页拆分上下文窗口、最近一轮请求体量与本次会话累计。
 
 **模型与供应商**
@@ -197,7 +203,7 @@ git push origin v0.5.x    # 推送标签 → GitHub Actions 自动构建并发�
 swift test --disable-sandbox
 ```
 
-187 项测试覆盖失败分类、队列加固、会话隔离、@ 解析、路径过滤、图片压缩、token 口径与设置迁移。
+220 项测试覆盖失败分类、队列加固、会话隔离、@ 解析、路径过滤、图片压缩、草稿持久化、导出转义、token 口径、设置迁移与工具 API/模型辅助逻辑。
 
 ## 本地化
 

@@ -65,6 +65,11 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/DevEcoCodeDesktop"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :DevEcoBuildTime string $(date -u +%Y-%m-%dT%H:%M:%SZ)" "$APP/Contents/Info.plist" 2>/dev/null \
+  || /usr/libexec/PlistBuddy -c "Set :DevEcoBuildTime $(date -u +%Y-%m-%dT%H:%M:%SZ)" "$APP/Contents/Info.plist"
+COMMIT="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+/usr/libexec/PlistBuddy -c "Add :DevEcoGitCommit string $COMMIT" "$APP/Contents/Info.plist" 2>/dev/null \
+  || /usr/libexec/PlistBuddy -c "Set :DevEcoGitCommit $COMMIT" "$APP/Contents/Info.plist"
 cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 cp -R "$ROOT/Resources/zh-Hans.lproj" "$APP/Contents/Resources/"
 cp -R "$ROOT/Resources/en.lproj" "$APP/Contents/Resources/"

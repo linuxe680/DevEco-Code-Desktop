@@ -12,15 +12,302 @@ struct SettingsView: View {
                 .tabItem { Label(NSLocalizedString("Server", comment: ""), systemImage: "server.rack") }
             ChatSettingsPane()
                 .tabItem { Label(NSLocalizedString("Chat", comment: ""), systemImage: "bubble.left.and.bubble.right") }
+            ShortcutsSettingsPane()
+                .tabItem { Label(NSLocalizedString("Shortcuts", comment: ""), systemImage: "keyboard") }
             PermissionsSettingsPane()
                 .tabItem { Label(NSLocalizedString("Permissions", comment: ""), systemImage: "lock.shield") }
+            ToolsSettingsPane()
+                .tabItem { Label(NSLocalizedString("Agents & Tools", comment: ""), systemImage: "wrench.and.screwdriver") }
             UsageSettingsPane()
                 .tabItem { Label(NSLocalizedString("Usage", comment: ""), systemImage: "chart.bar") }
             AboutSettingsPane()
                 .tabItem { Label(NSLocalizedString("About", comment: ""), systemImage: "info.circle") }
         }
-        .frame(width: 520)
+        .frame(width: 560)
         .frame(minHeight: 600)
+    }
+}
+
+// MARK: - Keyboard shortcuts
+
+private struct ShortcutsSettingsPane: View {
+    private struct Shortcut: Identifiable {
+        let id = UUID()
+        let title: String
+        let keys: String
+    }
+
+    private struct ShortcutGroup: Identifiable {
+        let id: String
+        let shortcuts: [Shortcut]
+    }
+
+    private var groups: [ShortcutGroup] {
+        [
+            ShortcutGroup(id: NSLocalizedString("General", comment: ""), shortcuts: [
+                Shortcut(title: NSLocalizedString("New Session", comment: ""), keys: "⌘N"),
+                Shortcut(title: NSLocalizedString("Command Palette…", comment: ""), keys: "⌘⇧P"),
+                Shortcut(title: NSLocalizedString("Quick Switch…", comment: ""), keys: "⌘K"),
+                Shortcut(title: NSLocalizedString("Settings", comment: ""), keys: "⌘,"),
+                Shortcut(title: NSLocalizedString("Toggle Sidebar", comment: ""), keys: "⌘B"),
+            ]),
+            ShortcutGroup(id: NSLocalizedString("Conversation", comment: ""), shortcuts: [
+                Shortcut(title: NSLocalizedString("Send message", comment: ""), keys: "⏎ / ⌘⏎"),
+                Shortcut(title: NSLocalizedString("New line", comment: ""), keys: "⇧⏎"),
+                Shortcut(title: NSLocalizedString("Stop Generating", comment: ""), keys: "⌘."),
+                Shortcut(title: NSLocalizedString("Find in Conversation", comment: ""), keys: "⌘F"),
+                Shortcut(title: NSLocalizedString("Scroll to Top", comment: ""), keys: "⌘↑"),
+                Shortcut(title: NSLocalizedString("Scroll to Bottom", comment: ""), keys: "⌘↓"),
+                Shortcut(title: NSLocalizedString("Previous prompt", comment: ""), keys: "⌥↑"),
+                Shortcut(title: NSLocalizedString("Next prompt", comment: ""), keys: "⌥↓"),
+                Shortcut(title: NSLocalizedString("Close overlay", comment: ""), keys: "Esc"),
+            ]),
+            ShortcutGroup(id: NSLocalizedString("Navigation", comment: ""), shortcuts: [
+                Shortcut(title: NSLocalizedString("Next Unread Session", comment: ""), keys: "⌥⌘U"),
+                Shortcut(title: NSLocalizedString("Review File Changes", comment: ""), keys: "⌘J"),
+            ]),
+        ]
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                Text(NSLocalizedString("Keyboard Shortcuts", comment: ""))
+                    .font(.headline)
+                ForEach(groups) { group in
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(group.id)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .textCase(.uppercase)
+                        ForEach(group.shortcuts) { shortcut in
+                            HStack {
+                                Text(shortcut.title)
+                                    .font(.system(size: 13))
+                                Spacer()
+                                Text(shortcut.keys)
+                                    .font(.system(size: 12, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, 7)
+                                    .padding(.vertical, 2)
+                                    .background(Theme.chipFill, in: RoundedRectangle(cornerRadius: 5))
+                            }
+                            .padding(.vertical, 3)
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(20)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
+// MARK: - Agents & Tools
+
+private struct ToolsSettingsPane: View {
+    @EnvironmentObject var tooling: ToolingStore
+    @EnvironmentObject var server: ServerManager
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack {
+                    Text(NSLocalizedString("Agents & Tools", comment: ""))
+                        .font(.headline)
+                    Spacer()
+                    Button(NSLocalizedString("Refresh", comment: "")) {
+                        Task { await tooling.load() }
+                    }
+                    .controlSize(.small)
+                    .disabled(tooling.isLoading)
+                }
+
+                if tooling.isLoading {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text(NSLocalizedString("Loading tools…", comment: ""))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                if let error = tooling.errorMessage {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .textSelection(.enabled)
+                }
+
+                toolSection(title: NSLocalizedString("Skills", comment: ""), count: tooling.skills.count) {
+                    if tooling.skills.isEmpty {
+                        emptyText(NSLocalizedString("No skills available.", comment: ""))
+                    } else {
+                        ForEach(tooling.skills) { skill in
+                            DisclosureGroup {
+                                Text(skill.content)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    HStack(spacing: 6) {
+                                        Text(skill.name)
+                                            .font(.system(size: 13, weight: .medium))
+                                        if skill.slash == true {
+                                            Text("/")
+                                                .font(.caption)
+                                                .foregroundStyle(.blue)
+                                        }
+                                    }
+                                    Text(skill.description ?? skill.location)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(2)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                toolSection(title: NSLocalizedString("Agents", comment: ""), count: tooling.agents.count) {
+                    if tooling.agents.isEmpty {
+                        emptyText(NSLocalizedString("No agents available.", comment: ""))
+                    } else {
+                        ForEach(tooling.agents) { agent in
+                            DisclosureGroup {
+                                if let system = agent.system, !system.isEmpty {
+                                    Text(system)
+                                        .font(.system(size: 11, design: .monospaced))
+                                        .textSelection(.enabled)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                } else {
+                                    emptyText(NSLocalizedString("No system prompt reported.", comment: ""))
+                                }
+                            } label: {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    HStack(spacing: 6) {
+                                        Text(agent.id)
+                                            .font(.system(size: 13, weight: .medium))
+                                        if agent.hidden == true {
+                                            Text(NSLocalizedString("Hidden", comment: ""))
+                                                .font(.caption2)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+                                    Text(agent.model.map { "\($0.providerID)/\($0.id)" } ?? agent.mode ?? "")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    if let description = agent.description, !description.isEmpty {
+                                        Text(description)
+                                            .font(.caption)
+                                            .foregroundStyle(.tertiary)
+                                            .lineLimit(2)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                toolSection(title: "MCP", count: tooling.mcpStatus.count) {
+                    if tooling.mcpStatus.isEmpty {
+                        emptyText(NSLocalizedString("No MCP servers configured.", comment: ""))
+                    } else {
+                        ForEach(tooling.mcpStatus.keys.sorted(), id: \.self) { name in
+                            let status = tooling.mcpStatus[name] ?? .unknown("")
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(name)
+                                        .font(.system(size: 13, weight: .medium))
+                                    Text(NSLocalizedString(status.label, comment: ""))
+                                        .font(.caption)
+                                        .foregroundStyle(status == .connected ? .green : .secondary)
+                                    if let detail = status.detail, !detail.isEmpty {
+                                        Text(detail)
+                                            .font(.caption2)
+                                            .foregroundStyle(.red)
+                                            .textSelection(.enabled)
+                                    }
+                                }
+                                Spacer()
+                                if status.canDisconnect {
+                                    Button(NSLocalizedString("Disconnect", comment: "")) {
+                                        Task { await tooling.disconnectMCP(name) }
+                                    }
+                                    .controlSize(.small)
+                                } else if status.canConnect {
+                                    Button(NSLocalizedString("Connect", comment: "")) {
+                                        Task { await tooling.connectMCP(name) }
+                                    }
+                                    .controlSize(.small)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(NSLocalizedString("Capabilities", comment: ""))
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    infoRow(
+                        label: NSLocalizedString("Server version", comment: ""),
+                        value: server.serverVersion ?? NSLocalizedString("Unknown", comment: "")
+                    )
+                    infoRow(
+                        label: NSLocalizedString("Background subagents", comment: ""),
+                        value: tooling.capabilities.backgroundSubagents == true
+                            ? NSLocalizedString("Supported", comment: "")
+                            : NSLocalizedString("Not reported", comment: "")
+                    )
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(20)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .task { await tooling.load() }
+    }
+
+    private func toolSection<Content: View>(
+        title: String,
+        count: Int,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("\(count)")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+            content()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func emptyText(_ text: String) -> some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(.tertiary)
+    }
+
+    private func infoRow(label: String, value: String) -> some View {
+        HStack {
+            Text(label)
+                .font(.system(size: 13))
+            Spacer()
+            Text(value)
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(.secondary)
+        }
     }
 }
 
@@ -86,7 +373,7 @@ private struct GeneralSettingsPane: View {
                                 launchError = nil
                             } catch {
                                 launchAtLogin = LoginItemManager.isEnabled
-                                launchError = error.localizedDescription
+                                launchError = UserFacingError.message(error)
                             }
                         }
                     if let launchError {
@@ -524,7 +811,7 @@ private struct ServerSettingsPane: View {
                     backupFailed = true
                     backupStatus = String(
                         format: NSLocalizedString("Backup failed: %@", comment: ""),
-                        error.localizedDescription
+                        UserFacingError.message(error)
                     )
                 }
             }
@@ -571,7 +858,7 @@ private struct ServerSettingsPane: View {
                     backupFailed = true
                     backupStatus = String(
                         format: NSLocalizedString("Restore failed: %@", comment: ""),
-                        error.localizedDescription
+                        UserFacingError.message(error)
                     )
                     server.start()
                 }
@@ -607,6 +894,10 @@ private struct ChatSettingsPane: View {
     private var notifyOnComplete = false
     @AppStorage(AppSettings.Keys.playSoundOnComplete)
     private var playSoundOnComplete = false
+    @AppStorage(AppSettings.Keys.notifyOnlyWhenBackground)
+    private var notifyOnlyWhenBackground = true
+    @AppStorage(AppSettings.Keys.savePromptHistory)
+    private var savePromptHistory = true
 
     var body: some View {
         ScrollView {
@@ -622,6 +913,18 @@ private struct ChatSettingsPane: View {
                         }
                     }
                 Toggle(NSLocalizedString("Play a sound when a generation completes", comment: ""), isOn: $playSoundOnComplete)
+                Toggle(NSLocalizedString("Only notify for background sessions", comment: ""), isOn: $notifyOnlyWhenBackground)
+                    .disabled(!notifyOnComplete)
+                Toggle(NSLocalizedString("Remember sent prompts for history recall", comment: ""), isOn: $savePromptHistory)
+
+                HStack {
+                    Button(NSLocalizedString("Clear Prompt History", comment: "")) {
+                        AppSettings.promptHistory = []
+                    }
+                    .controlSize(.small)
+                    .disabled(!savePromptHistory || AppSettings.promptHistory.isEmpty)
+                    Spacer()
+                }
 
                 HStack {
                     Text(NSLocalizedString("Chat text size", comment: ""))
@@ -833,6 +1136,29 @@ private struct AboutSettingsPane: View {
 
                 Divider()
 
+                VStack(alignment: .leading, spacing: 4) {
+                    infoRow(
+                        NSLocalizedString("Bundle ID", comment: "About"),
+                        Bundle.main.bundleIdentifier ?? "—"
+                    )
+                    infoRow(
+                        NSLocalizedString("Install path", comment: "About"),
+                        Bundle.main.bundleURL.path
+                    )
+                    infoRow(
+                        NSLocalizedString("Build time", comment: "About"),
+                        Bundle.main.object(forInfoDictionaryKey: "DevEcoBuildTime") as? String ?? "—"
+                    )
+                    infoRow(
+                        NSLocalizedString("Git commit", comment: "About"),
+                        Bundle.main.object(forInfoDictionaryKey: "DevEcoGitCommit") as? String ?? "—"
+                    )
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+                Divider()
+
                 Text(NSLocalizedString("A native macOS client for the local deveco CLI — sessions, streaming, approvals, diffs, and model management.", comment: ""))
                     .font(.callout)
                 Text(NSLocalizedString("Protocol and UX reference: opencode (MIT) and OpenAI Codex (Apache-2.0). Design learned from their public sources; all code here is original Swift.", comment: ""))
@@ -853,6 +1179,18 @@ private struct AboutSettingsPane: View {
             .padding(20)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func infoRow(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(label)
+            Spacer()
+            Text(value)
+                .font(.system(size: 11, design: .monospaced))
+                .lineLimit(2)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
+        }
     }
 }
 

@@ -11,9 +11,14 @@ extension JSONDecoder {
 
 final class APIClient {
     let baseURL: URL
+    private let session: URLSession
 
     init(baseURL: URL) {
         self.baseURL = baseURL
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringCacheData
+        session = URLSession(configuration: configuration)
     }
 
     func get<T: Decodable>(_ path: String, query: [String: String] = [:]) async throws -> T {
@@ -21,8 +26,17 @@ final class APIClient {
         return try JSONDecoder.deveco.decode(T.self, from: data)
     }
 
+    func getRaw(_ path: String, query: [String: String] = [:]) async throws -> Data {
+        try await send("GET", url(for: path, query: query), body: nil)
+    }
+
     func post<T: Decodable>(_ path: String, body: Data?) async throws -> T {
-        let data = try await send("POST", url(for: path), body: body)
+        let data = try await send("POST", url(for: path, query: [:]), body: body)
+        return try JSONDecoder.deveco.decode(T.self, from: data)
+    }
+
+    func post<T: Decodable>(_ path: String, query: [String: String], body: Data?) async throws -> T {
+        let data = try await send("POST", url(for: path, query: query), body: body)
         return try JSONDecoder.deveco.decode(T.self, from: data)
     }
 
@@ -33,6 +47,11 @@ final class APIClient {
 
     func delete(_ path: String) async throws {
         _ = try await send("DELETE", url(for: path), body: nil)
+    }
+
+    func delete<T: Decodable>(_ path: String) async throws -> T {
+        let data = try await send("DELETE", url(for: path), body: nil)
+        return try JSONDecoder.deveco.decode(T.self, from: data)
     }
 
     /// POST whose response body is discarded (unrevert, compact, replies).
@@ -52,6 +71,19 @@ final class APIClient {
         return url
     }
 
+    /// OpenAPI `deepObject` parameters use bracketed keys, e.g.
+    /// `location[directory]=/project&location[workspace]=wrk...`.
+    static func locationQuery(directory: String?, workspace: String?) -> [String: String] {
+        var query: [String: String] = [:]
+        if let directory, !directory.isEmpty {
+            query["location[directory]"] = directory
+        }
+        if let workspace, !workspace.isEmpty {
+            query["location[workspace]"] = workspace
+        }
+        return query
+    }
+
     private func send(_ method: String, _ url: URL, body: Data?) async throws -> Data {
         var request = URLRequest(url: url)
         request.httpMethod = method
@@ -69,7 +101,7 @@ final class APIClient {
         while attempt < maxAttempts {
             attempt += 1
             do {
-                let (data, response) = try await URLSession.shared.data(for: request)
+                let (data, response) = try await session.data(for: request)
                 guard let http = response as? HTTPURLResponse else { throw APIError.invalidResponse }
                 guard (200..<300).contains(http.statusCode) else {
                     let text = String(data: data, encoding: .utf8) ?? ""

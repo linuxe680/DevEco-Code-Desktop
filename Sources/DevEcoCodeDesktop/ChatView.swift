@@ -1,5 +1,71 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
+
+private enum ChatLinkDetector {
+    static func URLs(in text: String) -> [(range: Range<String.Index>, url: URL)] {
+        guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else {
+            return []
+        }
+        let nsRange = NSRange(text.startIndex..<text.endIndex, in: text)
+        var result: [(Range<String.Index>, URL)] = []
+        detector.enumerateMatches(in: text, options: [], range: nsRange) { match, _, _ in
+            guard let match, let url = match.url else { return }
+            guard let swiftRange = Range(match.range, in: text) else { return }
+            result.append((swiftRange, url))
+        }
+        return result
+    }
+}
+
+private struct LinkText: View {
+    let text: String
+    var searchQuery: String = ""
+
+    @AppStorage(AppSettings.Keys.chatFontSize)
+    private var chatFontSize = 15.0
+
+    var body: some View {
+        let links = ChatLinkDetector.URLs(in: text)
+        Group {
+            if links.isEmpty {
+                Text(text)
+            } else {
+                Text(buildAttributed(links))
+                    .environment(\.openURL, OpenURLAction { url in
+                        NSWorkspace.shared.open(url)
+                        return .handled
+                    })
+            }
+        }
+        .font(.system(size: ChatTypography.body(chatFontSize)))
+        .lineSpacing(ChatTypography.lineSpacing(chatFontSize))
+        .textSelection(.enabled)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func buildAttributed(_ links: [(range: Range<String.Index>, url: URL)]) -> AttributedString {
+        var attributed = AttributedString()
+        var cursor = text.startIndex
+        for link in links {
+            guard link.range.lowerBound >= cursor else { continue }
+            attributed += AttributedString(String(text[cursor..<link.range.lowerBound]))
+            var chunk = AttributedString(String(text[link.range]))
+            chunk.link = link.url
+            chunk.foregroundColor = .accentColor
+            chunk.underlineStyle = .single
+            attributed += chunk
+            cursor = link.range.upperBound
+        }
+        attributed += AttributedString(String(text[cursor...]))
+        return attributed
+    }
+}
+
+@ViewBuilder
+private func linkText(_ text: String, searchQuery: String = "") -> some View {
+    LinkText(text: text, searchQuery: searchQuery)
+}
 
 private struct ModelGroup: Identifiable {
     let provider: String
@@ -22,6 +88,7 @@ struct ChatView: View {
     @Binding var workPanelOpen: Bool
     @Binding var showSearch: Bool
     @Binding var section: AppSection
+    let openWorkPanelTab: (WorkPanelTab) -> Void
 
     @EnvironmentObject var store: SessionStore
     @EnvironmentObject var providers: ProviderStore
@@ -46,6 +113,8 @@ struct ChatView: View {
     /// pointless then, and `scrollTo(anchor: .bottom)` overscrolls such short
     /// transcripts so the first message gets clipped under the top row.
     @State private var transcriptFitsViewport = false
+    /// Scroll position as a fraction of the scrollable content height.
+    @State private var transcriptScrollProgress: CGFloat = 0
 
     /// The most recent tool part still running, for the sticky activity bar.
     private var runningTool: Part? {
@@ -79,6 +148,8 @@ struct ChatView: View {
     @State private var dragHover = false
     @State private var showModelPicker = false
     @State private var modelQuery = ""
+    @State private var modelSection = "all"
+    @FocusState private var modelSearchFocused: Bool
     /// Set on send so the next clear-draft render cannot refocus the input
     /// and steal focus from the transcript while the agent starts working.
     @State private var suppressFocusOnce = false
@@ -189,6 +260,14 @@ struct ChatView: View {
 
     /// Escape unwinds overlays first (candidate popup), then aborts a run.
     private func handleEscape() {
+        if showSearch {
+            closeSearch()
+            return
+        }
+        if showModelPicker {
+            showModelPicker = false
+            return
+        }
         if !mentionMatches.isEmpty {
             // Drop the trailing "@query" token so the popup stays closed.
             if let token = mentionToken,
@@ -248,18 +327,28 @@ struct ChatView: View {
         if store.draft != oldDraft { store.bumpDraftToken() }
     }
 
+    /// Pure index math for Option+↓ recall. `nil` means "return to the saved
+    /// draft" (no history, or stepped back past the newest entry). Clamping
+    /// keeps a stale `current` safe if history was cleared/truncated in
+    /// another window while this composer was mid-recall.
+    nonisolated static func historyDownIndex(current: Int, historyCount: Int) -> Int? {
+        guard historyCount > 0, current > 0 else { return nil }
+        let steps = min(current - 1, historyCount - 1)
+        return historyCount - 1 - steps
+    }
+
     private func historyDown() {
         let history = AppSettings.promptHistory
         guard let current = historyIndex else { return }
         let oldDraft = store.draft
-        if current == 0 {
+        guard let index = Self.historyDownIndex(current: current, historyCount: history.count) else {
             historyIndex = nil
             store.draft = draftBeforeHistory
-        } else {
-            historyIndex = current - 1
-            let index = min(current - 1, max(history.count - 1, 0))
-            store.draft = history[history.count - 1 - index]
+            if store.draft != oldDraft { store.bumpDraftToken() }
+            return
         }
+        historyIndex = current - 1
+        store.draft = history[index]
         if store.draft != oldDraft { store.bumpDraftToken() }
     }
     private var commandMatches: [DevCommand] {
@@ -295,6 +384,10 @@ struct ChatView: View {
             }
         }
         .animation(.easeOut(duration: 0.14), value: showSearch)
+        .onAppear {
+            MarkdownCache.configure()
+            ImageCache.configure()
+        }
     }
 
     /// The transcript's own top row. Codex keeps this seamless with the
@@ -322,7 +415,8 @@ struct ChatView: View {
             if store.selectedSessionID != nil {
                 TranscriptToolbarActions(
                     showSearch: $showSearch,
-                    workPanelOpen: $workPanelOpen
+                    workPanelOpen: $workPanelOpen,
+                    openWorkPanelTab: openWorkPanelTab
                 )
             }
             AppChromeControls()
@@ -606,6 +700,139 @@ struct ChatView: View {
         }
     }
 
+    /// Reasoning is emitted once per model step, but users read it as one
+    /// thought for the whole turn. Collect consecutive assistant messages into
+    /// a single block anchored at the first step.
+    private var assistantThinkingGroups: [String: ThinkingGroup] {
+        var groups: [String: ThinkingGroup] = [:]
+        var anchorID: String?
+        var memberIDs: [String] = []
+        var texts: [String] = []
+
+        func flush() {
+            defer {
+                anchorID = nil
+                memberIDs = []
+                texts = []
+            }
+            guard let anchorID, !texts.isEmpty else { return }
+            let group = ThinkingGroup(
+                anchorID: anchorID,
+                text: texts.joined(separator: "\n\n")
+            )
+            for id in memberIDs {
+                groups[id] = group
+            }
+        }
+
+        for message in store.messages {
+            guard message.info.role == "assistant" else {
+                flush()
+                continue
+            }
+            if anchorID == nil { anchorID = message.id }
+            memberIDs.append(message.id)
+            for part in message.parts where part.type == "reasoning" {
+                guard let text = part.text?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !text.isEmpty else { continue }
+                texts.append(text)
+            }
+        }
+        flush()
+        return groups
+    }
+
+    private var assistantToolGroups: [String: ToolRunGroup] {
+        var groups: [String: ToolRunGroup] = [:]
+        var anchorID: String?
+        var memberIDs: [String] = []
+        var parts: [Part] = []
+
+        func flush() {
+            defer {
+                anchorID = nil
+                memberIDs = []
+                parts = []
+            }
+            guard let anchorID, parts.count > 1 else { return }
+            let group = ToolRunGroup(anchorID: anchorID, parts: parts)
+            for id in memberIDs {
+                groups[id] = group
+            }
+        }
+
+        for message in store.messages {
+            guard message.info.role == "assistant" else {
+                flush()
+                continue
+            }
+            if anchorID == nil { anchorID = message.id }
+            memberIDs.append(message.id)
+            parts.append(contentsOf: message.parts.filter { $0.type == "tool" })
+        }
+        flush()
+        return groups
+    }
+
+    private struct MessageRow {
+        let message: MessageRecord
+        let thinking: ThinkingGroup?
+        let tools: ToolRunGroup?
+        let isDateDivider: Bool
+        let modelChangeNotice: String?
+    }
+
+    private var messageRows: [MessageRow] {
+        let thinkingGroups = searchQuery.isEmpty ? assistantThinkingGroups : [:]
+        let toolGroups = searchQuery.isEmpty ? assistantToolGroups : [:]
+        var lastDay: Date?
+        return visibleMessages.map { message in
+            let notice = searchQuery.isEmpty
+                ? message.parts
+                    .compactMap(\.text)
+                    .first(where: isModelChangeNotice)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                : nil
+            let day = message.info.createdDate.map {
+                Calendar.current.startOfDay(for: $0)
+            }
+            let showDay = day != nil && day != lastDay
+            lastDay = day
+            return MessageRow(
+                message: message,
+                thinking: thinkingGroups[message.id],
+                tools: toolGroups[message.id],
+                isDateDivider: showDay,
+                modelChangeNotice: notice
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func messageRowView(_ row: MessageRow) -> some View {
+        if let date = row.message.info.createdDate, row.isDateDivider {
+            TimelineDivider(text: conversationDateLabel(date))
+        }
+        if let notice = row.modelChangeNotice {
+            TimelineDivider(text: notice, symbol: "cube")
+        }
+        MessageBubble(
+            message: row.message,
+            isStreaming: StreamRenderText.shouldTypewrite(
+                row.message,
+                isSending: store.isSending,
+                isLast: row.message.id == store.messages.last?.id
+            ),
+            searchQuery: searchQuery,
+            aggregatedThinking: row.thinking?.anchorID == row.message.id ? row.thinking?.text : nil,
+            suppressInlineReasoning: row.thinking != nil,
+            groupedTools: row.tools?.anchorID == row.message.id ? row.tools?.parts : nil,
+            suppressInlineTools: row.tools != nil,
+            isLastMessage: row.message.id == store.messages.last?.id
+        )
+        .id(row.message.id)
+    }
+
     /// Enter (next) / Shift+Enter (previous) cycle through the matches.
     private func jumpSearch(_ direction: Int) {
         let matches = visibleMessages
@@ -677,8 +904,8 @@ struct ChatView: View {
         focusTrigger += 1
     }
 
-    /// Composer model picker: a popover with type-to-filter (64+ models make
-    /// a nested menu painful) and a "recent" section fed by explicit picks.
+    /// Composer model picker: a Codex-style sheet with type-to-filter (64+
+    /// models make a nested menu painful) and a "recent" section.
     private var composerModelMenu: some View {
         Button {
             modelQuery = ""
@@ -701,7 +928,8 @@ struct ChatView: View {
         .buttonStyle(.plain)
         .fixedSize(horizontal: true, vertical: false)
         .layoutPriority(-1)
-        .popover(isPresented: $showModelPicker, arrowEdge: .bottom) {
+        .help(NSLocalizedString("Choose model for this session", comment: ""))
+        .sheet(isPresented: $showModelPicker) {
             modelPickerContent
         }
     }
@@ -715,6 +943,8 @@ struct ChatView: View {
                 TextField("Search models…", text: $modelQuery)
                     .textFieldStyle(.plain)
                     .font(.system(size: 13))
+                    .focused($modelSearchFocused)
+                    .onSubmit { pickFirstModelResult() }
                 if !modelQuery.isEmpty {
                     Button { modelQuery = "" } label: {
                         Image(systemName: "xmark.circle.fill")
@@ -723,44 +953,141 @@ struct ChatView: View {
                     }
                     .buttonStyle(.plain)
                 }
+                Divider()
+                    .frame(height: 14)
+                Button {
+                    showModelPicker = false
+                    section = .providers
+                } label: {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help(NSLocalizedString("Manage models and providers", comment: ""))
             }
             .padding(.horizontal, 10)
-            .padding(.vertical, 8)
+            .padding(.vertical, 7)
+            .background(Theme.chromeFill, in: RoundedRectangle(cornerRadius: 8))
+            .padding(.horizontal, 14)
+            .padding(.top, 14)
             Divider()
 
-            ScrollView {
+            HStack(spacing: 0) {
                 VStack(alignment: .leading, spacing: 2) {
-                    modelPickerRow(id: nil, name: serverDefaultMenuLabel, provider: nil) {
-                        pickModel(nil)
-                    }
-                    if modelQuery.isEmpty, !AppSettings.recentModels.isEmpty {
-                        pickerSectionHeader(NSLocalizedString("Recent", comment: "model picker"))
-                        ForEach(recentModelChoices) { choice in
-                            modelPickerRow(id: choice.id, name: choice.name, provider: choice.provider) {
-                                pickModel(choice.id)
-                            }
-                        }
-                        pickerSectionHeader(NSLocalizedString("All models", comment: "model picker"))
+                    if modelQuery.isEmpty, !recentModelChoices.isEmpty {
+                        modelSectionButton(
+                            id: "recent",
+                            title: NSLocalizedString("Recent", comment: "model picker"),
+                            count: recentModelChoices.count
+                        )
                     }
                     ForEach(filteredModelGroups) { group in
-                        pickerSectionHeader(group.provider)
-                        ForEach(group.choices) { choice in
-                            modelPickerRow(id: choice.id, name: choice.name, provider: choice.provider) {
-                                pickModel(choice.id)
+                        modelSectionButton(id: group.provider, title: group.provider, count: group.choices.count)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .frame(width: 148)
+                .padding(.vertical, 6)
+                .background(Theme.chromeFill)
+
+                Divider()
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 2) {
+                        if modelSection == "all" {
+                            modelPickerRow(id: nil, name: serverDefaultMenuLabel, provider: nil) {
+                                pickModel(nil)
+                            }
+                            Divider().padding(.vertical, 4)
+                        }
+                        if modelSection == "recent" {
+                            pickerSectionHeader(NSLocalizedString("Recent", comment: "model picker"))
+                            ForEach(recentModelChoices) { choice in
+                                modelPickerRow(id: choice.id, name: choice.name, provider: choice.provider) {
+                                    pickModel(choice.id)
+                                }
+                            }
+                        } else {
+                            ForEach(sectionGroups) { group in
+                                if modelSection == "all" {
+                                    pickerSectionHeader(group.provider)
+                                }
+                                ForEach(group.choices) { choice in
+                                    modelPickerRow(id: choice.id, name: choice.name, provider: nil) {
+                                        pickModel(choice.id)
+                                    }
+                                }
                             }
                         }
+                        if sectionGroups.isEmpty && (modelSection != "recent" || recentModelChoices.isEmpty) {
+                            Text(String(format: NSLocalizedString("No models match “%@”", comment: ""), modelQuery))
+                                .font(.system(size: 12))
+                                .foregroundStyle(.tertiary)
+                                .padding(12)
+                        }
                     }
-                    if filteredModelGroups.isEmpty && recentModelChoices.isEmpty {
-                        Text("No models match “\(modelQuery)”")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.tertiary)
-                            .padding(12)
-                    }
+                    .padding(.vertical, 4)
                 }
-                .padding(.vertical, 4)
+                .frame(maxHeight: 360)
             }
         }
-        .frame(width: 360, height: 380)
+        .frame(width: 560)
+        .padding(.bottom, 10)
+        .onChange(of: modelQuery) { _ in
+            if !modelQuery.isEmpty { modelSection = "all" }
+        }
+        .onAppear {
+            DispatchQueue.main.async { modelSearchFocused = true }
+        }
+        .onExitCommand { showModelPicker = false }
+    }
+
+    private var sectionGroups: [ModelGroup] {
+        if modelSection == "recent" || modelSection == "all" {
+            return filteredModelGroups
+        }
+        return filteredModelGroups.filter { $0.provider == modelSection }
+    }
+
+    private func modelSectionButton(id: String, title: String, count: Int? = nil) -> some View {
+        Button {
+            modelSection = id
+        } label: {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(modelSection == id ? Color.accentColor : Color.secondary.opacity(0.35))
+                    .frame(width: 5, height: 5)
+                Text(title)
+                    .font(.system(size: 12, weight: modelSection == id ? .semibold : .regular))
+                    .foregroundStyle(modelSection == id ? Color.accentColor : Color.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if let count {
+                    Text("\(count)")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                        .monospacedDigit()
+                }
+                Spacer(minLength: 4)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Enter in the search field picks the first visible row, matching the
+    /// command-palette style of the rest of the app.
+    private func pickFirstModelResult() {
+        if modelSection == "recent", let first = recentModelChoices.first {
+            pickModel(first.id)
+            return
+        }
+        if let first = sectionGroups.first?.choices.first {
+            pickModel(first.id)
+        }
     }
 
     private var recentModelChoices: [ModelChoice] {
@@ -805,14 +1132,33 @@ struct ChatView: View {
     ) -> some View {
         Button(action: action) {
             HStack(spacing: 7) {
-                Circle()
-                    .fill(provider.map(providerColor) ?? Color.secondary)
-                    .frame(width: 6, height: 6)
-                Text(name)
-                    .font(.system(size: 13))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(name)
+                        .font(.system(size: 13))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if let provider, !provider.isEmpty {
+                        Text(provider)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
+                }
                 Spacer(minLength: 6)
+                if let choice = modelChoice(id) {
+                    if choice.contextWindow > 0 {
+                        Text(compactTokenCount(Double(choice.contextWindow)))
+                            .font(.system(size: 10))
+                            .foregroundStyle(.tertiary)
+                            .monospacedDigit()
+                    }
+                    if choice.reasoning {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.purple)
+                            .help(NSLocalizedString("Reasoning model", comment: "model badge"))
+                    }
+                }
                 if id == store.selectedModel {
                     Image(systemName: "checkmark")
                         .font(.system(size: 11, weight: .semibold))
@@ -822,8 +1168,13 @@ struct ChatView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+    }
+
+    private func modelChoice(_ id: String?) -> ModelChoice? {
+        guard let id else { return nil }
+        return providers.allModelChoices.first { $0.id == id }
     }
 
     private func pickModel(_ id: String?) {
@@ -952,8 +1303,9 @@ struct ChatView: View {
                 .padding(.vertical, 7)
         }
         .buttonStyle(.plain)
+        .foregroundStyle(.blue)
         .background(.regularMaterial, in: Capsule())
-        .overlay(Capsule().stroke(Theme.softStroke))
+        .overlay(Capsule().stroke(Color.blue.opacity(0.45)))
         .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
         .padding(.bottom, 14 + queuedPromptsInset)
         .help(NSLocalizedString("Back to latest", comment: ""))
@@ -980,28 +1332,6 @@ struct ChatView: View {
                     }
                 )
                 Divider()
-            }
-
-            if !store.pendingPermissions.isEmpty || !store.pendingQuestions.isEmpty {
-                VStack(spacing: 8) {
-                    if let request = store.pendingPermissions.first(where: { $0.sessionID == store.selectedSessionID }) {
-                        let pendingCount = store.pendingPermissions.filter {
-                            $0.sessionID == store.selectedSessionID
-                        }.count
-                        PermissionCardView(request: request, pendingCount: pendingCount)
-                    }
-                    if let request = store.pendingQuestions.first(where: { $0.sessionID == store.selectedSessionID }) {
-                        QuestionBanner(request: request)
-                            // A new ask must not inherit the previous card's
-                            // picks: `selections` is keyed by question index,
-                            // so without a fresh identity the next request
-                            // looked pre-answered and could be submitted with
-                            // stale choices.
-                            .id(request.id)
-                    }
-                }
-                .padding(.horizontal, 22)
-                .padding(.top, 6)
             }
 
             if !store.todos.isEmpty {
@@ -1035,6 +1365,7 @@ struct ChatView: View {
                         tool: runningTool,
                         todoProgress: store.todos.isEmpty ? nil : "\(store.todos.filter(\.isDone).count)/\(store.todos.count)",
                         retryInfo: store.retryInfo,
+                        isThinking: runningTool == nil,
                         stalled: Date().timeIntervalSince(store.lastStreamActivity) > 60
                     ) {
                         store.abort()
@@ -1062,17 +1393,11 @@ struct ChatView: View {
                             // row, so the inter-message gap is reduced by the
                             // strip's height to keep the visual rhythm.
                             LazyVStack(alignment: .leading, spacing: 8) {
-                                ForEach(visibleMessages) { message in
-                                    MessageBubble(
-                                        message: message,
-                                        isStreaming: store.isSending && message.id == store.messages.last?.id,
-                                        searchQuery: searchQuery
-                                    )
-                                    .id(message.id)
-                                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                                ForEach(messageRows, id: \.message.id) { row in
+                                    messageRowView(row)
                                 }
                                 if !searchQuery.isEmpty && visibleMessages.isEmpty {
-                                    Text("No messages match “\(searchQuery)”")
+                                    Text(String(format: NSLocalizedString("No messages match “%@”", comment: ""), searchQuery))
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
@@ -1089,7 +1414,6 @@ struct ChatView: View {
                                     .transition(.opacity.combined(with: .move(edge: .bottom)))
                                 }
                             }
-                            .animation(.easeOut(duration: 0.18), value: store.messages.count)
                         }
                     }
                     .padding(.horizontal, 24)
@@ -1101,12 +1425,22 @@ struct ChatView: View {
                         isNearBottom = near
                         transcriptFitsViewport = fits
                     })
+                    .background(ScrollProgressTracker { progress in
+                        transcriptScrollProgress = progress
+                    })
                 }
                 .coordinateSpace(name: "chatScroll")
                 .overlay(alignment: .bottom) {
-                    if !isNearBottom, !store.messages.isEmpty, searchQuery.isEmpty {
+                    if !isNearBottom, !transcriptFitsViewport, !store.messages.isEmpty, searchQuery.isEmpty {
                         backToLatestButton(proxy)
                             .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    }
+                }
+                .overlay(alignment: .trailing) {
+                    if !transcriptFitsViewport, !visibleMessages.isEmpty, searchQuery.isEmpty {
+                        transcriptOverview(proxy)
+                            .padding(.trailing, 8)
+                            .transition(.opacity)
                     }
                 }
                 .animation(.easeInOut(duration: 0.15), value: isNearBottom)
@@ -1149,6 +1483,20 @@ struct ChatView: View {
                 .onChange(of: searchJumpTick) { _ in
                     guard searchMatchIndex < visibleMessages.count else { return }
                     proxy.scrollTo(visibleMessages[searchMatchIndex].id, anchor: .center)
+                }
+                .onReceive(NotificationCenter.default.publisher(for: .scrollTranscriptToTop)) { _ in
+                    guard let first = store.messages.first?.id else { return }
+                    isNearBottom = false
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        proxy.scrollTo(first, anchor: .top)
+                    }
+                }
+                .onReceive(NotificationCenter.default.publisher(for: .scrollTranscriptToBottom)) { _ in
+                    guard let last = store.messages.last?.id else { return }
+                    isNearBottom = true
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        proxy.scrollTo(last, anchor: .bottom)
+                    }
                 }
             }
 
@@ -1241,6 +1589,36 @@ struct ChatView: View {
                 )
             }
 
+            // Asks and approvals sit next to the composer, where the user is
+            // already looking; at the top of the transcript they were easy to
+            // miss and pushed the conversation down when they appeared.
+            if !store.pendingPermissions.isEmpty || !store.pendingQuestions.isEmpty {
+                VStack(spacing: 8) {
+                    if let request = store.pendingPermissions.first(where: { $0.sessionID == store.selectedSessionID }) {
+                        let pendingCount = store.pendingPermissions.filter {
+                            $0.sessionID == store.selectedSessionID
+                        }.count
+                        PermissionCardView(request: request, pendingCount: pendingCount)
+                    }
+                    if let request = store.pendingQuestions.first(where: { $0.sessionID == store.selectedSessionID }) {
+                        QuestionBanner(request: request)
+                            // A new ask must not inherit the previous card's
+                            // picks: `selections` is keyed by question index,
+                            // so without a fresh identity the next request
+                            // looked pre-answered and could be submitted with
+                            // stale choices.
+                            .id(request.id)
+                    }
+                }
+                // Match the composer's column: a full-bleed card across the
+                // whole window read as a broken layout.
+                .frame(maxWidth: contentMaxWidth)
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 24)
+                .padding(.top, 6)
+                .padding(.bottom, 2)
+            }
+
             VStack(spacing: 8) {
                 if mentionToken != nil {
                     FileMentionView(
@@ -1283,36 +1661,53 @@ struct ChatView: View {
                         ScrollView(.horizontal, showsIndicators: false) {
                             HStack(spacing: 8) {
                                 ForEach(store.attachments) { attachment in
-                                    HStack(spacing: 6) {
-                                        if let thumb = attachment.thumbnail, let image = NSImage(data: thumb) {
+                                    if let thumb = attachment.thumbnail, let image = NSImage(data: thumb) {
+                                        ZStack(alignment: .topTrailing) {
                                             Image(nsImage: image)
                                                 .resizable()
                                                 .aspectRatio(contentMode: .fill)
-                                                .frame(width: 20, height: 20)
-                                                .clipShape(RoundedRectangle(cornerRadius: 4))
-                                        } else {
+                                                .frame(width: 64, height: 64)
+                                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                                                .overlay(
+                                                    RoundedRectangle(cornerRadius: 8)
+                                                        .stroke(Theme.softStroke)
+                                                )
+                                            Button {
+                                                store.removeAttachment(attachment)
+                                            } label: {
+                                                Image(systemName: "xmark.circle.fill")
+                                                    .font(.system(size: 14))
+                                                    .symbolRenderingMode(.palette)
+                                                    .foregroundStyle(.white, .black.opacity(0.65))
+                                            }
+                                            .buttonStyle(.plain)
+                                            .padding(3)
+                                        }
+                                        .help(attachment.filename ?? NSLocalizedString("image", comment: "attachment fallback"))
+                                    } else {
+                                        HStack(spacing: 6) {
                                             Image(systemName: attachment.mime.hasPrefix("image/") ? "photo" : "doc")
                                                 .font(.caption)
                                                 .foregroundStyle(Color.accentColor)
+                                            Text(attachment.filename ?? (attachment.mime.hasPrefix("image/")
+                                                 ? NSLocalizedString("image", comment: "attachment fallback")
+                                                 : NSLocalizedString("file", comment: "attachment fallback")))
+                                                .font(.system(size: 12))
+                                                .lineLimit(1)
+                                            Button {
+                                                store.removeAttachment(attachment)
+                                            } label: {
+                                                Image(systemName: "xmark.circle.fill")
+                                                    .font(.caption2)
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                            .buttonStyle(.plain)
                                         }
-                                        Text(attachment.filename ?? (attachment.mime.hasPrefix("image/")
-                                             ? NSLocalizedString("image", comment: "attachment fallback")
-                                             : NSLocalizedString("file", comment: "attachment fallback")))
-                                            .font(.system(size: 12))
-                                            .lineLimit(1)
-                                        Button {
-                                            store.removeAttachment(attachment)
-                                        } label: {
-                                            Image(systemName: "xmark.circle.fill")
-                                                .font(.caption2)
-                                                .foregroundStyle(.secondary)
-                                        }
-                                        .buttonStyle(.plain)
+                                        .padding(.horizontal, 9)
+                                        .padding(.vertical, 4)
+                                        .background(Theme.chipFill)
+                                        .clipShape(RoundedRectangle(cornerRadius: 6))
                                     }
-                                    .padding(.horizontal, 9)
-                                    .padding(.vertical, 4)
-                                    .background(Theme.chipFill)
-                                    .clipShape(RoundedRectangle(cornerRadius: 6))
                                 }
                             }
                             .padding(.horizontal, 12)
@@ -1405,6 +1800,7 @@ struct ChatView: View {
         }
         .onChange(of: store.selectedSessionID) { _ in
             isNearBottom = true
+                    transcriptScrollProgress = 1
             searchQuery = ""
             showSearch = false
             focusTrigger += 1
@@ -1417,6 +1813,127 @@ struct ChatView: View {
             } else {
                 DispatchQueue.main.async { searchFocused = true }
             }
+        }
+    }
+}
+
+extension ChatView {
+    private func transcriptOverview(_ proxy: ScrollViewProxy) -> some View {
+        TranscriptOverview(
+            messageCount: visibleMessages.count,
+            progress: transcriptScrollProgress
+        ) { progress in
+            guard !visibleMessages.isEmpty else { return }
+            let index = Int((progress * CGFloat(visibleMessages.count - 1)).rounded())
+            proxy.scrollTo(visibleMessages[min(max(0, index), visibleMessages.count - 1)].id, anchor: .top)
+        }
+    }
+}
+
+/// Compact Codex-style timeline: a thin rail with one tick per message and a
+/// draggable thumb. It lets long sessions be scrubbed without rendering every
+/// message in a separate virtualized list.
+private struct TranscriptOverview: View {
+    let messageCount: Int
+    let progress: CGFloat
+    let onScrub: (CGFloat) -> Void
+
+    @State private var dragProgress: CGFloat?
+
+    private var value: CGFloat { dragProgress ?? progress }
+
+    var body: some View {
+        GeometryReader { geometry in
+            let height = geometry.size.height
+            ZStack(alignment: .top) {
+                Capsule()
+                    .fill(Color.secondary.opacity(0.12))
+                    .frame(width: 3)
+
+                if messageCount > 1 {
+                    ForEach(0..<messageCount, id: \.self) { index in
+                        Capsule()
+                            .fill(index == lastMatchIndex ? Color.accentColor : Color.secondary.opacity(0.45))
+                            .frame(width: index == lastMatchIndex ? 7 : 5, height: 1)
+                            .offset(x: index == lastMatchIndex ? -2 : -1,
+                                    y: height * CGFloat(index) / CGFloat(max(1, messageCount - 1)))
+                    }
+                }
+
+                Capsule()
+                    .fill(Color.accentColor.opacity(0.85))
+                    .frame(width: 5, height: 30)
+                    .offset(y: max(0, min(height - 30, height * value)))
+            }
+            .frame(width: 12, height: height)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { gesture in
+                        let next = max(0, min(1, gesture.location.y / max(1, height - 30)))
+                        dragProgress = next
+                        onScrub(next)
+                    }
+                    .onEnded { _ in dragProgress = nil }
+            )
+        }
+        .frame(width: 12)
+        .help(NSLocalizedString("Conversation overview", comment: ""))
+    }
+
+    private var lastMatchIndex: Int {
+        Int((value * CGFloat(max(0, messageCount - 1))).rounded())
+    }
+}
+
+/// Reports normalized scroll offset from the enclosing NSScrollView.
+private struct ScrollProgressTracker: NSViewRepresentable {
+    var onProgress: (CGFloat) -> Void
+
+    func makeNSView(context: Context) -> ProgressTrackerView {
+        let view = ProgressTrackerView()
+        view.onProgress = onProgress
+        return view
+    }
+
+    func updateNSView(_ view: ProgressTrackerView, context: Context) {
+        view.onProgress = onProgress
+        view.report()
+    }
+
+    final class ProgressTrackerView: NSView {
+        var onProgress: ((CGFloat) -> Void)?
+        private var observers: [NSObjectProtocol] = []
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            observers.forEach { NotificationCenter.default.removeObserver($0) }
+            observers.removeAll()
+            guard window != nil, let scroll = enclosingScrollView else { return }
+            let clip = scroll.contentView
+            clip.postsBoundsChangedNotifications = true
+            scroll.documentView?.postsFrameChangedNotifications = true
+            let center = NotificationCenter.default
+            observers.append(center.addObserver(
+                forName: NSView.boundsDidChangeNotification, object: clip, queue: .main
+            ) { [weak self] _ in self?.report() })
+            observers.append(center.addObserver(
+                forName: NSView.frameDidChangeNotification, object: scroll.documentView, queue: .main
+            ) { [weak self] _ in self?.report() })
+            DispatchQueue.main.async { [weak self] in self?.report() }
+        }
+
+        func report() {
+            guard let scroll = enclosingScrollView,
+                  let document = scroll.documentView,
+                  let onProgress else { return }
+            let maxY = max(0, document.bounds.height - scroll.contentView.bounds.height)
+            let progress = maxY <= 0 ? 1 : min(1, max(0, scroll.contentView.bounds.origin.y / maxY))
+            onProgress(progress)
+        }
+
+        deinit {
+            observers.forEach { NotificationCenter.default.removeObserver($0) }
         }
     }
 }
@@ -1512,6 +2029,8 @@ private struct ActivityBar: View {
     let tool: Part?
     let todoProgress: String?
     let retryInfo: String?
+    /// The agent is model-generating when no tool is executing.
+    var isThinking: Bool = false
     /// True when a run is active but no delta arrived for over a minute.
     var stalled: Bool = false
     var onStop: () -> Void
@@ -1527,13 +2046,12 @@ private struct ActivityBar: View {
                 Text(Theme.toolName(tool.tool))
                     .font(.system(size: 14, weight: .semibold))
                     .lineLimit(1)
-                if let summary = tool.state?.summary, !summary.isEmpty {
-                    Text(summary)
-                        .font(.system(size: 13))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
+            } else if isThinking {
+                Image(systemName: "brain")
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(.blue)
+                Text(NSLocalizedString("Thinking…", comment: "model is generating"))
+                    .font(.system(size: 14, weight: .semibold))
             } else {
                 Text(NSLocalizedString("Working…", comment: ""))
                     .font(.system(size: 14, weight: .semibold))
@@ -1973,6 +2491,11 @@ private struct MessageBubble: View {
     /// 避免每个气泡都读 store.isSending/messages.last 导致全量重算。
     var isStreaming: Bool = false
     var searchQuery: String = ""
+    var aggregatedThinking: String? = nil
+    var suppressInlineReasoning: Bool = false
+    var groupedTools: [Part]? = nil
+    var suppressInlineTools: Bool = false
+    var isLastMessage: Bool = false
 
     @AppStorage(AppSettings.Keys.chatFontSize)
     private var chatFontSize = 15.0
@@ -2009,6 +2532,28 @@ private struct MessageBubble: View {
     }
 
     private var isUser: Bool { message.info.role == "user" }
+
+    private var hasVisibleText: Bool {
+        message.parts.contains { part in
+            guard part.type == "text" else { return false }
+            return !visiblePartText(part.text ?? "", useMarkdown: true).isEmpty
+        }
+    }
+
+    private var hasAnyVisibleContent: Bool {
+        hasVisibleText
+            || aggregatedThinking?.isEmpty == false
+            || groupedTools?.isEmpty == false
+            || message.parts.contains { $0.type == "file" }
+    }
+
+    private var usageCapsuleLabel: String? {
+        guard let tokens = message.info.tokens else { return nil }
+        let total = (tokens.input ?? 0) + (tokens.cache?.read ?? 0)
+            + (tokens.output ?? 0) + (tokens.reasoning ?? 0)
+        guard total > 0 else { return nil }
+        return compactTokenCount(total)
+    }
 
     private var microSize: CGFloat {
         ChatTypography.micro(chatFontSize)
@@ -2077,6 +2622,12 @@ private struct MessageBubble: View {
                 }
                 .disabled(isStreamingThis)
             } else {
+                if isLastMessage {
+                    Button(NSLocalizedString("Regenerate", comment: "")) {
+                        Task { await store.regenerateLastResponse() }
+                    }
+                    .disabled(isStreamingThis)
+                }
                 Button(NSLocalizedString("Revert to here…", comment: "")) {
                     Task { await store.revert(to: message) }
                 }
@@ -2102,6 +2653,13 @@ private struct MessageBubble: View {
             Spacer(minLength: 80)
             VStack(alignment: .trailing, spacing: 2) {
                 userBubble
+                if let time = message.info.createdDate {
+                    Text(messageTimeLabel(time))
+                        .font(.system(size: microSize))
+                        .foregroundStyle(.tertiary)
+                        .monospacedDigit()
+                        .padding(.trailing, 4)
+                }
                 hoverActionRow
             }
                 .contentShape(Rectangle())
@@ -2133,7 +2691,16 @@ private struct MessageBubble: View {
     private var assistantMessage: some View {
         VStack(alignment: .leading, spacing: 2) {
             VStack(alignment: .leading, spacing: 8) {
-                ForEach(message.parts) { part in
+                if let aggregatedThinking, !aggregatedThinking.isEmpty {
+                    ThinkingPanel(text: aggregatedThinking)
+                }
+                if let groupedTools, !groupedTools.isEmpty {
+                    ToolRunPanel(parts: groupedTools)
+                }
+                ForEach(message.parts.filter {
+                    !(suppressInlineReasoning && $0.type == "reasoning")
+                        && !(suppressInlineTools && $0.type == "tool")
+                }) { part in
                     PartView(
                         part: part,
                         useMarkdown: true,
@@ -2142,19 +2709,29 @@ private struct MessageBubble: View {
                     )
                 }
 
-                HStack(spacing: 6) {
-                    if let elapsed = message.info.elapsedDuration {
-                        Text(elapsed)
-                            .font(.system(size: microSize))
-                            .foregroundStyle(.tertiary)
-                            .monospacedDigit()
-                    }
-                    if let metadata = assistantFooterMetadata {
-                        Text(metadata)
-                            .font(.system(size: microSize))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
+                if hasAnyVisibleContent {
+                    HStack(spacing: 6) {
+                        if let time = message.info.createdDate {
+                            Text(messageTimeLabel(time))
+                                .font(.system(size: microSize))
+                                .foregroundStyle(.tertiary)
+                                .monospacedDigit()
+                        }
+                        if let elapsed = message.info.elapsedDuration {
+                            Text(elapsed)
+                                .font(.system(size: microSize))
+                                .foregroundStyle(.tertiary)
+                                .monospacedDigit()
+                        }
+                        if let metadata = assistantFooterMetadata {
+                            Text(usageCapsuleLabel ?? NSLocalizedString("Usage", comment: "usage capsule"))
+                                .font(.system(size: microSize, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1)
+                                .background(Theme.chipFill, in: Capsule())
+                                .help(metadata)
+                        }
                     }
                 }
             }
@@ -2162,7 +2739,9 @@ private struct MessageBubble: View {
             .lineSpacing(ChatTypography.lineSpacing(chatFontSize))
             .padding(.vertical, 3)
 
-            hoverActionRow
+            if isUser || hasAnyVisibleContent {
+                hoverActionRow
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
@@ -2270,6 +2849,10 @@ private struct MessageBubble: View {
             if message.info.role == "user" {
                 actionButton("pencil", help: NSLocalizedString("Edit & resend…", comment: "")) {
                     Task { await store.editMessage(message) }
+                }
+            } else if isLastMessage {
+                actionButton("arrow.clockwise", help: NSLocalizedString("Regenerate", comment: "")) {
+                    Task { await store.regenerateLastResponse() }
                 }
             }
             actionButton("clock.arrow.circlepath", help: NSLocalizedString("Revert to here…", comment: "")) {
@@ -2410,42 +2993,31 @@ private struct StreamingTextView: View {
         return reveal.text
     }
 
-    private var content: String {
-        StreamRenderText.liveTailText(split, showCaret: isTypewriterActive)
-    }
-
     /// A bubble is live only while the server is appending or the typewriter
-    /// is still catching up. The split renderer keeps the last line as plain
-    /// text so half-written markup cannot repaint the bubble; a finished reply
-    /// must go through the full Markdown path or inline styling on its final
-    /// line (bold, code spans, links) would render as literal markers.
+    /// is still catching up. A live reply renders as one plain-text block so
+    /// it never appears twice or changes block spacing mid-stream; the full
+    /// Markdown renderer takes over once the run ends.
     private var isLive: Bool {
         isStreaming || isTypewriterActive
     }
 
-    /// User-authored text must stay verbatim: running it through the Markdown
-    /// renderer turned "# heading" into a heading and ``` fences into code
-    /// cards, so what the user typed no longer matched what they sent.
     private var plainContent: String {
-        isTypewriterActive ? shown + "▍" : shown
-    }
-
-    private var split: StreamRenderText.Split {
-        StreamRenderText.displaySplit(shown, isLive: isLive)
+        guard isLive, !shown.isEmpty, !shown.hasSuffix("\n") else { return shown }
+        return shown + "▍"
     }
 
     var body: some View {
         Group {
             if useMarkdown {
-                VStack(alignment: .leading, spacing: 0) {
-                    if split.hasStablePrefix {
-                        MarkdownContentView(content: split.stablePrefix, searchQuery: searchQuery)
-                    }
-                    Text(content)
-                        .font(.system(size: ChatTypography.body(chatFontSize)))
-                        .lineSpacing(ChatTypography.lineSpacing(chatFontSize))
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
+                // A live reply is one plain-text block. Rendering a Markdown
+                // prefix beside a plain tail made the same answer appear in
+                // two places and changed block spacing whenever the boundary
+                // crossed a newline (the "text jumps" the user reported).
+                // The full Markdown renderer takes over once the run ends.
+                if isLive {
+                    linkText(plainContent, searchQuery: searchQuery)
+                } else {
+                    MarkdownContentView(content: shown, searchQuery: searchQuery)
                 }
             } else if !searchQuery.isEmpty,
                       let attributed = highlightedAttributedString(plainContent, query: searchQuery) {
@@ -2454,12 +3026,9 @@ private struct StreamingTextView: View {
                     .lineSpacing(ChatTypography.lineSpacing(chatFontSize))
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
+                    .frame(minHeight: 44, alignment: .topLeading)
             } else {
-                Text(plainContent)
-                    .font(.system(size: ChatTypography.body(chatFontSize)))
-                    .lineSpacing(ChatTypography.lineSpacing(chatFontSize))
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
+                linkText(plainContent, searchQuery: searchQuery)
             }
         }
         .onAppear { reveal.update(target: target, isStreaming: revealIsStreaming) }
@@ -2475,15 +3044,18 @@ private struct StreamingTextView: View {
 final class StreamingReveal: ObservableObject {
     @Published private(set) var text = ""
 
-    private var target = ""
-    private var displayedUnits = 0
+    /// Grapheme cluster buffer for the current target. A stream normally
+    /// appends, so this grows incrementally instead of rebuilding a prefix
+    /// string on every 24ms tick.
+    private var characters: [Character] = []
+    private var displayedCount = 0
     private var lastTick = Date.distantPast
     /// At most one queued tick. Without this, a burst of `update` calls could
     /// start several independent asyncAfter chains that all mutate `text`.
     private var tickScheduled = false
     /// Set only when the bubble has actually been in a live streaming state.
     private(set) var activated = false
-    var finished: Bool { displayedUnits >= target.count }
+    var finished: Bool { displayedCount >= characters.count }
 
     /// ~62 glyphs/second: fast enough for short answers, slow enough that a
     /// one-shot 300-glyph burst visibly types over a few seconds.
@@ -2497,22 +3069,29 @@ final class StreamingReveal: ObservableObject {
                 lastTick = Date()
             }
         }
-        if newTarget.count < displayedUnits {
-            // The server can rewrite a streaming part (a reverted tail, a
-            // normalized prefix). Clamp to the new length instead of rewinding
-            // to zero: the old code fell back to the 6-glyph seed and replayed
-            // the whole visible answer, which read as a flash.
-            displayedUnits = newTarget.count
+        let oldCount = characters.count
+        if newTarget.count > oldCount,
+           oldCount > 0,
+           newTarget.prefix(oldCount).elementsEqual(characters) {
+            characters.append(contentsOf: newTarget.dropFirst(oldCount))
+        } else if newTarget.count < oldCount {
+            // A reverted tail clamps in place. Rebuilding on a shrink is rare;
+            // it must not replay the whole answer from the seed glyphs.
+            characters = Array(newTarget)
+            displayedCount = characters.count
             text = newTarget
+        } else if !newTarget.elementsEqual(characters) {
+            let common = zip(text, newTarget).prefix { $0 == $1 }.count
+            characters = Array(newTarget)
+            displayedCount = min(common, characters.count)
+            text = String(characters.prefix(displayedCount))
         }
-        target = newTarget
         guard activated else { return }
-        if newStreaming && displayedUnits == 0 && !newTarget.isEmpty {
-            displayedUnits = min(6, newTarget.count)
-            text = String(newTarget.prefix(displayedUnits))
+        if newStreaming && displayedCount == 0 && !characters.isEmpty {
+            advance(min(6, characters.count))
         }
-        if !newStreaming && displayedUnits == 0 {
-            displayedUnits = newTarget.count
+        if !newStreaming && displayedCount == 0 {
+            displayedCount = characters.count
             text = newTarget
             return
         }
@@ -2520,11 +3099,11 @@ final class StreamingReveal: ObservableObject {
     }
 
     private func ensureTicking() {
-        guard displayedUnits < target.count else {
+        guard displayedCount < characters.count else {
             // Caught up with the transcript. Never rewind: a partial reveal
             // that shrinks while the server is still appending makes the tail
             // flicker (and can strand a lone caret glyph on its own line).
-            text = target
+            text = String(characters)
             return
         }
         let now = Date()
@@ -2538,11 +3117,18 @@ final class StreamingReveal: ObservableObject {
         }
         let step = max(1, min(3, Int(Self.glyphsPerSecond * elapsed)))
         lastTick = now
-        displayedUnits = min(target.count, displayedUnits + step)
-        text = String(target.prefix(displayedUnits))
-        if displayedUnits < target.count {
+        advance(step)
+        if displayedCount < characters.count {
             scheduleTick(after: Self.minInterval)
         }
+    }
+
+    private func advance(_ step: Int) {
+        let next = min(step, characters.count - displayedCount)
+        guard next > 0 else { return }
+        let end = displayedCount + next
+        text.append(contentsOf: characters[displayedCount..<end])
+        displayedCount = end
     }
 
     private func scheduleTick(after delay: TimeInterval) {
@@ -2566,16 +3152,6 @@ private struct PartView: View {
     @AppStorage(AppSettings.Keys.chatFontSize)
     private var chatFontSize = 15.0
 
-    @State private var thinkingExpanded: Bool
-
-    init(part: Part, useMarkdown: Bool, isStreaming: Bool = false, searchQuery: String = "") {
-        self.part = part
-        self.useMarkdown = useMarkdown
-        self.isStreaming = isStreaming
-        self.searchQuery = searchQuery
-        _thinkingExpanded = State(initialValue: AppSettings.expandThinking)
-    }
-
     var body: some View {
         switch part.type {
         case "text":
@@ -2592,20 +3168,7 @@ private struct PartView: View {
                 )
             }
         case "reasoning":
-            DisclosureGroup(isExpanded: $thinkingExpanded) {
-                Text(part.text ?? "")
-                    .font(.system(size: ChatTypography.meta(chatFontSize)))
-                    .lineSpacing(ChatTypography.lineSpacing(chatFontSize))
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .padding(.top, 2)
-            } label: {
-                // DisclosureGroup draws its own chevron; adding one here
-                // rendered a doubled arrow.
-                Text(NSLocalizedString("Thinking", comment: ""))
-                    .font(.system(size: ChatTypography.micro(chatFontSize), weight: .medium))
-                    .foregroundStyle(.quaternary)
-            }
+            ThinkingPanel(text: part.text ?? "")
         case "tool":
             ToolCardView(part: part)
         case "step", "subtask", "task":
@@ -2620,6 +3183,103 @@ private struct PartView: View {
             Text(part.text ?? part.type)
                 .font(.system(size: ChatTypography.meta(chatFontSize)))
                 .foregroundStyle(.secondary)
+        }
+    }
+}
+
+private struct ThinkingGroup {
+    let anchorID: String
+    let text: String
+}
+
+private struct ToolRunGroup {
+    let anchorID: String
+    let parts: [Part]
+}
+
+private struct ThinkingPanel: View {
+    let text: String
+
+    @AppStorage(AppSettings.Keys.chatFontSize)
+    private var chatFontSize = 15.0
+    @State private var expanded: Bool
+
+    init(text: String) {
+        self.text = text
+        _expanded = State(initialValue: AppSettings.expandThinking)
+    }
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $expanded) {
+            Text(text)
+                .font(.system(size: ChatTypography.meta(chatFontSize)))
+                .lineSpacing(ChatTypography.lineSpacing(chatFontSize))
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .padding(.top, 2)
+        } label: {
+            // DisclosureGroup draws its own chevron; adding one here
+            // rendered a doubled arrow.
+            Text(NSLocalizedString("Thinking", comment: ""))
+                .font(.system(size: ChatTypography.micro(chatFontSize), weight: .medium))
+                .foregroundStyle(.quaternary)
+        }
+    }
+}
+
+private struct ToolRunPanel: View {
+    let parts: [Part]
+
+    @AppStorage(AppSettings.Keys.chatFontSize)
+    private var chatFontSize = 15.0
+    @State private var expanded = false
+
+    private var isRunning: Bool {
+        parts.contains { $0.state?.status == "running" }
+    }
+
+    private var summary: String {
+        String(
+            format: NSLocalizedString("Execution · %d steps", comment: ""),
+            parts.count
+        )
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: expanded ? 6 : 0) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: isRunning ? "gearshape.2" : "list.bullet.rectangle")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    Text(summary)
+                        .font(.system(size: ChatTypography.micro(chatFontSize), weight: .medium))
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 8)
+                    if isRunning {
+                        ProgressView()
+                            .controlSize(.mini)
+                    }
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(Theme.subtleFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if expanded {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(parts) { part in
+                        ToolCardView(part: part)
+                    }
+                }
+            }
         }
     }
 }
@@ -2668,9 +3328,26 @@ private enum MarkdownCache {
     static let segments = NSCache<NSString, CachedBox<[MarkdownSegment]>>()
     static let proseBlocks = NSCache<NSString, CachedBox<[MarkdownProseBlock]>>()
     static let inline = NSCache<NSString, CachedBox<AttributedString>>()
+    /// Streaming parts change the full content on every delta. Caching every
+    /// prefix kept all intermediate versions alive for the lifetime of the
+    /// app — the main source of "长会话越聊越占内存" reports.
+    static let maxCacheableContent = 16 * 1024
+
+    static func configure() {
+        segments.countLimit = 256
+        segments.totalCostLimit = 16 * 1024 * 1024
+        proseBlocks.countLimit = 256
+        proseBlocks.totalCostLimit = 16 * 1024 * 1024
+        inline.countLimit = 512
+        inline.totalCostLimit = 32 * 1024 * 1024
+    }
 
     static func key(_ parts: String...) -> NSString {
         parts.joined(separator: "|") as NSString
+    }
+
+    static func isCacheable(_ text: String) -> Bool {
+        text.utf8.count <= maxCacheableContent
     }
 }
 
@@ -2724,7 +3401,12 @@ func parseMarkdownSegments(_ content: String) -> [MarkdownSegment] {
     } else if !textLines.isEmpty {
         segments.append(.text(textLines.joined(separator: "\n")))
     }
-    MarkdownCache.segments.setObject(CachedBox(segments), forKey: cacheKey)
+    if MarkdownCache.isCacheable(content) {
+        MarkdownCache.segments.setObject(
+            CachedBox(segments), forKey: cacheKey,
+            cost: max(1, content.utf8.count)
+        )
+    }
     return segments
 }
 
@@ -2743,6 +3425,9 @@ enum MarkdownProseBlock: Equatable {
 /// unknown lines stay normal paragraphs.
 private func isSystemNoticeLine(_ text: String) -> Bool {
     let lowered = text.lowercased()
+    if lowered.contains("模型已从") || lowered.contains("model changed") {
+        return true
+    }
     let markers = [
         "recalled ",
         "remembered ",
@@ -2773,13 +3458,70 @@ func visiblePartText(_ text: String, useMarkdown: Bool) -> String {
     guard useMarkdown else {
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
-    return removingSystemNoticeLines(text)
+    let cleaned = removingSystemNoticeLines(text)
+    return cleaned
+        .split(separator: "\n", omittingEmptySubsequences: false)
+        .filter { !isModelChangeNotice(String($0.trimmingCharacters(in: .whitespaces))) }
+        .joined(separator: "\n")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
 func systemNoticeText(_ text: String) -> String {
     text
         .replacingOccurrences(of: "💡 ", with: "")
         .replacingOccurrences(of: "# ", with: "")
+}
+
+func isModelChangeNotice(_ text: String) -> Bool {
+    text.contains("模型已从") || text.localizedCaseInsensitiveContains("model changed")
+}
+
+private func conversationDateLabel(_ date: Date) -> String {
+    let formatter = DateFormatter()
+    formatter.locale = Locale.current
+    formatter.timeStyle = .short
+    if Calendar.current.isDateInToday(date) {
+        return String(format: NSLocalizedString("Today %@", comment: "date divider"), formatter.string(from: date))
+    }
+    if Calendar.current.isDateInYesterday(date) {
+        return String(format: NSLocalizedString("Yesterday %@", comment: "date divider"), formatter.string(from: date))
+    }
+    formatter.dateStyle = .medium
+    formatter.timeStyle = .none
+    return formatter.string(from: date)
+}
+
+private func messageTimeLabel(_ date: Date) -> String {
+    let formatter = DateFormatter()
+    formatter.locale = Locale.current
+    formatter.timeStyle = .short
+    return formatter.string(from: date)
+}
+
+private struct TimelineDivider: View {
+    let text: String
+    var symbol: String? = nil
+
+    @AppStorage(AppSettings.Keys.chatFontSize)
+    private var chatFontSize = 15.0
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if let symbol {
+                Image(systemName: symbol)
+                    .font(.system(size: ChatTypography.micro(chatFontSize)))
+                    .foregroundStyle(.tertiary)
+            }
+            Text(text)
+                .font(.system(size: ChatTypography.micro(chatFontSize), weight: .medium))
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 4)
+        .accessibilityElement(children: .combine)
+    }
 }
 
 /// Splits prose into headings, lists, quotes, and paragraphs. Inline styling
@@ -2861,7 +3603,12 @@ func parseMarkdownProseBlocks(_ text: String) -> [MarkdownProseBlock] {
     }
 
     flushParagraph()
-    MarkdownCache.proseBlocks.setObject(CachedBox(blocks), forKey: cacheKey)
+    if MarkdownCache.isCacheable(text) {
+        MarkdownCache.proseBlocks.setObject(
+            CachedBox(blocks), forKey: cacheKey,
+            cost: max(1, text.utf8.count)
+        )
+    }
     return blocks
 }
 
@@ -2997,7 +3744,12 @@ private struct MarkdownProseView: View {
             )
         ) else { return nil }
         styleInlineCode(&attributed)
-        MarkdownCache.inline.setObject(CachedBox(attributed), forKey: key)
+        if MarkdownCache.isCacheable(text) {
+            MarkdownCache.inline.setObject(
+                CachedBox(attributed), forKey: key,
+                cost: max(1, text.utf8.count)
+            )
+        }
         return attributed
     }
 
@@ -3261,6 +4013,12 @@ private struct ContextDetailsPopover: View {
 /// re-decoding a multi-MB screenshot each time would spike the CPU.
 private enum ImageCache {
     static let cache = NSCache<NSString, NSImage>()
+    static let maxCacheableBytes = 2 * 1024 * 1024
+
+    static func configure() {
+        cache.countLimit = 128
+        cache.totalCostLimit = 128 * 1024 * 1024
+    }
 
     /// Bounds decoded bitmaps. A screenshot that arrives as a 12MP data URL
     /// otherwise stays resident at full size for the whole session.
@@ -3300,6 +4058,7 @@ struct AttachmentChip: View {
     let filename: String
     let mime: String?
     let urlString: String?
+    @State private var showPreview = false
 
     private var isImage: Bool {
         mime?.hasPrefix("image/") == true
@@ -3307,23 +4066,42 @@ struct AttachmentChip: View {
 
     var body: some View {
         if isImage, let image = loadImage() {
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 6) {
                 Image(nsImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
-                    .frame(maxHeight: 220)
+                    .frame(maxWidth: 320, maxHeight: 240)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.softStroke))
-                if !filename.isEmpty {
-                    Text(filename)
+                HStack(spacing: 6) {
+                    Image(systemName: "photo")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                    Text(filename.isEmpty ? NSLocalizedString("Image", comment: "attachment label") : filename)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 0)
+                    Text(NSLocalizedString("Click to open", comment: "attachment hint"))
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
                 }
+                .frame(width: 320)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(6)
+            .background(Theme.chromeFill, in: RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.softStroke))
             .contentShape(Rectangle())
-            .onTapGesture { open() }
+            .onTapGesture { showPreview = true }
             .help(NSLocalizedString("Open attachment", comment: ""))
+            .sheet(isPresented: $showPreview) {
+                ImagePreviewSheet(
+                    image: image,
+                    filename: filename.isEmpty ? NSLocalizedString("Image", comment: "attachment label") : filename,
+                    onOpenExternally: open
+                )
+            }
         } else {
             chip
         }
@@ -3367,7 +4145,10 @@ struct AttachmentChip: View {
             data = nil
         }
         guard let data, let image = ImageCache.decoded(data) else { return nil }
-        ImageCache.cache.setObject(image, forKey: key)
+        if data.count <= ImageCache.maxCacheableBytes {
+            let cost = max(1, data.count)
+            ImageCache.cache.setObject(image, forKey: key, cost: cost)
+        }
         return image
     }
 
@@ -3385,6 +4166,55 @@ struct AttachmentChip: View {
         }
         guard let url = URL(string: urlString) else { return }
         NSWorkspace.shared.open(url)
+    }
+}
+
+/// In-app image viewer. Clicking a transcript image should not bounce the
+/// user into Preview.app for a quick look; external open stays one click away.
+private struct ImagePreviewSheet: View {
+    let image: NSImage
+    let filename: String
+    var onOpenExternally: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Image(systemName: "photo")
+                    .foregroundStyle(.secondary)
+                Text(filename)
+                    .font(.system(size: 13, weight: .medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
+                Button {
+                    onOpenExternally()
+                } label: {
+                    Label(NSLocalizedString("Open in Preview", comment: ""), systemImage: "arrow.up.forward.app")
+                }
+                .controlSize(.small)
+                Button(NSLocalizedString("Done", comment: "")) {
+                    dismiss()
+                }
+                .controlSize(.small)
+                .keyboardShortcut(.defaultAction)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            Divider()
+            GeometryReader { geo in
+                ScrollView([.horizontal, .vertical]) {
+                    Image(nsImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(maxWidth: max(240, geo.size.width), maxHeight: max(180, geo.size.height))
+                        .padding(16)
+                }
+            }
+        }
+        .frame(minWidth: 560, minHeight: 440)
+        .onExitCommand { dismiss() }
     }
 }
 
@@ -3533,6 +4363,8 @@ private struct TaskTraceCard: View {
 
 private struct ToolCardView: View {
     let part: Part
+    @EnvironmentObject var store: SessionStore
+    @EnvironmentObject var server: ServerManager
     @AppStorage(AppSettings.Keys.chatFontSize)
     private var chatFontSize = 15.0
 
@@ -3542,7 +4374,28 @@ private struct ToolCardView: View {
 
     private var state: ToolState? { part.state }
 
-    private var isRunning: Bool { state?.status == "running" }
+    private var questionTexts: Set<String> {
+        guard part.tool == "question",
+              let input = state?.input,
+              let questions = toolQuestions(input) else { return [] }
+        return Set(questions.map(\.question))
+    }
+
+    /// A question tool can stay `running` in the transcript after the server
+    /// restarts, but its in-memory pending request is gone. Treat it as
+    /// expired instead of showing an endless spinner.
+    private var isExpiredQuestion: Bool {
+        QuestionCardState.isExpired(
+            tool: part.tool,
+            status: state?.status,
+            questionTexts: questionTexts,
+            isSending: store.isSending,
+            pending: store.pendingQuestions,
+            sessionID: store.selectedSessionID
+        )
+    }
+
+    private var isRunning: Bool { state?.status == "running" && !isExpiredQuestion }
     private var isStopped: Bool {
         guard let error = state?.error else { return false }
         return FailureKind.classify(error) == .aborted
@@ -3558,20 +4411,36 @@ private struct ToolCardView: View {
             && (state?.error ?? "").localizedCaseInsensitiveContains("dismissed")
     }
 
-    private var hasDetail: Bool {
+    private var isExpanded: Bool {
+        if let userExpanded { return userExpanded }
+        if isExpiredQuestion { return true }
+        return isRunning
+    }
+
+    private var collapsibleDetail: Bool {
+        if part.tool == "question" { return isExpiredQuestion }
         if let output = state?.output, !output.isEmpty, !ToolTrace.looksLikeRawTrace(output) { return true }
-        if part.tool == "question" { return false }
         if let input = state?.input, !input.isEmptyObject { return true }
         if let error = state?.error, !error.isEmpty, state?.status == "error", !isStopped { return true }
         return false
     }
 
-    private var isExpanded: Bool {
-        userExpanded ?? isRunning
-    }
-
     private var toolName: String {
         Theme.toolName(part.tool)
+    }
+
+    private func isFilePathKey(_ key: String) -> Bool {
+        let lowered = key.lowercased()
+        return lowered == "filepath" || lowered == "path" || lowered.hasSuffix("path")
+    }
+
+    private func openToolPath(_ path: String) {
+        let candidate = URL(fileURLWithPath: path)
+        let resolved = candidate.path.hasPrefix("/")
+            ? candidate
+            : server.projectDirectory.appendingPathComponent(path)
+        guard FileManager.default.fileExists(atPath: resolved.path) else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([resolved])
     }
 
     private var toolTint: Color {
@@ -3590,6 +4459,11 @@ private struct ToolCardView: View {
         return toolName
     }
 
+    private var questionResult: String? {
+        guard part.tool == "question", let output = state?.output else { return nil }
+        return QuestionCardState.resultSummary(output)
+    }
+
     /// Raw task traces currently surface in `state.output`; show the parsed
     /// task description as the single line instead of a repeated tool chip.
     private var rawTraceTitle: String? {
@@ -3601,7 +4475,7 @@ private struct ToolCardView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Button {
-                if hasDetail {
+                if collapsibleDetail {
                     withAnimation(.easeInOut(duration: 0.15)) { userExpanded = !isExpanded }
                 }
             } label: {
@@ -3650,12 +4524,17 @@ private struct ToolCardView: View {
                             .font(.system(size: ChatTypography.micro(chatFontSize)))
                             .foregroundStyle(.secondary)
                     }
+                    if isExpiredQuestion {
+                        Text(NSLocalizedString("Expired", comment: ""))
+                            .font(.system(size: ChatTypography.micro(chatFontSize)))
+                            .foregroundStyle(.orange)
+                    }
                     if let duration = state?.duration {
                         Text(duration)
                             .font(.system(size: ChatTypography.micro(chatFontSize), design: .monospaced))
                             .foregroundStyle(.tertiary)
                     }
-                    if hasDetail {
+                    if collapsibleDetail {
                         Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
                             .font(.system(size: 12, weight: .semibold))
                             .foregroundStyle(.tertiary)
@@ -3667,6 +4546,11 @@ private struct ToolCardView: View {
             .buttonStyle(.plain)
 
             if isExpanded {
+                if isExpiredQuestion {
+                    Text(NSLocalizedString("The server restarted before this question was answered. Send a new prompt to ask again.", comment: ""))
+                        .font(.system(size: ChatTypography.micro(chatFontSize)))
+                        .foregroundStyle(.secondary)
+                }
                 if let input = state?.input, !input.isEmptyObject {
                     toolInputView(input)
                 }
@@ -3681,7 +4565,14 @@ private struct ToolCardView: View {
             }
 
             if let error = state?.error, !error.isEmpty, isError, !isQuestionDismissed {
-                detailSection(label: NSLocalizedString("Error", comment: ""), content: error, lineLimit: nil, copyable: true, tint: .red)
+                detailSection(
+                    label: NSLocalizedString("Error", comment: ""),
+                    content: error,
+                    lineLimit: nil,
+                    copyable: true,
+                    tint: .red,
+                    contentFontSize: max(11, ChatTypography.code(chatFontSize) - 2)
+                )
             } else if isQuestionDismissed, let error = state?.error, !error.isEmpty {
                 Text(error)
                     .font(.system(size: ChatTypography.micro(chatFontSize)))
@@ -3746,6 +4637,17 @@ private struct ToolCardView: View {
                             .foregroundStyle(.primary)
                             .textSelection(.enabled)
                             .fixedSize(horizontal: false, vertical: true)
+                        if isFilePathKey(key), let path = object[key]?.stringValue, !path.isEmpty {
+                            Button {
+                                openToolPath(path)
+                            } label: {
+                                Image(systemName: "arrow.up.right.square")
+                                    .font(.system(size: 10, weight: .semibold))
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(Color.accentColor)
+                            .help(NSLocalizedString("Open in project", comment: ""))
+                        }
                     }
                 }
             }
@@ -3759,11 +4661,11 @@ private struct ToolCardView: View {
         }
     }
 
-    private func sectionLabel(_ label: String, content: String) -> some View {
+    private func sectionLabel(_ label: String, content: String, labelColor: Color = .secondary) -> some View {
         HStack {
             Text(label)
                 .font(.system(size: ChatTypography.micro(chatFontSize), weight: .semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(labelColor)
             Spacer()
             Button {
                 NSPasteboard.general.clearContents()
@@ -3777,10 +4679,17 @@ private struct ToolCardView: View {
         }
     }
 
-    private func detailSection(label: String, content: String, lineLimit: Int?, copyable: Bool, tint: Color = .secondary) -> some View {
+    private func detailSection(
+        label: String,
+        content: String,
+        lineLimit: Int?,
+        copyable: Bool,
+        tint: Color = .secondary,
+        contentFontSize: CGFloat? = nil
+    ) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             if copyable {
-                sectionLabel(label, content: content)
+                sectionLabel(label, content: content, labelColor: tint)
             } else {
                 Text(label)
                     .font(.system(size: ChatTypography.micro(chatFontSize), weight: .semibold))
@@ -3788,7 +4697,7 @@ private struct ToolCardView: View {
             }
             Text(content)
                 .font(.system(
-                    size: ChatTypography.code(chatFontSize),
+                    size: contentFontSize ?? ChatTypography.code(chatFontSize),
                     design: .monospaced
                 ))
                 .lineSpacing(max(1, ChatTypography.lineSpacing(chatFontSize) * 0.35))
@@ -4004,16 +4913,12 @@ private struct QuestionBanner: View {
     @AppStorage(AppSettings.Keys.chatFontSize)
     private var chatFontSize = 15.0
 
-    /// Selected labels per question index; single-select questions replace,
-    /// multi-select questions toggle.
-    @State private var selections: [Int: [String]] = [:]
-    @State private var customAnswers: [Int: String] = [:]
-
     private var isComplete: Bool {
         request.questions.indices.allSatisfy { idx in
-            let picked = selections[idx] ?? []
+            let picked = store.questionDraft(for: request.id).selections[idx] ?? []
             if !picked.isEmpty { return true }
-            return !(customAnswers[idx] ?? "").trimmingCharacters(in: .whitespaces).isEmpty
+            let custom = store.questionDraft(for: request.id).customAnswers[idx] ?? ""
+            return !custom.trimmingCharacters(in: .whitespaces).isEmpty
         }
     }
 
@@ -4063,8 +4968,9 @@ private struct QuestionBanner: View {
                 Spacer()
                 Button(NSLocalizedString("Send Answers", comment: "")) {
                     let answers = request.questions.indices.map { idx -> [String] in
-                        var picked = selections[idx] ?? []
-                        let custom = customAnswers[idx]?.trimmingCharacters(in: .whitespaces) ?? ""
+                        let draft = store.questionDraft(for: request.id)
+                        var picked = draft.selections[idx] ?? []
+                        let custom = draft.customAnswers[idx]?.trimmingCharacters(in: .whitespaces) ?? ""
                         if !custom.isEmpty { picked.append(custom) }
                         return picked
                     }
@@ -4092,23 +4998,23 @@ private struct QuestionBanner: View {
     }
 
     private func isSelected(_ index: Int, _ label: String) -> Bool {
-        (selections[index] ?? []).contains(label)
+        (store.questionDraft(for: request.id).selections[index] ?? []).contains(label)
     }
 
     private func optionRow(index: Int, option: UserQuestionOption, question: UserQuestionInfo) -> some View {
         let selected = isSelected(index, option.label)
         return Button {
             let multiple = question.multiple ?? false
-            var current = selections[index] ?? []
+            var current = store.questionDraft(for: request.id).selections[index] ?? []
             if multiple {
                 if current.contains(option.label) {
                     current.removeAll { $0 == option.label }
                 } else {
                     current.append(option.label)
                 }
-                selections[index] = current
+                store.updateQuestionDraft(for: request.id) { $0.selections[index] = current }
             } else {
-                selections[index] = [option.label]
+                store.updateQuestionDraft(for: request.id) { $0.selections[index] = [option.label] }
             }
         } label: {
             HStack(alignment: .top, spacing: 10) {
@@ -4147,11 +5053,14 @@ private struct QuestionBanner: View {
 
     private func customField(index: Int, question: UserQuestionInfo) -> some View {
         HStack(spacing: 6) {
-            Image(systemName: isSelected(index, customAnswers[index] ?? "") ? "checkmark.circle.fill" : "pencil")
+            let custom = store.questionDraft(for: request.id).customAnswers[index] ?? ""
+            Image(systemName: isSelected(index, custom) ? "checkmark.circle.fill" : "pencil")
                 .foregroundStyle(.secondary)
             TextField("Custom answer…", text: Binding(
-                get: { customAnswers[index] ?? "" },
-                set: { customAnswers[index] = $0 }
+                get: { store.questionDraft(for: request.id).customAnswers[index] ?? "" },
+                set: { value in
+                    store.updateQuestionDraft(for: request.id) { $0.customAnswers[index] = value }
+                }
             ))
             .textFieldStyle(.roundedBorder)
         }

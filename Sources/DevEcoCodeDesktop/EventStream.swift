@@ -78,6 +78,8 @@ final class EventStream: NSObject, URLSessionDataDelegate {
         disconnect()
         ensureStalledCheck()
         let configuration = URLSessionConfiguration.default
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringCacheData
         configuration.timeoutIntervalForRequest = .infinity
         configuration.timeoutIntervalForResource = .infinity
         configuration.waitsForConnectivity = true
@@ -119,6 +121,10 @@ final class EventStream: NSObject, URLSessionDataDelegate {
         // Mirror a cancelled task: no socket is live after a fatal response,
         // so a later didCompleteWithError must not trigger a reconnect.
         task = nil
+        // No socket remains to watch, so stop the 5s heartbeat timer as well;
+        // leaving it armed only produces idle wakeups until the next connect.
+        stalledCheck?.cancel()
+        stalledCheck = nil
         session?.invalidateAndCancel()
         session = nil
         onFatalResponse?(statusCode, contentType)
@@ -164,6 +170,9 @@ final class EventStream: NSObject, URLSessionDataDelegate {
         let isEventStream = type.isEmpty || type.contains("text/event-stream")
         return statusCode != 200 || !isEventStream
     }
+
+    /// Test seam: whether the 5s heartbeat watchdog is armed.
+    var isStalledCheckActive: Bool { stalledCheck != nil }
 
     /// A socket with no bytes for longer than `timeout` is likely dead. DevEco
     /// normally sends periodic SSE comments, so 15s is a conservative guard.

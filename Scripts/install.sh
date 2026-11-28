@@ -170,6 +170,8 @@ fi
 say ""
 say "已安装：$DEST_APP"
 say "版本：$(plutil -extract CFBundleShortVersionString raw "$DEST_APP/Contents/Info.plist") (build $(plutil -extract CFBundleVersion raw "$DEST_APP/Contents/Info.plist"))"
+say "构建时间：$(plutil -extract DevEcoBuildTime raw -o - "$DEST_APP/Contents/Info.plist" 2>/dev/null || echo unknown)"
+say "Git 提交：$(plutil -extract DevEcoGitCommit raw -o - "$DEST_APP/Contents/Info.plist" 2>/dev/null || echo unknown)"
 say "架构：$ARCH"
 say "/Applications 内匹配项：$COUNT"
 [ "$COUNT" -eq 1 ] || { say "警告：/Applications 里仍有多个 DevEco Code Desktop："; printf '    %s\n' "${LEFT[@]}"; exit 1; }

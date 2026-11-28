@@ -5,13 +5,13 @@ import Foundation
 enum TranscriptExporter {
     static func markdown(session: Session, messages: [MessageRecord], exportedAt: Date = Date()) -> String {
         var lines: [String] = []
-        lines.append("# \(session.displayTitle)")
+        lines.append("# \(headingText(session.displayTitle))")
         lines.append("")
         if let directory = session.directory {
-            lines.append("- Project: `\((directory as NSString).lastPathComponent)`")
+            lines.append("- Project: \(inlineCode((directory as NSString).lastPathComponent))")
         }
         if let model = firstModel(messages) {
-            lines.append("- Model: `\(model)`")
+            lines.append("- Model: \(inlineCode(model))")
         }
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
@@ -23,13 +23,14 @@ enum TranscriptExporter {
         for message in messages {
             lines.append("---")
             lines.append("")
-            let role = message.info.role == "user"
+            let isUser = message.info.role == "user"
+            let role = isUser
                 ? NSLocalizedString("You", comment: "message role")
                 : "DevEco"
-            lines.append("## \(role)\(metaSuffix(message.info))")
+            lines.append("## \(headingText(role))\(metaSuffix(message.info))")
             lines.append("")
             for part in message.parts {
-                appendPart(part, to: &lines)
+                appendPart(part, escapePlainText: isUser, to: &lines)
             }
             lines.append("")
         }
@@ -58,11 +59,38 @@ enum TranscriptExporter {
         return pieces.isEmpty ? "" : " (\(pieces.joined(separator: ", ")))"
     }
 
-    private static func appendPart(_ part: Part, to lines: inout [String]) {
+    private static func headingText(_ text: String) -> String {
+        let singleLine = text.split(whereSeparator: { $0.isNewline }).joined(separator: " ")
+        return escapeMarkdown(singleLine)
+    }
+
+    private static func escapeMarkdown(_ text: String) -> String {
+        var escaped = text.replacingOccurrences(of: "\\", with: "\\\\")
+        for marker in ["`", "*", "_", "[", "]", "#", "<", ">"] {
+            escaped = escaped.replacingOccurrences(of: marker, with: "\\\(marker)")
+        }
+        return escaped
+    }
+
+    private static func inlineCode(_ text: String) -> String {
+        var longestRun = 0
+        var run = 0
+        for character in text {
+            if character == "`" { run += 1; longestRun = max(longestRun, run) } else { run = 0 }
+        }
+        let delimiter = String(repeating: "`", count: max(1, longestRun + 1))
+        return "\(delimiter)\(text)\(delimiter)"
+    }
+
+    private static func appendPart(
+        _ part: Part,
+        escapePlainText: Bool,
+        to lines: inout [String]
+    ) {
         switch part.type {
         case "text":
             if let text = part.text, !text.isEmpty {
-                lines.append(text)
+                lines.append(escapePlainText ? escapeMarkdown(text) : text)
                 lines.append("")
             }
         case "reasoning":
@@ -77,7 +105,7 @@ enum TranscriptExporter {
         case "tool":
             let status = part.state?.summary ?? ""
             let title = part.state?.title.map { " — \($0)" } ?? ""
-            lines.append("> 🔨 **\(Theme.toolName(part.tool))** \(status)\(title)")
+            lines.append("> 🔨 **\(escapeMarkdown(Theme.toolName(part.tool)))** \(escapeMarkdown(status))\(escapeMarkdown(title))")
             lines.append("")
         default:
             break

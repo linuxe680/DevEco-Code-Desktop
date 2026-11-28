@@ -9,6 +9,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppSettings.applyAppearanceOverride()
+        // Some macOS versions create the process-wide URL cache before the
+        // first request. Replacing it with a memory-only cache prevents
+        // `Cache.db` from being read or deleted while a URLSession is alive.
+        URLCache.shared = URLCache(memoryCapacity: 8 * 1024 * 1024, diskCapacity: 0, diskPath: nil)
         // Re-assert the bundle icon at runtime. The Dock otherwise keeps the
         // previous icon for this bundle id until a full logout/restart.
         if let url = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
@@ -24,6 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        store?.flushDrafts()
         // Don't leave the deveco serve child process orphaned, unless the
         // user opted to keep it running for the next launch.
         if AppSettings.quitBehavior == .stopServer {
@@ -110,6 +115,7 @@ struct DevEcoCodeDesktopApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var store: SessionStore
     @StateObject private var providers: ProviderStore
+    @StateObject private var tooling = ToolingStore()
 
     init() {
         AppSettings.registerDefaults()
@@ -134,6 +140,7 @@ struct DevEcoCodeDesktopApp: App {
                 .environmentObject(appDelegate.server)
                 .environmentObject(store)
                 .environmentObject(providers)
+                .environmentObject(tooling)
                 .frame(minWidth: 940, minHeight: 620)
         }
         .windowStyle(.hiddenTitleBar)
@@ -141,12 +148,36 @@ struct DevEcoCodeDesktopApp: App {
             CommandGroup(after: .newItem) {
                 Button(NSLocalizedString("New Session", comment: "")) { store.createSession() }
                     .keyboardShortcut("n", modifiers: .command)
+                Button(NSLocalizedString("Next Unread Session", comment: "")) {
+                    store.selectNextUnreadSession()
+                }
+                .keyboardShortcut("u", modifiers: [.command, .option])
                 Button(NSLocalizedString("Quick Switch…", comment: "")) {
                     NotificationCenter.default.post(name: .openQuickSwitch, object: nil)
                 }
                 .keyboardShortcut("k", modifiers: .command)
+                Button(NSLocalizedString("Command Palette…", comment: "")) {
+                    NotificationCenter.default.post(name: .openQuickSwitch, object: nil)
+                }
+                .keyboardShortcut("p", modifiers: [.command, .shift])
                 Button(NSLocalizedString("Choose Project Folder…", comment: "")) { appDelegate.server.chooseFolder() }
                 Divider()
+                Button(NSLocalizedString("Find in Conversation", comment: "")) {
+                    NotificationCenter.default.post(name: .openConversationSearch, object: nil)
+                }
+                .keyboardShortcut("f", modifiers: .command)
+                Button(NSLocalizedString("Toggle Sidebar", comment: "")) {
+                    NotificationCenter.default.post(name: .toggleSidebar, object: nil)
+                }
+                .keyboardShortcut("b", modifiers: .command)
+                Button(NSLocalizedString("Scroll to Top", comment: "")) {
+                    NotificationCenter.default.post(name: .scrollTranscriptToTop, object: nil)
+                }
+                .keyboardShortcut(.upArrow, modifiers: .command)
+                Button(NSLocalizedString("Scroll to Bottom", comment: "")) {
+                    NotificationCenter.default.post(name: .scrollTranscriptToBottom, object: nil)
+                }
+                .keyboardShortcut(.downArrow, modifiers: .command)
                 Button(NSLocalizedString("Review File Changes", comment: "")) {
                     NotificationCenter.default.post(name: .openWorkPanel, object: nil)
                 }
@@ -154,6 +185,12 @@ struct DevEcoCodeDesktopApp: App {
                 Button(NSLocalizedString("Export Session…", comment: "")) {
                     NotificationCenter.default.post(name: .exportSelectedSession, object: nil)
                 }
+                Divider()
+                Button(NSLocalizedString("Stop Generating", comment: "")) {
+                    store.abort()
+                }
+                .keyboardShortcut(".", modifiers: .command)
+                .disabled(!store.isSending)
             }
         }
         .commands {
@@ -165,6 +202,7 @@ struct DevEcoCodeDesktopApp: App {
                 .environmentObject(appDelegate.server)
                 .environmentObject(store)
                 .environmentObject(providers)
+                .environmentObject(tooling)
         }
     }
 }

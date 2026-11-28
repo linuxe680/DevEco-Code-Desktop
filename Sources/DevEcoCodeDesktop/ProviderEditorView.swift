@@ -27,9 +27,9 @@ struct ProviderEditorView: View {
             HStack {
                 Group {
                     if isNew {
-                        Text("Add Provider")
+                        Text(NSLocalizedString("Add Provider", comment: ""))
                     } else {
-                        Text("Edit \(provider.name)")
+                        Text(String(format: NSLocalizedString("Edit %@", comment: ""), provider.name))
                     }
                 }
                 .font(.title3.weight(.semibold))

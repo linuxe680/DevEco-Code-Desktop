@@ -75,6 +75,16 @@ final class CommandPaletteTests: XCTestCase {
         XCTAssertEqual(groups[1].sessions.map(\.id), ["s1", "s3"])
     }
 
+    func testSessionsGroupCanSortByTitle() throws {
+        let groups = SessionProjectGroup.groups([
+            try session(id: "s1", title: "Zebra", directory: "/tmp/one", updated: 3),
+            try session(id: "s2", title: "Apple", directory: "/tmp/two", updated: 1),
+            try session(id: "s3", title: "Mango", directory: "/tmp/one", updated: 2),
+        ], sort: .title)
+        XCTAssertEqual(groups.map(\.name), ["one", "two"])
+        XCTAssertEqual(groups[0].sessions.map(\.id), ["s3", "s1"])
+    }
+
     func testDefaultCommandsIncludeCoreWorkbenchActions() {
         XCTAssertFalse(CommandAction.defaults.isEmpty)
         XCTAssertTrue(CommandAction.defaults.contains { $0.title == NSLocalizedString("New Session", comment: "") })

@@ -55,6 +55,21 @@ final class StreamingRevealTests: XCTestCase {
     }
 
     @MainActor
+    func testLongAppendDoesNotReplayFromBeginning() async throws {
+        let reveal = StreamingReveal()
+        let long = String(repeating: "长文本流式输出。", count: 80)
+
+        reveal.update(target: long, isStreaming: true)
+        XCTAssertEqual(reveal.text, String(long.prefix(6)), "first tick should seed once")
+
+        reveal.update(target: long + "结尾", isStreaming: true)
+        XCTAssertTrue(reveal.text.hasPrefix(String(long.prefix(6))))
+        reveal.update(target: long + "结尾", isStreaming: false)
+        try await waitUntilFinished(reveal, timeout: 20)
+        XCTAssertEqual(reveal.text, long + "结尾")
+    }
+
+    @MainActor
     private func waitUntilFinished(
         _ reveal: StreamingReveal,
         timeout: TimeInterval

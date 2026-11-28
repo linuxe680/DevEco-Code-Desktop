@@ -8,6 +8,9 @@ extension Notification.Name {
     static let openWorkPanel = Notification.Name("com.deveco.openWorkPanel")
     static let openContextPanel = Notification.Name("com.deveco.openContextPanel")
     static let openConversationSearch = Notification.Name("com.deveco.openConversationSearch")
+    static let toggleSidebar = Notification.Name("com.deveco.toggleSidebar")
+    static let scrollTranscriptToTop = Notification.Name("com.deveco.scrollTranscriptToTop")
+    static let scrollTranscriptToBottom = Notification.Name("com.deveco.scrollTranscriptToBottom")
 }
 
 struct ContentView: View {
@@ -15,10 +18,12 @@ struct ContentView: View {
     @EnvironmentObject var server: ServerManager
     @EnvironmentObject var store: SessionStore
     @EnvironmentObject var providers: ProviderStore
+    @EnvironmentObject var tooling: ToolingStore
     @State private var section: AppSection = .sessions
     @State private var showSwitcher = false
     @State private var workPanelOpen = false
     @State private var showSearch = false
+    @AppStorage(AppSettings.Keys.sidebarHidden) private var sidebarHidden = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -31,12 +36,21 @@ struct ContentView: View {
                 switch section {
                 case .sessions:
                     HSplitView {
-                        SessionListView(section: $section)
-                            .frame(minWidth: 230, idealWidth: 270, maxWidth: 330)
+                        if !sidebarHidden {
+                            SessionListView(section: $section)
+                                .frame(minWidth: 230, idealWidth: 270, maxWidth: 330)
+                        }
                         ChatView(
                             workPanelOpen: $workPanelOpen,
                             showSearch: $showSearch,
-                            section: $section
+                            section: $section,
+                            openWorkPanelTab: { tab in
+                                workPanelOpen = true
+                                store.setWorkPanelTab(tab)
+                                if let id = store.selectedSessionID {
+                                    store.workPanelOpenBySession[id] = true
+                                }
+                            }
                         )
                             .frame(minWidth: 460)
                         if workPanelOpen {
@@ -72,7 +86,7 @@ struct ContentView: View {
                 Divider()
                 HStack {
                     Image(systemName: "exclamationmark.triangle")
-                    Text(error)
+                    Text(UserFacingError.sanitize(error))
                         .font(.caption)
                         .lineLimit(2)
                     Spacer()
@@ -135,6 +149,19 @@ struct ContentView: View {
             section = .sessions
             showSearch = true
         }
+        .onChange(of: section) { newSection in
+            if newSection != .sessions, showSearch { showSearch = false }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .toggleSidebar)) { _ in
+            if sidebarHidden {
+                sidebarHidden = false
+                section = .sessions
+            } else if section == .sessions {
+                sidebarHidden = true
+            } else {
+                section = .sessions
+            }
+        }
         .onChange(of: store.selectedSessionID) { id in
             guard let id else {
                 workPanelOpen = false
@@ -168,11 +195,19 @@ struct ContentView: View {
         .onChange(of: server.baseURL) { url in
             if let url {
                 store.currentServerBaseURLProvider = { server.baseURL }
+                store.fallbackDirectory = server.projectDirectory.path
                 store.connect(baseURL: url)
                 providers.connect(baseURL: url)
+                tooling.connect(baseURL: url)
+                tooling.configureLocation(
+                    directory: server.projectDirectory.path,
+                    workspace: nil
+                )
             } else {
                 store.disconnect()
+                store.fallbackDirectory = nil
                 providers.disconnect()
+                tooling.disconnect()
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
@@ -194,16 +229,20 @@ struct ContentView: View {
         guard let session else { return }
         let panel = NSSavePanel()
         panel.nameFieldStringValue = session.displayTitle.replacingOccurrences(of: "/", with: "-") + ".md"
-        panel.allowedContentTypes = [.plainText]
+        panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
+        panel.isExtensionHidden = false
         panel.canCreateDirectories = true
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        let destination = url.pathExtension.lowercased() == "md"
+            ? url
+            : url.deletingPathExtension().appendingPathExtension("md")
         Task {
             do {
-                try await store.export(session, to: url)
+                try await store.export(session, to: destination)
             } catch {
                 store.errorMessage = String(
                     format: NSLocalizedString("Export failed: %@", comment: ""),
-                    error.localizedDescription
+                    UserFacingError.message(error)
                 )
             }
         }

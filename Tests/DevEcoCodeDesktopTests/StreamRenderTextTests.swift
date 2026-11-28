@@ -2,6 +2,17 @@ import XCTest
 @testable import DevEcoCodeDesktop
 
 final class StreamRenderTextTests: XCTestCase {
+    func testModelChangeNoticeIsHiddenFromAnswerProse() {
+        let text = "模型已从 DeepSeek-V4.1-Flash · WorkBuddy 更改为 Hy4 flash · WorkBuddy。\n这是真正的回答。"
+        XCTAssertEqual(visiblePartText(text, useMarkdown: true), "这是真正的回答。")
+    }
+
+    func testModelChangeNoticeDetection() {
+        XCTAssertTrue(isModelChangeNotice("模型已从 A 更改为 B。"))
+        XCTAssertTrue(isModelChangeNotice("Model changed from A to B."))
+        XCTAssertFalse(isModelChangeNotice("普通回答里提到了 model。"))
+    }
+
     func testSingleLineStaysLive() {
         let split = StreamRenderText.split("正在输出第一行")
         XCTAssertTrue(split.stablePrefix.isEmpty)
@@ -92,5 +103,30 @@ final class StreamRenderTextTests: XCTestCase {
         let split = StreamRenderText.displaySplit("第一行\n正在输出 **未完成", isLive: true)
         XCTAssertEqual(split.stablePrefix, "第一行\n")
         XCTAssertEqual(split.liveTail, "正在输出 **未完成")
+    }
+
+    func testFinishedLastReplyDoesNotTypewriteWhenNextPromptSends() {
+        let finished = MessageRecord(
+            info: MessageInfo(
+                id: "msg_assistant",
+                role: "assistant",
+                time: MessageTime(created: 1, completed: 2)
+            ),
+            parts: []
+        )
+        XCTAssertFalse(StreamRenderText.shouldTypewrite(finished, isSending: true, isLast: true))
+    }
+
+    func testRunningAssistantTailTypewrites() {
+        let running = MessageRecord(
+            info: MessageInfo(
+                id: "msg_assistant",
+                role: "assistant",
+                time: MessageTime(created: 1, completed: nil)
+            ),
+            parts: []
+        )
+        XCTAssertTrue(StreamRenderText.shouldTypewrite(running, isSending: true, isLast: true))
+        XCTAssertFalse(StreamRenderText.shouldTypewrite(running, isSending: false, isLast: true))
     }
 }
