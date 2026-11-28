@@ -303,6 +303,15 @@ v0.2 完成情况：M1 全部落地（审批三档实测否决，见上）；M2 
   - ⌘F 全量过滤 500 消息 ≈ 12ms/次击键（可接受；若将来加节流有余量）
   - markdown 9KB 分段解析 ≈ 0.7ms（复测一致）
   - 测试入 PerformanceTests（test500MessageDeltaPipelinePerformance / test500MessageSearchFilterPerformance），每轮迭代重建 500 消息防止累计膨胀
+- [x] **2026-11-29 长会话性能优化（第二轮，四方向）**：
+  - 行推导缓存 `TranscriptRows.swift`：前缀 checkpoint + 尾部重折，指纹覆盖 id/role/时间戳/part 类型/文本长度与工具状态（status/title/output/error 长度、起止时间）。500 消息流式每帧 **59 ms → 0.46 ms（128×）**，首帧 99 ms（一次性建 checkpoint）
+  - 缓存只保存「装饰」（日期分隔、合并 reasoning、工具分组、模型切换提示），不保存 `MessageRecord`：每帧与调用方当前消息配对，封存消息的迟到更新（用量/成本/模型、工具输出）不可能渲染成旧内容；`revision` 未变时整份结果直接复用，`body` 因 `isSending`/草稿等无关状态重算不再付出折叠成本
+  - 结构拆分：ChatView.swift **5068 → 1648 行**，拆出 ChatRendering / TranscriptRowsView / ChatComposer / MessageBubbleView / MarkdownView / ChatCards；`TranscriptRowsTests` 14 例对旧全量折叠做等价校验（含封存消息迟到更新、同条数会话切换、revision 未变复用）
+  - 包体积：`build-app.sh` 加 `strip -x`，二进制 **11.1 → 3.0 MB**，DMG **2.2/2.3 → 1.8/2.0 MB**（dSYM 保留，崩溃报告可符号化）；`-dead_strip`/thin LTO 实测无效
+  - 稳定性：`NotificationObserverBag` 管理 SessionStore 观察者（deinit 移除）；`applicationSupportDirectory()` 空数组回退；去掉 `serverProcess!` 强解包
+  - 死代码清理：`EarlyLanguageSetup.swift`、`TimelineNotice`/`timelineNotices`（从未写入）、`LinkText` 的 `searchQuery` 补上实现（流式气泡此前 ⌘F 不高亮）、`chatFontMenu`（被工具栏溢出菜单取代）、`providerColor`、`questionResult`、`decodePart`、ProviderEditorView 未用的 `dismiss`；拆分文件里未用的 `import UniformTypeIdentifiers`
+  - 冷启动基线：`open` 到首窗 **0.38 s**（strip 前后一致，远低于 2 s 目标）
+  - 验证：`swift build`（debug/release）零警告；`swift test` **248/248**
 - [x] **本地 smoke test**：`Scripts/smoke-test.sh`——独立临时数据目录起 `deveco serve` → 健康 → consent → 建会话 → prompt_async → SSE 等 session.idle（同时捕获 session.error 给出原因）→ 验证 assistant 消息 → 删会话 → 清理，全程不触碰用户数据，连跑两次全绿
   - **协议发现（实测）**：`/api/model` 返回 `{data:[{providerID,id,status,...}], location:{...}}`——location 是目录元信息不是 provider；prompt_async 不传 model 字段时全新数据目录自动落到 opencode 内置免费模型（无需任何 key）；显式传 `{"providerID":"opencode","modelID":"tidepool-alpha-free"}` 反而报 "Model not found"（服务端对内置 provider 的解析怪癖，用户配置的 magpie 模型用同一形状则正常）
 
@@ -469,7 +478,7 @@ v0.2 完成情况：M1 全部落地（审批三档实测否决，见上）；M2 
 ## 下一步完善方向（按优先级）
 
 1. **打开发布闭环**：当前 GitHub 仓库只有源码；建议 release.sh 同步产出 GitHub Release（附 DMG + SHA-256），或加 GitHub Actions 自动构建
-2. **长会话性能**：转写用 LazyVStack 但每气泡重渲染 Markdown；流式时可对非末尾气泡做 diff 跳过，或把渲染下沉到 NSAttributedString 缓存
+2. ~~**长会话性能**~~ ✅ 2026-11-29 已实施：`TranscriptRowCache`（已封存前缀 checkpoint + 尾部重折 + Hasher 指纹失效检测），500 消息流式每帧行推导 59 ms → 0.46 ms（≈128×）；⌘F 结果记忆化；ProviderStore 模型查找 O(1)；ChatView 5068 行拆为 8 个文件
 3. **错误恢复**：SSE 断连重连已有时序护栏，但 inline error 只能手动 Retry；可对"网络类失败"自动退避重试一次
 4. **@ 弹窗键盘体验**：上下键/Tab 已接，但 Enter 优先发送——候选选中时 Enter 应先完成补全（与 slash 命令面板行为对齐）
 5. **设置项迁移**：`chatFontSize` 已有多轮迁移标记，建议引入统一 `settingsVersion`，避免继续叠加一次性迁移键

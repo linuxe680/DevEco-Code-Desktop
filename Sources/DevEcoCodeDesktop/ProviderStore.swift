@@ -21,7 +21,12 @@ final class ProviderStore: ObservableObject {
     @Published var errorMessage: String?
     @Published var isSaving = false
     /// Every runnable model from GET /api/model (built-ins + configured).
-    @Published private(set) var serverModels: [ServerModel] = []
+    @Published private(set) var serverModels: [ServerModel] = [] {
+        didSet { rebuildServerModelLookup() }
+    }
+    /// "providerID/modelID" → model, so `variants`/`contextLimit` (called for
+    /// every composer render) stop scanning the model list.
+    private var serverModelsByKey: [String: ServerModel] = [:]
     /// Cached model list for pickers and hot-path lookups; rebuilt only when
     /// serverModels/providers change (was rebuilt+sorted on every access).
     @Published private(set) var allModelChoices: [ModelChoice] = []
@@ -128,25 +133,26 @@ final class ProviderStore: ObservableObject {
     private var rawConfig: [String: JSONValue] = [:]
     private var loadTask: Task<Void, Never>?
 
+    private func rebuildServerModelLookup() {
+        var lookup: [String: ServerModel] = [:]
+        lookup.reserveCapacity(serverModels.count)
+        for model in serverModels {
+            guard let provider = model.providerID else { continue }
+            lookup["\(provider)/\(model.id)"] = model
+        }
+        serverModelsByKey = lookup
+    }
+
     /// Variant ids (e.g. reasoning effort) available for the given model.
     func variants(for modelID: String?) -> [String] {
         guard let modelID else { return [] }
-        let pieces = modelID.split(separator: "/", maxSplits: 1)
-        guard pieces.count == 2 else { return [] }
-        let provider = String(pieces[0])
-        let id = String(pieces[1])
-        let model = serverModels.first { $0.providerID == provider && $0.id == id }
-        return (model?.variants ?? []).map(\.id)
+        return (serverModelsByKey[modelID]?.variants ?? []).map(\.id)
     }
 
     /// Context window (tokens) of the given "providerID/modelID" selection.
     func contextLimit(for modelID: String?) -> Double? {
         guard let modelID else { return nil }
-        let pieces = modelID.split(separator: "/", maxSplits: 1)
-        guard pieces.count == 2 else { return nil }
-        let provider = String(pieces[0])
-        let id = String(pieces[1])
-        return serverModels.first { $0.providerID == provider && $0.id == id }?.limit?.context
+        return serverModelsByKey[modelID]?.limit?.context
     }
 
     func loadSavedPermissions() async {

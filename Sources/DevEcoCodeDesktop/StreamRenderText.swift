@@ -8,9 +8,6 @@ enum StreamRenderText {
     struct Split {
         let stablePrefix: String
         let liveTail: String
-
-        var hasStablePrefix: Bool { !stablePrefix.isEmpty }
-        var hasLiveTail: Bool { !liveTail.isEmpty }
     }
 
     static func split(_ text: String) -> Split {

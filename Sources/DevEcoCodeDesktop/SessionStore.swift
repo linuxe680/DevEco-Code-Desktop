@@ -52,14 +52,6 @@ struct QueuedPrompt: Identifiable {
     }
 }
 
-struct TimelineNotice: Identifiable, Equatable {
-    let id: String
-    let sessionID: String
-    let messageID: String?
-    let date: Date
-    let text: String
-}
-
 @MainActor
 final class SessionStore: ObservableObject {
     typealias PendingAttachment = DevEcoCodeDesktop.PendingAttachment
@@ -68,7 +60,13 @@ final class SessionStore: ObservableObject {
 
     @Published var sessions: [Session] = []
     @Published var selectedSessionID: String?
-    @Published var messages: [MessageRecord] = []
+    /// Bumps on every transcript mutation (including in-place edits such as a
+    /// streamed delta). Views use it as a cache key so they can tell "nothing
+    /// changed" from "the same array was rebuilt".
+    private(set) var transcriptRevision = 0
+    @Published var messages: [MessageRecord] = [] {
+        didSet { transcriptRevision &+= 1 }
+    }
     @Published private(set) var isLoadingMessages = false
     @Published var pendingPermissions: [PermissionRequest] = []
     /// Sessions with an in-flight prompt or abort. Keeping this per-session
@@ -382,9 +380,6 @@ final class SessionStore: ObservableObject {
     }
     /// Bumped whenever the transcript mutates; drives follow-scroll in the chat view.
     @Published private(set) var streamTick = 0
-    /// System notices extracted from assistant text, rendered as a Codex-style
-    /// dated divider instead of an extra paragraph in the answer.
-    @Published private(set) var timelineNotices: [TimelineNotice] = []
 
     private var api: APIClient?
     var apiForTools: APIClient? { api }
@@ -538,6 +533,8 @@ final class SessionStore: ObservableObject {
     /// Bumped whenever a flush timer is scheduled or cancelled so a stale
     /// timer that wakes up late cannot clear the reference of a newer one.
     private var deltaFlushGeneration = 0
+    /// Removes the `init()` NotificationCenter registrations on dealloc.
+    private let observerBag = NotificationObserverBag()
 
     private static let cacheSessionsKey = "cachedSessions"
     private static let cacheSelectedKey = "cachedSelectedSession"
@@ -596,23 +593,30 @@ final class SessionStore: ObservableObject {
                 )
             }
         }
-        NotificationCenter.default.addObserver(
-            forName: NSApplication.didBecomeActiveNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in self?.recheckConnectionIfNeeded() }
-        }
-        // 设置页撤销权限后，服务端规则是唯一真相，同步刷新本地缓存。
-        NotificationCenter.default.addObserver(
-            forName: .savedPermissionsDidChange,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in
-                self?.savedPermissionRules = AppSettings.savedPermissionRules
+        // Keep the observer tokens: without them the registrations outlive the
+        // store (the blocks capture `self` weakly, so nothing keeps the store
+        // alive, but NotificationCenter keeps the blocks forever).
+        observerBag.add(
+            NotificationCenter.default.addObserver(
+                forName: NSApplication.didBecomeActiveNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in self?.recheckConnectionIfNeeded() }
             }
-        }
+        )
+        // 设置页撤销权限后，服务端规则是唯一真相，同步刷新本地缓存。
+        observerBag.add(
+            NotificationCenter.default.addObserver(
+                forName: .savedPermissionsDidChange,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in
+                    self?.savedPermissionRules = AppSettings.savedPermissionRules
+                }
+            }
+        )
     }
 
     func connect(baseURL: URL) {
@@ -2624,10 +2628,6 @@ final class SessionStore: ObservableObject {
 
     private func sessionIDMatches(_ event: DevEvent) -> Bool {
         event.property("sessionID") == selectedSessionID
-    }
-
-    private func decodePart(_ object: [String: JSONValue]) -> Part? {
-        decode(.object(object))
     }
 
     private func upsert(_ session: Session) {

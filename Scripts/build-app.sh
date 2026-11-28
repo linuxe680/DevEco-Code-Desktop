@@ -64,6 +64,10 @@ ensure_signing_identity() {
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/DevEcoCodeDesktop"
+# 只裁掉局部符号（strip -x）：SwiftPM 的 release 产物会保留全部符号，11 MB
+# 里约 8 MB 是链接期的符号表。`-x` 保留动态符号，dSYM 不受影响，崩溃报告
+# 仍能符号化；实测 11.1 MB → 3.0 MB。
+strip -x "$APP/Contents/MacOS/DevEcoCodeDesktop"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :DevEcoBuildTime string $(date -u +%Y-%m-%dT%H:%M:%SZ)" "$APP/Contents/Info.plist" 2>/dev/null \
   || /usr/libexec/PlistBuddy -c "Set :DevEcoBuildTime $(date -u +%Y-%m-%dT%H:%M:%SZ)" "$APP/Contents/Info.plist"

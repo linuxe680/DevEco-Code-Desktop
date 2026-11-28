@@ -218,9 +218,11 @@ final class ServerManager: ObservableObject {
             stderr: output.fileHandleForWriting
         )
 
+        let launched: ProcessGroupLauncher.Launched
         do {
-            serverProcess = try ProcessGroupLauncher.launch(config)
-            Self.writePIDFile(serverProcess?.pid)
+            launched = try ProcessGroupLauncher.launch(config)
+            serverProcess = launched
+            Self.writePIDFile(launched.pid)
             Log.server.info("deveco serve launched on port \(self.port) (project: \(self.projectDirectory.path, privacy: .public))")
         } catch {
             serverProcess = nil
@@ -254,7 +256,7 @@ final class ServerManager: ObservableObject {
         outputReader = reader
 
         // 监控子进程退出
-        let launchedPID = serverProcess!.pid
+        let launchedPID = launched.pid
         monitorTask = Task { [weak self] in
             while !Task.isCancelled {
                 let status = waitpid(launchedPID, nil, WNOHANG)
@@ -958,8 +960,13 @@ final class ServerManager: ObservableObject {
     }
 
     nonisolated private static func applicationSupportDirectory() -> URL {
-        let urls = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
-        let directory = urls[0].appendingPathComponent("DevEcoCodeDesktop", isDirectory: true)
+        // The user-domain list is documented to contain at most one entry, but
+        // an empty list would crash here — and this runs from launch, backup
+        // and restore paths. Fall back to the home-relative location.
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Application Support", isDirectory: true)
+        let directory = base.appendingPathComponent("DevEcoCodeDesktop", isDirectory: true)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
     }

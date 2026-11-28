@@ -30,6 +30,40 @@ final class P2FeatureTests: XCTestCase {
         XCTAssertEqual(highlighted.count, 2)
     }
 
+    // MARK: ⌘F highlight on the live (plain-text) bubble
+
+    func testApplySearchHighlightMarksEveryMatch() {
+        var attributed = AttributedString("echo Foo and foo and FOO")
+        applySearchHighlight(to: &attributed, query: "foo")
+        let highlighted = attributed.runs
+            .filter { $0.backgroundColor != nil }
+            .map { String(attributed.characters[$0.range]) }
+        XCTAssertEqual(highlighted, ["Foo", "foo", "FOO"])
+        XCTAssertEqual(String(attributed.characters), "echo Foo and foo and FOO")
+    }
+
+    func testApplySearchHighlightKeepsLinkStyling() {
+        var attributed = AttributedString("see https://example.com/foo now")
+        let url = try! XCTUnwrap(URL(string: "https://example.com/foo"))
+        let linkRange = try! XCTUnwrap(attributed.range(of: "https://example.com/foo"))
+        attributed[linkRange].link = url
+        applySearchHighlight(to: &attributed, query: "foo")
+        // Highlighting splits the link into runs; every run of the URL must
+        // keep the link attribute, and exactly the matched run gets a tint.
+        let urlRuns = attributed.runs.filter { $0.link == url }
+        XCTAssertEqual(urlRuns.map { String(attributed.characters[$0.range]) }.joined(), "https://example.com/foo")
+        let highlighted = attributed.runs
+            .filter { $0.backgroundColor != nil }
+            .map { String(attributed.characters[$0.range]) }
+        XCTAssertEqual(highlighted, ["foo"])
+    }
+
+    func testApplySearchHighlightWithEmptyQueryIsNoOp() {
+        var attributed = AttributedString("nothing to mark")
+        applySearchHighlight(to: &attributed, query: "")
+        XCTAssertTrue(attributed.runs.allSatisfy { $0.backgroundColor == nil })
+    }
+
     // MARK: Oversized image downscale
 
     // MARK: Per-session model/variant restore (regression: switching sessions

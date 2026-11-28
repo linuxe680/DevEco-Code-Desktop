@@ -133,6 +133,27 @@ final class PerformanceTests: XCTestCase {
         XCTAssertGreaterThan(store.messages[499].parts[0].text?.count ?? 0, 0)
     }
 
+    /// Transcript-row derivation at 500-message scale with a streaming tail.
+    /// This is what ChatView's `messageRows` used to recompute from scratch on
+    /// every body evaluation (~30×/s while a reply streams).
+    func test500MessageRowDerivationPerformance() {
+        let store = SessionStore()
+        makeLargeSession(store: store)
+        let cache = TranscriptRowCache()
+        var messages = store.messages
+        let lastIndex = messages.count - 1
+        var revision = 0
+
+        measure {
+            // Simulate the tail changing on each streaming frame. The revision
+            // must bump like `SessionStore.transcriptRevision` does, otherwise
+            // the memoized-rows fast path measures nothing.
+            revision += 1
+            messages[lastIndex].parts[0].text = Self.bigText + String(repeating: "…", count: revision)
+            _ = cache.rows(for: messages, revision: revision)
+        }
+    }
+
     /// ⌘F search cost at 500-message scale: one case-insensitive pass over
     /// every message's text parts (what visibleMessages does per keystroke).
     func test500MessageSearchFilterPerformance() {

@@ -8,7 +8,6 @@ struct ProviderEditorView: View {
 
     @State private var newModelID = ""
     @State private var newModelName = ""
-    @Environment(\.dismiss) private var dismiss
 
     private var isValid: Bool {
         guard !provider.id.trimmingCharacters(in: .whitespaces).isEmpty,

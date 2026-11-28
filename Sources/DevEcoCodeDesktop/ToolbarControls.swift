@@ -210,8 +210,6 @@ func toolbarButton(
 /// Transcript actions (text size, search, review, compact) rendered in the
 /// app's single toolbar row so the chat area needs no header of its own.
 struct TranscriptToolbarActions: View {
-    @Binding var showSearch: Bool
-    @Binding var workPanelOpen: Bool
     let openWorkPanelTab: (WorkPanelTab) -> Void
 
     @EnvironmentObject private var store: SessionStore
@@ -225,49 +223,6 @@ struct TranscriptToolbarActions: View {
             ChatTypography.maxFontSize,
             max(ChatTypography.minFontSize, chatFontSize + delta)
         )
-    }
-
-    private var chatFontMenu: some View {
-        Menu {
-            Button {
-                adjustChatFont(by: -1)
-            } label: {
-                Label(NSLocalizedString("Smaller text", comment: ""), systemImage: "textformat.size.smaller")
-            }
-            .disabled(chatFontSize <= ChatTypography.minFontSize)
-
-            Button {
-                adjustChatFont(by: 1)
-            } label: {
-                Label(NSLocalizedString("Larger text", comment: ""), systemImage: "textformat.size.larger")
-            }
-            .disabled(chatFontSize >= ChatTypography.maxFontSize)
-
-            Divider()
-            ForEach([13, 14, 15, 16, 17, 18, 20, 22, 24, 26, 28, 30], id: \.self) { size in
-                Button {
-                    chatFontSize = Double(size)
-                } label: {
-                    if Int(chatFontSize) == size {
-                        Label("\(size) pt", systemImage: "checkmark")
-                    } else {
-                        Text("\(size) pt")
-                    }
-                }
-            }
-        } label: {
-            HStack(spacing: 3) {
-                Text("Aa")
-                    .font(.system(size: 13, weight: .semibold))
-                Text("\(Int(chatFontSize))")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .help(NSLocalizedString("Chat text size", comment: ""))
     }
 
     var body: some View {

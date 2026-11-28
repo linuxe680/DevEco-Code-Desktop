@@ -41,7 +41,6 @@ struct ContentView: View {
                                 .frame(minWidth: 230, idealWidth: 270, maxWidth: 330)
                         }
                         ChatView(
-                            workPanelOpen: $workPanelOpen,
                             showSearch: $showSearch,
                             section: $section,
                             openWorkPanelTab: { tab in
